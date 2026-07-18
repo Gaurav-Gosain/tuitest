@@ -19,7 +19,7 @@ func run() int {
 	fs := flag.NewFlagSet("tuitest", flag.ContinueOnError)
 	update := fs.Bool("update", false, "rewrite golden snapshots instead of comparing")
 	strict := fs.Bool("strict", false, "treat Sleep as an error")
-	goldenDir := fs.String("golden-dir", "", "directory for golden files (default: next to the tape)")
+	goldenDir := fs.String("golden-dir", "", "directory for golden files (default: ./testdata)")
 	verbose := fs.Bool("v", false, "mirror PTY I/O to stderr")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: tuitest run [flags] script.tape")
