@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,17 +219,8 @@ func TestAttachRendersHeadlessState(t *testing.T) {
 		t.Fatalf("expected the initial window plus ctlwin, got %d", total)
 	}
 
-	// 8. Killing the session over the control plane must actually destroy it.
-	//
-	//    NOTE: this deliberately asserts only that the session is gone from the
-	//    daemon, not that the attached client process exits. `tuios attach`
-	//    currently does NOT exit when its session is killed out from under it:
-	//    it tears down its UI (and may print "[detached from session ...]") but
-	//    the process lingers, leaving the user in a dead client. That behavior
-	//    reproduces identically on fix/window-lifecycle-and-open-issues, so it
-	//    is a pre-existing bug rather than a control-plane regression, and this
-	//    test pins the daemon-side contract without encoding the hang as
-	//    expected. Tighten this to assert term.Wait once the client exits.
+	// 8. Killing the session over the control plane must destroy it in the
+	//    daemon and evict the attached client.
 	e.verb("kill-session", map[string]any{"session": "cross"})
 
 	sessions := e.verb("list-sessions", nil)
@@ -240,5 +232,32 @@ func TestAttachRendersHeadlessState(t *testing.T) {
 		if name, _ := s["name"].(string); name == "cross" {
 			t.Fatalf("killed session still listed: %v", sessions["sessions"])
 		}
+	}
+
+	// 9. The attached client must exit rather than linger in a dead UI. Its
+	//    session no longer exists, so there is nothing to render and nothing to
+	//    reconnect to; a client that stays alive here leaves the user typing
+	//    into a session that is gone.
+	//
+	//    This previously hung: the daemon dropped the session without telling
+	//    its clients, so the process stayed up until it was killed by hand.
+	code, err := term.Wait(20 * time.Second)
+	if err != nil {
+		t.Fatalf("attached client did not exit after its session was killed: %v\n--- screen ---\n%s",
+			err, term.Screen().Text())
+	}
+
+	// 10. And it must exit non-zero: the session was destroyed underneath the
+	//     client, which is not the same outcome as the user detaching, and a
+	//     script driving tuios has to be able to tell them apart.
+	if code == 0 {
+		t.Errorf("client exited 0 after its session was killed; a kill is not a clean detach\n--- screen ---\n%s",
+			term.Screen().Text())
+	}
+
+	// 11. The reason must be on screen, so a human sees what happened rather
+	//     than an empty prompt.
+	if screen := term.Screen().Text(); !strings.Contains(screen, "terminated") {
+		t.Errorf("client exited without explaining why:\n--- screen ---\n%s", screen)
 	}
 }
