@@ -10,6 +10,11 @@ actually see: TUI authors, shell tooling authors, and people maintaining
 terminal multiplexers. It has no knowledge of any particular UI framework, so it
 works equally against a Bubble Tea app, a Rust or C TUI, vim, or a bare shell.
 
+It also fuzzes. `tuitest fuzz` points randomised but structured input at any
+terminal program and hunts for crashes, hangs, and terminals left in a broken
+state, then minimises whatever it finds into a tape file that replays it. See
+[Fuzzing a TUI](#fuzzing-a-tui).
+
 ## Requirements
 
 - Go 1.25 or newer.
@@ -169,6 +174,7 @@ result.
 func (t *Terminal) SendKeys(items ...any) error
 func (t *Terminal) Type(s string) error
 func (t *Terminal) SendMouse(ev MouseEvent) error
+func (t *Terminal) Paste(s string) error
 func (t *Terminal) Resize(cols, rows int) error
 ```
 
@@ -185,6 +191,10 @@ and `Alt(k any)` prefixes with ESC.
 `SendMouse` emits SGR (mode 1006) sequences. It writes them unconditionally, so
 a program that never enabled mouse reporting simply will not react.
 
+`Paste` wraps text in bracketed-paste markers (mode 2004), the way a terminal
+delivers a real paste. Programs take a different code path for pasted text than
+for typed text, and it is usually the less tested one.
+
 ### Waiting
 
 ```go
@@ -192,8 +202,16 @@ func (t *Terminal) WaitForText(substr string, timeout time.Duration) error
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error
 func (t *Terminal) WaitStable(timeout time.Duration) error
+func (t *Terminal) WaitForOutput(timeout time.Duration) error
 func (t *Terminal) Wait(timeout time.Duration) (int, error)
 ```
+
+`WaitStable` and `WaitForOutput` answer different questions and are easy to
+confuse. `WaitStable` waits for output to go quiet, which is what you want after
+a burst. `WaitForOutput` waits for the program to write something after the call
+begins, which is what you want after sending input: once the screen has settled,
+`WaitStable` is already satisfied and returns without the program having done
+anything at all.
 
 `Scope` is `ScopeScreen` (the whole screen) or `ScopeLastLine` (the last
 non-blank row, useful for prompts). A wait that times out returns
@@ -211,6 +229,26 @@ func (t *Terminal) LastCommandExit() (code int, ok bool)
 These synchronize on the shell's own prompt and command-finished markers, which
 is far more reliable than matching prompt text. Without the option they return
 an error rather than silently never firing.
+
+### Terminal state and exit status
+
+```go
+func (t *Terminal) TermState() TermState
+func (t *Terminal) ExitStatus() (ExitStatus, bool)
+func (t *Terminal) Progress() (bytes int64, last time.Time)
+```
+
+`TermState` reports the modes a program has left set: the alternate screen,
+mouse tracking, bracketed paste, focus reporting, and cursor visibility. Called
+after the child exits, `Dirty()` answers "did this program restore the
+terminal?", which is a common and user-visible bug: a TUI that exits without
+leaving the alternate screen or with mouse reporting still on leaves the user's
+shell unusable.
+
+`ExitStatus` separates a signal death from an ordinary non-zero exit, which
+`ExitCode` alone flattens to -1. `Crashed()` reports whether the child died in a
+way that indicates a bug, treating the signals used for teardown (SIGTERM,
+SIGKILL, SIGINT, SIGHUP) as routine.
 
 ### Reading the screen
 
@@ -295,8 +333,9 @@ Key Enter
 ExpectExit 0
 ```
 
-Commands: `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`, `WaitPrompt`,
-`WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Hide`, `Show`, `Sleep`.
+Commands: `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`, `WaitOutput`,
+`WaitPrompt`, `WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Resize`,
+`Mouse`, `Paste`, `Raw`, `Hide`, `Show`, `Sleep`.
 
 `Set` accepts `Size cols rows`, `Term name`, `Env KEY=VALUE`, `WaitTimeout dur`
 and `StabilizeInterval dur`. The wait-like commands take an optional `/regex/`,
@@ -305,6 +344,99 @@ the literal spacing of the rest of its line. `Hide` makes subsequent `Snapshot`
 commands no-ops until `Show`, which is how you skip capture during setup steps.
 Golden files default to `./testdata`. Under `-strict`, `Sleep` is rejected,
 which is a useful way to keep a suite honest.
+
+`Resize cols rows` changes the terminal size mid-tape. `Mouse` takes an action,
+a button, a column and a row, plus optional `+Ctrl`, `+Alt`, and `+Shift`, as in
+`Mouse Press Left 10 5 +Ctrl`. `Paste` and `Raw` take a Go-quoted string, which
+is what lets them carry arbitrary bytes, including malformed UTF-8 and embedded
+escape sequences: `Raw "\x1b[1;2;3m"`. `Paste` wraps its text in bracketed-paste
+markers; `Raw` writes the bytes exactly as given.
+
+## Fuzzing a TUI
+
+`tuitest fuzz` drives a program with randomised but structured input and reports
+the ways a TUI breaks. When it finds something it minimises the input and writes
+a tape file that replays it, because a fuzzer that reports a failure without a
+reproduction is not actionable.
+
+```
+tuitest fuzz -- ./myapp
+tuitest fuzz -seed 42 -iterations 200 -corpus testdata/fuzz -- ./myapp
+tuitest fuzz -duration 5m -exclude Ctrl+c -- ./myapp
+```
+
+### What it sends
+
+Structured input, not byte noise: printable text mixing ASCII, CJK, emoji and
+combining marks; navigation, function and control keys; mouse clicks, wheels and
+coherent drags, including coordinates outside the grid; bracketed-paste bursts;
+and rapid resizes weighted toward degenerate sizes such as one column, one row,
+and very large grids.
+
+It also sends deliberately hostile bytes, because a TUI parses its own stdin
+looking for key and mouse sequences and that parser sees bytes it did not
+produce: truncated and unterminated escape sequences, malformed UTF-8 (bare
+continuation bytes, overlong encodings, surrogate halves), enormous parameter
+counts, and numeric parameters far past what fits in an integer.
+
+### What it detects
+
+| Finding | What it means |
+| --- | --- |
+| `crash` | The program died from a fault signal or exited non-zero. |
+| `hang` | The program is alive but stopped answering input. |
+| `dirty-terminal` | It exited without restoring the terminal. |
+| `screen-inconsistent` | The screen model contradicts itself, such as a cursor outside the grid. |
+| `memory-growth` | Resident memory grew past `-max-memory-growth` (Linux only, off by default). |
+
+A clean exit is never a finding: the fuzzer sends keys that legitimately quit a
+program, and treating that as a bug would make every run a false positive.
+
+`dirty-terminal` is the highest-value check in practice. It is a real bug class,
+it is common, and unlike the others it has almost no false-positive surface,
+because a program that turned a mode on is unambiguously responsible for turning
+it off.
+
+### Reproductions
+
+Every finding is minimised by delta debugging: chunks of input are deleted while
+the same failure still occurs, then the survivors are simplified individually.
+The result is written as an ordinary tape, so it runs under `tuitest run` with
+no fuzz-specific tooling and can be committed as a regression test.
+
+```
+# crash: program killed by aborted
+# found by tuitest fuzz at seed 13064056694810536104, iteration 6
+# minimised from 31 commands to 3
+#
+# replay with: tuitest run <this file>
+
+Spawn htop
+Resize 1 1
+Raw "hel"
+```
+
+That is a real reproduction, minimised from 31 commands to 3. It is a buffer
+overflow in htop 3.5.1, caught by glibc's fortify check.
+
+With `-corpus dir`, findings are saved there and replayed first on the next run,
+which turns them into a regression suite: a fix is confirmed when the corpus
+stops reproducing. `-seed` makes a session repeatable, and every reported
+failure carries the seed that found it.
+
+### Tuning it
+
+`-exclude Ctrl+c,q` stops the fuzzer sending keys that quit the program early.
+`-no-hostile`, `-no-mouse` and `-no-resize` narrow the input space.
+`-hang-after` sets how long a live program may ignore input before it counts as
+hung. `-iterations` and `-duration` bound the run; one of them must be set.
+
+Hang detection is the one heuristic here, and it is deliberately conservative.
+A program is allowed to ignore input, so silence alone proves nothing: the check
+requires several unanswered input events and then waits the full grace period
+for a response. It is tuned to avoid false positives rather than to catch every
+hang, so it will miss a wedge whose evidence is muddied by output that was
+already in flight.
 
 ## How it works
 
@@ -350,8 +482,9 @@ Known limitations, in rough order of how likely you are to hit them:
 - **`WaitStable` can observe a pre-action frame.** Called immediately after
   sending input, the quiet window can elapse before the program has reacted, and
   it will report stability against the old screen. Wait for the expected content
-  with `WaitForText`, `WaitForMatch` or `WaitFor` instead; reach for `WaitStable`
-  only after heavy output where no specific end state is known.
+  with `WaitForText`, `WaitForMatch` or `WaitFor`, or for any reaction at all
+  with `WaitForOutput`; reach for `WaitStable` only after heavy output where no
+  specific end state is known.
 - **The VT emulator is a vendored copy** of tuios's interpreter rather than an
   external dependency, so it does not pick up upstream fixes automatically.
 - **Emulator throughput is a few thousand lines per second.** A program that
@@ -359,6 +492,11 @@ Known limitations, in rough order of how likely you are to hit them:
   accordingly rather than assuming an instant drain.
 - **`SendMouse` only speaks SGR (1006).** The older X10 and UTF-8 mouse
   encodings are not emitted.
+- **Fuzzing cannot see inside the program.** Crashes, exit status, and terminal
+  state are observed from outside, so there is no coverage guidance and no
+  goroutine accounting; memory growth is read from `/proc` and is Linux only.
+  Hang detection is a heuristic tuned to avoid false positives, so it misses
+  some real hangs.
 
 ## Comparison with the alternatives
 
@@ -416,6 +554,14 @@ go test -race ./...
 
 The default suite is hermetic: it spawns a small Go echo-TUI fixture under
 `testdata/echotui` and a plain `sh`, and requires no tuios.
+
+The fuzzer is tested against `testdata/buggytui`, a fixture with deliberate,
+individually selectable bugs: one that panics on a specific key, one that wedges
+when resized to a single column, and one that exits without restoring the
+terminal. The tests assert that the fuzzer finds each of them and minimises a
+tape that reproduces it. Just as importantly, the same fixture has a `none` mode
+that is well behaved, and a test asserts that the detectors stay silent on it
+across several seeds; that control is what keeps the fuzzer from becoming noise.
 
 ## License
 
