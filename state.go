@@ -11,6 +11,10 @@ import (
 // after itself. These are the DEC private modes a full-screen TUI turns on at
 // startup and is expected to turn off before exiting.
 const (
+	// modeAltScreenBare is the original alternate screen, still used as smcup
+	// by older terminfo entries. A program that leaves it set has damaged the
+	// user's shell just as thoroughly as one that leaves 1049 set.
+	modeAltScreenBare       = 47
 	modeAltScreen           = 1047
 	modeAltScreenSaveCursor = 1049
 	modeMouseX10            = 9
@@ -75,7 +79,7 @@ func (t *Terminal) TermState() TermState {
 	modes := t.emu.Modes()
 	_, _, visible := t.emu.Cursor()
 	return TermState{
-		AltScreen:      modes[modeAltScreen] || modes[modeAltScreenSaveCursor],
+		AltScreen:      modes[modeAltScreenBare] || modes[modeAltScreen] || modes[modeAltScreenSaveCursor],
 		MouseTracking:  modes[modeMouseX10] || modes[modeMouseNormal] || modes[modeMouseHighlight] || modes[modeMouseButtonEvent] || modes[modeMouseAnyEvent],
 		BracketedPaste: modes[modeBracketedPaste],
 		FocusReporting: modes[modeFocusEvent],

@@ -255,6 +255,17 @@ func (s *Screen) InsertCell(n int) {
 	s.buf.InsertCellArea(x, y, n, s.blankCell(), s.scroll)
 }
 
+// insertCellsAt shifts the cells at and after (x, y) n columns to the right,
+// dropping whatever falls off the right margin. It is what insert mode
+// ([ansi.IRM]) does before each printed character, which is why it takes an
+// explicit position rather than using the cursor.
+func (s *Screen) insertCellsAt(x, y, n int) {
+	if n <= 0 {
+		return
+	}
+	s.buf.InsertCellArea(x, y, n, s.blankCell(), s.scroll)
+}
+
 // DeleteCell deletes n cells at the cursor position moving cells to the left.
 // This has no effect if the cursor is outside the scroll region.
 func (s *Screen) DeleteCell(n int) {
