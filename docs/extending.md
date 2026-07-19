@@ -129,6 +129,14 @@ the root package and leave `tape` alone.
 `*fuzz.Result` with one `*fuzz.Failure` per distinct kind found, so a project
 can run the fuzzer from its own `go test` rather than from the CLI.
 
+Doing so is the only way to reach `Options.Invariants`, the fuzzer's one oracle
+that knows anything about the program under test. An invariant is a
+`func(tuitest.Screen) error` and nothing more; a Go closure over `Screen` is
+already all the expressiveness a property needs, which is why there is no
+property language here and will not be one. See
+[fuzzing.md](fuzzing.md#invariants) for what it costs to write one that does not
+produce false positives.
+
 ## Add project-specific helpers
 
 [`tuiosx`](../tuiosx/tuiosx.go) is the worked example: 69 lines of tuios-specific

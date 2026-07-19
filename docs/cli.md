@@ -196,6 +196,7 @@ tuitest fuzz -duration 5m -exclude Ctrl+c -- ./myapp
 | `-settle DUR` | `2s` | Bound on each wait inside an iteration. |
 | `-max-memory-growth F` | `0` (off) | Fail if RSS grows by this factor. Linux only. |
 | `-allow-dirty-exit` | off | Do not report a program that leaves the terminal dirty. |
+| `-detect-replacement-chars` | off | Report U+FFFD on screen. Only meaningful with `-no-hostile`. |
 | `-stop-on-first` | off | Stop at the first failure instead of looking for distinct ones. |
 | `-q` | off | Only print the summary. |
 
@@ -204,6 +205,10 @@ to zero is an error rather than an infinite loop. Ctrl+C ends a session cleanly,
 so an interrupted run still reports and still keeps the corpus entries it found.
 Without `-corpus` there is nowhere to write a reproduction, so it is printed to
 stdout instead: a failure without a reproduction is not actionable.
+
+There is no flag for screen invariants. They are `func(tuitest.Screen) error`
+closures passed in `fuzz.Options.Invariants`, and a command line cannot carry a
+Go closure. See [fuzzing.md](fuzzing.md#invariants).
 
 ## doctor
 

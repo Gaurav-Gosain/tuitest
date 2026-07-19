@@ -376,16 +376,34 @@ different keyboard modes than the recording did, and how to add a protocol.
 ## Fuzzing a TUI
 
 `tuitest fuzz` drives a program with randomised but structured input and reports
-five kinds of finding: `crash`, `hang`, `dirty-terminal`, `screen-inconsistent`,
-and `memory-growth` (Linux only, off unless `-max-memory-growth` is set). A
-clean exit is never a finding, because the fuzzer sends keys that legitimately
-quit a program and treating that as a bug would make every run a false positive.
+seven kinds of finding: `crash`, `hang`, `dirty-terminal`, `screen-inconsistent`,
+`memory-growth` (Linux only, off unless `-max-memory-growth` is set),
+`replacement-char` (off unless `-detect-replacement-chars` is set), and
+`invariant`. A clean exit is never a finding, because the fuzzer sends keys that
+legitimately quit a program and treating that as a bug would make every run a
+false positive.
 
 `dirty-terminal` is the highest-value check in practice: it is a real bug class,
 it is common, and unlike the others it has almost no false-positive surface,
 because a program that turned a mode on is unambiguously responsible for turning
 it off. Hang detection is the one heuristic, and it is tuned to stay quiet
 rather than to catch everything.
+
+`invariant` is the only oracle that knows anything about your program. Pass
+`func(tuitest.Screen) error` closures in `fuzz.Options.Invariants` and a session
+can find that a status bar disappeared or a modal was left open, not just that
+the program died. A violation is an ordinary finding, so the shrinker minimises
+it like any other, and the report names the command after which the property
+first failed rather than the one where the checker noticed. It is checked only
+after a settle, because a screen caught mid-redraw fails a reasonable invariant.
+There is no CLI flag: a tape file cannot carry a Go closure.
+
+`replacement-char` reports U+FFFD reaching the screen, which means the program
+mangled a byte sequence between reading it and drawing it. It is off by default
+and goes quiet for a run as soon as the fuzzer sends malformed UTF-8, because
+against malformed input a replacement character is the correct output rather
+than a bug. Both of these are documented with their limits in
+[docs/fuzzing.md](docs/fuzzing.md).
 
 Every finding is minimised by delta debugging and written as an ordinary tape:
 
@@ -460,6 +478,13 @@ ones most likely to matter:
   property the fuzzer does not guarantee: confirmation drives a real program
   through a real PTY. They pass in isolation and fail intermittently when the
   machine is busy. See [docs/limits.md](docs/limits.md).
+- **The fuzzer's two oracles are gated, and each gate costs coverage.** The
+  replacement-character check goes quiet for a whole run once one malformed byte
+  has been sent, which with the default generator is almost immediately.
+  User-supplied invariants are judged only at a settle, so a violation that
+  repairs itself before the end of an iteration is never seen. Both gates were
+  chosen over the alternative because a fuzzer that reports things that are not
+  bugs trains you to stop reading it.
 - **Fuzz generation is blind.** There is no coverage instrumentation of the
   program under test, so input comes from a structural model rather than being
   steered toward new code paths. It finds shallow bugs quickly and deep ones

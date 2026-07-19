@@ -40,6 +40,11 @@ type Options struct {
 	Gen Config
 	// Limits bounds what the detectors accept.
 	Limits Limits
+	// Invariants are properties of the screen the program is expected to
+	// maintain, checked alongside the built-in detectors. They are a Go-API
+	// feature: a tape file cannot express a Go closure, so the CLI has no way
+	// to set them.
+	Invariants []Invariant
 	// StopOnFirst ends the session as soon as one failure is found, instead of
 	// continuing to look for distinct ones.
 	StopOnFirst bool
@@ -112,7 +117,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	start := time.Now()
 	res := &Result{Seed: opts.Seed}
-	seen := map[FailureKind]bool{}
+	// Findings are deduplicated by kind, plus the invariant name for an
+	// invariant failure, so two different violated invariants stay two
+	// findings rather than the second being swallowed as a repeat of the
+	// first.
+	seen := map[string]bool{}
 
 	// Replay the corpus first. Cases found on an earlier run are the most
 	// likely to fail again, so checking them before generating anything new
@@ -123,10 +132,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, f := range found {
-			if seen[f.Kind] {
+			if seen[failureKey(f)] {
 				continue
 			}
-			seen[f.Kind] = true
+			seen[failureKey(f)] = true
 			res.Failures = append(res.Failures, f)
 			logf(opts.Out, "corpus case still fails: %s: %s\n", f.Kind, f.Detail)
 		}
@@ -180,13 +189,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		failure.Iteration = i
 		failure.Original = len(cmds)
 
-		if seen[failure.Kind] {
+		if seen[failureKey(failure)] {
 			// Already have a reproduction for this kind; a second one of the
 			// same kind is usually the same bug, and reporting it again adds
 			// noise rather than information.
 			continue
 		}
-		seen[failure.Kind] = true
+		seen[failureKey(failure)] = true
 
 		logf(opts.Out, "iteration %d: %s: %s\n", i, failure.Kind, failure.Detail)
 
@@ -201,12 +210,23 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// confirmation run's screen and detail replace the originals, because
 		// the ones captured before minimisation describe input the tape no
 		// longer contains and would contradict it.
-		if confirmed := drive(ctx, opts, failure.Commands); confirmed != nil && confirmed.Kind == failure.Kind {
+		if confirmed := drive(ctx, opts, failure.Commands); sameFailure(confirmed, failure) {
 			failure.Verified = true
 			failure.Screen = confirmed.Screen
 			failure.Detail = confirmed.Detail
+			// The onset is an index into Commands, and minimisation renumbered
+			// them, so the original one now points at the wrong command. The
+			// confirmation ran the minimised tape, so its onset is the one that
+			// matches the file the user is handed.
+			failure.Onset = confirmed.Onset
 		} else {
 			logf(opts.Out, "  warning: minimised input did not reproduce on confirmation; the failure may be timing dependent\n")
+		}
+		if failure.Onset > len(failure.Commands) {
+			// Neither minimisation nor confirmation produced an onset for this
+			// command list, so the one carried over indexes commands that are
+			// no longer there. Better to report none than a wrong one.
+			failure.Onset = 0
 		}
 
 		res.Failures = append(res.Failures, failure)
@@ -267,7 +287,7 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 		err := p.Exec(c)
 
 		if mon == nil && p.Terminal() != nil {
-			mon = newMonitor(p.Terminal(), opts.Limits, opts.Gen.Cols, opts.Gen.Rows)
+			mon = newMonitor(p.Terminal(), opts.Limits, opts.Gen.Cols, opts.Gen.Rows, opts.Invariants)
 		}
 		if mon == nil {
 			if err != nil {
@@ -301,6 +321,16 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 			return withCommands(f, executed), nil
 		}
 
+		// Invariants are evaluated after every command but only reported after
+		// a settle, so a screen caught mid-redraw updates the streak without
+		// producing a finding. See monitor.reportInvariants.
+		mon.observeInvariants()
+		if isSettle(c) {
+			if f := mon.reportInvariants(false); f != nil {
+				return withCommands(f, executed), nil
+			}
+		}
+
 		if _, exited := p.Terminal().ExitStatus(); exited {
 			break
 		}
@@ -318,6 +348,15 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 	settle(p.Terminal(), opts.SettleTimeout)
 
 	if f := mon.check(); f != nil {
+		return withCommands(f, executed), nil
+	}
+	// The settle is the last and best-founded evaluation point of the run: the
+	// program has been given the chance to finish drawing everything it was
+	// sent, so anything still violated here is violated for real. cmdIndex is
+	// left on the last command, so a violation first seen here is attributed to
+	// it rather than to an index past the end of the tape.
+	mon.observeInvariants()
+	if f := mon.reportInvariants(true); f != nil {
 		return withCommands(f, executed), nil
 	}
 	// Hang detection runs last and only here, because unlike the other checks
@@ -364,6 +403,18 @@ func withCommands(f *Failure, cmds []tape.Command) *Failure {
 	return f
 }
 
+// isSettle reports whether a command leaves the program quiesced. Only
+// WaitStable does: it returns when output has stopped, which is the only
+// in-tape evidence that a redraw has finished. WaitOutput returns on the first
+// byte of a frame, which is the opposite, and a bounded Wait is an arbitrary
+// sleep. Treating either as a settle was tried and produced exactly the false
+// positive the gate exists to prevent: a resize to 1000 rows takes longer to
+// draw than a 200ms WaitOutput, so the next check saw a half-drawn screen and
+// reported it.
+func isSettle(c tape.Command) bool {
+	return c.Kind == tape.KindWaitStable
+}
+
 func isWait(c tape.Command) bool {
 	switch c.Kind {
 	case tape.KindWait, tape.KindWaitStable, tape.KindWaitOutput, tape.KindWaitPrompt, tape.KindWaitCommand:
@@ -380,6 +431,16 @@ func isTimeout(err error) bool {
 	var to *tuitest.TimeoutError
 	var cl *tuitest.ClosedError
 	return errors.As(err, &to) || errors.As(err, &cl)
+}
+
+// failureKey identifies a finding for deduplication. It is the kind, narrowed
+// by the invariant name where there is one, since every invariant is a distinct
+// property and a violation of one says nothing about another.
+func failureKey(f *Failure) string {
+	if f.Kind == FailInvariant {
+		return string(f.Kind) + "\x00" + f.Invariant
+	}
+	return string(f.Kind)
 }
 
 func logf(w io.Writer, format string, args ...any) {
