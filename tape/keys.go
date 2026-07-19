@@ -8,38 +8,6 @@ import (
 	"github.com/Gaurav-Gosain/tuitest"
 )
 
-var namedKeys = map[string]tuitest.Key{
-	"Enter":     tuitest.Enter,
-	"Return":    tuitest.Enter,
-	"Tab":       tuitest.Tab,
-	"Esc":       tuitest.Esc,
-	"Escape":    tuitest.Esc,
-	"Space":     tuitest.Space,
-	"Backspace": tuitest.Backspace,
-	"Delete":    tuitest.Delete,
-	"Insert":    tuitest.Insert,
-	"Up":        tuitest.Up,
-	"Down":      tuitest.Down,
-	"Left":      tuitest.Left,
-	"Right":     tuitest.Right,
-	"Home":      tuitest.Home,
-	"End":       tuitest.End,
-	"PageUp":    tuitest.PageUp,
-	"PageDown":  tuitest.PageDown,
-	"F1":        tuitest.F1,
-	"F2":        tuitest.F2,
-	"F3":        tuitest.F3,
-	"F4":        tuitest.F4,
-	"F5":        tuitest.F5,
-	"F6":        tuitest.F6,
-	"F7":        tuitest.F7,
-	"F8":        tuitest.F8,
-	"F9":        tuitest.F9,
-	"F10":       tuitest.F10,
-	"F11":       tuitest.F11,
-	"F12":       tuitest.F12,
-}
-
 // ResolveKey turns a tape key token such as "Enter", "Ctrl+b", "Alt+x", or a
 // bare rune like "%" into the byte sequence a terminal would send.
 //

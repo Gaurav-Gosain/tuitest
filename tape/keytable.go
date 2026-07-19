@@ -1,9 +1,6 @@
 package tape
 
-import (
-	"sort"
-	"strings"
-)
+import "strings"
 
 // This file holds the one description of what keys exist and how they are
 // spelled on the wire. The legacy, modifyOtherKeys and kitty protocols all read
@@ -159,29 +156,43 @@ func modString(mask int) string {
 // is the last '+'-separated field, which is why a literal '+' key is spelled as
 // the last field and still parses.
 func splitToken(tok string) (mask int, base string, ok bool) {
-	parts := strings.Split(tok, "+")
-	// A trailing empty field means the token ends in '+', so '+' is the base.
-	if len(parts) > 1 && parts[len(parts)-1] == "" {
-		parts = append(parts[:len(parts)-1], "+")
+	if tok == "" {
+		return 0, "", false
 	}
-	base = parts[len(parts)-1]
-	for _, p := range parts[:len(parts)-1] {
-		bit, known := modAliases[p]
-		if !known {
-			return 0, "", false
+
+	mods := ""
+	if strings.HasSuffix(tok, "+") {
+		// The token names '+' itself. What precedes it is the modifier
+		// list, which must end with the '+' that separates it from the
+		// base: "Ctrl++" is Ctrl and '+', while a bare "Ctrl+" names no
+		// key at all and is rejected.
+		base = "+"
+		mods = tok[:len(tok)-1]
+		if mods != "" {
+			if !strings.HasSuffix(mods, "+") {
+				return 0, "", false
+			}
+			mods = mods[:len(mods)-1]
 		}
-		mask |= bit
+	} else {
+		i := strings.LastIndex(tok, "+")
+		if i < 0 {
+			return 0, tok, true
+		}
+		base, mods = tok[i+1:], tok[:i]
+	}
+
+	if base == "" {
+		return 0, "", false
+	}
+	if mods != "" {
+		for _, p := range strings.Split(mods, "+") {
+			bit, known := modAliases[p]
+			if !known {
+				return 0, "", false
+			}
+			mask |= bit
+		}
 	}
 	return mask, base, true
-}
-
-// namedKeyList returns the known key names sorted, for error messages that
-// suggest what the writer might have meant.
-func namedKeyList() []string {
-	out := make([]string, 0, len(keyByName))
-	for name := range keyByName {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
 }

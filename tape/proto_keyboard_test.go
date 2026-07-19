@@ -418,3 +418,120 @@ func TestPlayerSendsKeyAttributes(t *testing.T) {
 		})
 	}
 }
+
+// TestWhatSurvivesTheTapeFile pins exactly how much of the mode context a tape
+// file carries, because the answer is not "all of it" and the difference
+// matters when reading a recording made under kitty.
+//
+// A tape stores keys, not bytes. The mode context a key was decoded under lives
+// in memory during recording but is not written to the file, so a plain chord
+// comes back with no modes and replays in the legacy spelling. That is
+// behaviourally equivalent: a program that negotiated kitty still accepts the
+// legacy encoding.
+//
+// What must survive is everything the legacy encoding cannot express, since
+// that is information rather than spelling. Those keys carry attributes, and
+// attributes are written to the file and force the kitty encoding on replay.
+func TestWhatSurvivesTheTapeFile(t *testing.T) {
+	kitty := Modes{KittyFlags: 1}
+
+	tests := []struct {
+		name   string
+		in     string
+		tape   string
+		replay string
+	}{
+		{
+			name: "a plain chord reverts to the legacy spelling",
+			in:   "\x1b[97;5u", tape: "Key Ctrl+a", replay: "\x01",
+		},
+		{
+			name: "a release event survives exactly",
+			in:   "\x1b[97;1:3u", tape: "Key a +Release", replay: "\x1b[97;1:3u",
+		},
+		{
+			name: "associated text survives exactly",
+			in:   "\x1b[97;;225u", tape: `Key a +Text "á"`, replay: "\x1b[97;;225u",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := strings.TrimSpace(Sprint(decodeUnder([]byte(tc.in), kitty)))
+			if src != tc.tape {
+				t.Fatalf("tape line = %q, want %q", src, tc.tape)
+			}
+
+			back, err := Parse(strings.NewReader(src + "\n"))
+			if err != nil {
+				t.Fatalf("re-parse: %v", err)
+			}
+			out, err := encodeCommands(back)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			if string(out) != tc.replay {
+				t.Fatalf("replays as %q, want %q", out, tc.replay)
+			}
+		})
+	}
+}
+
+// TestPlusIsAKeyName covers the one character that is both the modifier
+// separator and a key. A token ending in '+' names '+' itself; what precedes it
+// is the modifier list, which must carry its own separator.
+func TestPlusIsAKeyName(t *testing.T) {
+	ok := map[string]string{
+		"+":     "+",     // the plus key, unmodified
+		"Alt++": "\x1b+", // Alt and plus
+	}
+	for tok, want := range ok {
+		got, err := ResolveKey(tok)
+		if err != nil {
+			t.Errorf("ResolveKey(%q): %v", tok, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("ResolveKey(%q) = %q, want %q", tok, got, want)
+		}
+	}
+
+	// "Ctrl+" names a modifier with no key, and "C+" is the same mistake in
+	// the short spelling. Both are rejected rather than silently read as the
+	// plus key.
+	for _, tok := range []string{"Ctrl+", "C+"} {
+		if _, err := ResolveKey(tok); err == nil {
+			t.Errorf("ResolveKey(%q) succeeded, want an error", tok)
+		}
+	}
+}
+
+// TestCtrlWithoutALegacyEncoding pins which Ctrl chords the legacy encoding can
+// actually carry. Ctrl and '+' would send 0x0b, which reads back as Ctrl+k, so
+// encoding it that way would silently change the key. It has no legacy
+// spelling, and belongs to modifyOtherKeys or kitty.
+func TestCtrlWithoutALegacyEncoding(t *testing.T) {
+	if _, err := ResolveKey("Ctrl++"); err == nil {
+		t.Error("Ctrl++ resolved under the legacy encoding, want an error")
+	}
+
+	// Under kitty it has a faithful encoding, and it round-trips.
+	kitty := Modes{KittyFlags: 1}
+	seq, err := ResolveKeyModes("Ctrl++", kitty)
+	if err != nil {
+		t.Fatalf("Ctrl++ under kitty: %v", err)
+	}
+	if c := decodeOne(t, string(seq), kitty); c.Keys[0] != "Ctrl++" {
+		t.Errorf("Ctrl++ under kitty decoded as %q", c.Keys[0])
+	}
+
+	// The chords that do have a legacy encoding still work.
+	for tok, want := range map[string]string{
+		"Ctrl+a": "\x01", "Ctrl+@": "\x00", "Ctrl+[": "\x1b", "Ctrl+_": "\x1f",
+	} {
+		got, err := ResolveKey(tok)
+		if err != nil || string(got) != want {
+			t.Errorf("ResolveKey(%q) = %q, %v; want %q", tok, got, err, want)
+		}
+	}
+}

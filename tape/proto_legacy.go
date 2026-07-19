@@ -126,11 +126,13 @@ func (p legacyKeys) decodeCSI(buf []byte, m Modes) (int, []Command, Result) {
 				return 0, nil, NoMatch
 			}
 			// A function key in the SS3 family reaches the CSI form only
-			// when it carries the explicit "1;mod" parameters, because
-			// its unmodified spelling is SS3. Without this rule a bare
-			// CSI R would decode as F3, when in fact it is the cursor
-			// position report; the same collision exists for CSI S.
-			if len(params) < 2 {
+			// when it carries an explicit, non-default modifier, because
+			// its unmodified spelling is SS3. Without this rule CSI R
+			// would decode as F3, when in fact it is the cursor position
+			// report; the same collision exists for CSI S. An omitted or
+			// empty modifier is a default rather than an explicit one, so
+			// CSI 1;R is not F3 either.
+			if len(params) < 2 || params[1] < 1 {
 				return 0, nil, NoMatch
 			}
 			d = ss3
@@ -214,7 +216,7 @@ func encodeKeyToken(tok string, m Modes) ([]byte, bool) {
 	}
 	switch {
 	case mask&modCtrl != 0:
-		if mask&^(modCtrl|modAlt) != 0 {
+		if mask&^(modCtrl|modAlt) != 0 || !hasLegacyCtrl(r) {
 			return nil, false
 		}
 		return withAlt(mask&modAlt, []byte{ctrlByte(r)})
@@ -362,4 +364,20 @@ func runeToken(r rune) string {
 		return "Space"
 	}
 	return string(r)
+}
+
+// hasLegacyCtrl reports whether Ctrl combined with this rune has a legacy
+// encoding that decodes back to the same key. Only the letters and the six
+// punctuation marks whose low five bits are unique do; Ctrl and '+' would
+// produce 0x0b, which reads back as Ctrl+k, so it has no legacy spelling and
+// belongs to modifyOtherKeys or kitty instead.
+func hasLegacyCtrl(r rune) bool {
+	if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+		return true
+	}
+	switch r {
+	case '@', '[', '\\', ']', '^', '_':
+		return true
+	}
+	return false
 }

@@ -140,9 +140,31 @@ kitty was negotiated, even if the mode mirror missed the enabling sequence.
 
 This case is subtle and worth stating plainly.
 
-A tape stores *keys*, not bytes (except for `Raw`, which stores bytes). On
-replay each key is re-encoded under the modes recorded with it, **not** under
-whatever the program negotiates this time. The consequences:
+A tape stores *keys*, not bytes (except for `Raw`, which stores bytes).
+
+**What the file carries.** The mode context a key was decoded under lives in
+memory during recording but is **not** written to the tape. So a plain chord
+recorded under kitty comes back as `Key Ctrl+a` with no modes and replays in the
+legacy spelling `0x01` rather than `CSI 97;5u`. That is behaviourally
+equivalent, since a program that negotiated kitty still accepts the legacy
+encoding, and it keeps recordings readable and portable.
+
+What does survive is everything the legacy encoding *cannot* express, because
+that is information rather than spelling. Those keys carry attributes, and
+attributes are written to the file and force the kitty encoding on replay:
+
+| Recorded | Tape line | Replays as |
+| --- | --- | --- |
+| `CSI 97;5u` | `Key Ctrl+a` | `0x01` (legacy spelling) |
+| `CSI 97;1:3u` | `Key a +Release` | `CSI 97;1:3u` (exact) |
+| `CSI 97;;225u` | `Key a +Text "á"` | `CSI 97;;225u` (exact) |
+
+`TestWhatSurvivesTheTapeFile` pins this, so it is a contract rather than an
+accident.
+
+**What happens at replay time.** Each key is re-encoded from what the tape says,
+**not** re-interpreted under whatever the program negotiates this time. The
+consequences:
 
 - **The program negotiates the same modes.** Everything replays as recorded.
   This is the normal case.
