@@ -34,6 +34,11 @@ const (
 	KindHide
 	KindShow
 	KindSleep
+	KindResize
+	KindMouse
+	KindPaste
+	KindRaw
+	KindWaitOutput
 )
 
 // Command is one parsed tape line.
@@ -70,6 +75,14 @@ type Command struct {
 
 	// Sleep
 	Dur time.Duration
+
+	// Resize
+	Cols, Rows int
+
+	// Mouse
+	Mouse tuitest.MouseEvent
+
+	// Paste / Raw carry their payload in Text.
 }
 
 // Parse reads a tape and returns its commands. Errors carry the source line.
@@ -147,6 +160,10 @@ func parseLine(raw string, lineNo int) (Command, error) {
 		c.Kind = KindWaitStable
 		return c, parseWaitLike(&c, rest)
 
+	case "WaitOutput":
+		c.Kind = KindWaitOutput
+		return c, parseWaitLike(&c, rest)
+
 	case "WaitPrompt":
 		c.Kind = KindWaitPrompt
 		return c, parseWaitLike(&c, rest)
@@ -190,6 +207,52 @@ func parseLine(raw string, lineNo int) (Command, error) {
 		}
 		return c, nil
 
+	case "Resize":
+		if len(rest) != 2 {
+			return c, fmt.Errorf("Resize needs cols and rows")
+		}
+		cols, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return c, fmt.Errorf("Resize cols: %w", err)
+		}
+		rows, err := strconv.Atoi(rest[1])
+		if err != nil {
+			return c, fmt.Errorf("Resize rows: %w", err)
+		}
+		if cols < 1 || rows < 1 {
+			return c, fmt.Errorf("Resize needs positive dimensions, got %dx%d", cols, rows)
+		}
+		c.Kind = KindResize
+		c.Cols, c.Rows = cols, rows
+		return c, nil
+
+	case "Mouse":
+		c.Kind = KindMouse
+		ev, err := parseMouse(rest)
+		if err != nil {
+			return c, err
+		}
+		c.Mouse = ev
+		return c, nil
+
+	case "Paste":
+		c.Kind = KindPaste
+		s, err := parseQuoted(raw, verb)
+		if err != nil {
+			return c, err
+		}
+		c.Text = s
+		return c, nil
+
+	case "Raw":
+		c.Kind = KindRaw
+		s, err := parseQuoted(raw, verb)
+		if err != nil {
+			return c, err
+		}
+		c.Text = s
+		return c, nil
+
 	case "Hide":
 		c.Kind = KindHide
 		return c, nil
@@ -213,6 +276,77 @@ func parseLine(raw string, lineNo int) (Command, error) {
 	default:
 		return c, fmt.Errorf("unknown command %q", verb)
 	}
+}
+
+// parseQuoted reads the Go-quoted string argument of a Paste or Raw line.
+// Quoting is what lets these carry arbitrary bytes, including the malformed
+// UTF-8 and embedded escapes a fuzz repro needs to replay exactly.
+func parseQuoted(raw, verb string) (string, error) {
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), verb))
+	if arg == "" {
+		return "", fmt.Errorf("%s needs a quoted string", verb)
+	}
+	s, err := strconv.Unquote(arg)
+	if err != nil {
+		return "", fmt.Errorf("%s argument must be a quoted string: %w", verb, err)
+	}
+	return s, nil
+}
+
+// Quote renders s as the quoted argument for a Paste or Raw line. It is the
+// inverse of parseQuoted and is what tape writers use to emit repro scripts.
+func Quote(s string) string { return strconv.Quote(s) }
+
+var mouseButtons = map[string]tuitest.MouseButton{
+	"Left":      tuitest.MouseLeft,
+	"Middle":    tuitest.MouseMiddle,
+	"Right":     tuitest.MouseRight,
+	"WheelUp":   tuitest.MouseWheelUp,
+	"WheelDown": tuitest.MouseWheelDown,
+}
+
+var mouseActions = map[string]tuitest.MouseAction{
+	"Press":   tuitest.MousePress,
+	"Release": tuitest.MouseRelease,
+	"Move":    tuitest.MouseMove,
+}
+
+// parseMouse reads "Mouse <Action> <Button> <col> <row> [+Ctrl +Alt +Shift]".
+func parseMouse(tokens []string) (tuitest.MouseEvent, error) {
+	var ev tuitest.MouseEvent
+	if len(tokens) < 4 {
+		return ev, fmt.Errorf("Mouse needs an action, button, col, and row")
+	}
+	action, ok := mouseActions[tokens[0]]
+	if !ok {
+		return ev, fmt.Errorf("unknown mouse action %q", tokens[0])
+	}
+	button, ok := mouseButtons[tokens[1]]
+	if !ok {
+		return ev, fmt.Errorf("unknown mouse button %q", tokens[1])
+	}
+	col, err := strconv.Atoi(tokens[2])
+	if err != nil {
+		return ev, fmt.Errorf("Mouse col: %w", err)
+	}
+	row, err := strconv.Atoi(tokens[3])
+	if err != nil {
+		return ev, fmt.Errorf("Mouse row: %w", err)
+	}
+	ev = tuitest.MouseEvent{Col: col, Row: row, Button: button, Action: action}
+	for _, tok := range tokens[4:] {
+		switch tok {
+		case "+Ctrl":
+			ev.Mods |= tuitest.ModCtrl
+		case "+Alt":
+			ev.Mods |= tuitest.ModAlt
+		case "+Shift":
+			ev.Mods |= tuitest.ModShift
+		default:
+			return ev, fmt.Errorf("unexpected mouse token %q", tok)
+		}
+	}
+	return ev, nil
 }
 
 // verbPrefix returns the leading whitespace + verb + one space, so the rest of a
