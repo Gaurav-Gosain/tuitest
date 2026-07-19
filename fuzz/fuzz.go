@@ -339,7 +339,7 @@ func settle(t *tuitest.Terminal, timeout time.Duration) {
 	// A program that is mid-exit has stopped writing but not yet been reaped.
 	// Give it a short grace period so the difference between "quit cleanly" and
 	// "still running" is decided by the program rather than by our timing.
-	_, _ = t.Wait(exitGrace)
+	_, _ = t.WaitExit(exitGrace)
 }
 
 // exitGrace is how long a quiesced program is given to finish exiting before

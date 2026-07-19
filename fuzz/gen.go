@@ -53,9 +53,9 @@ var textFragments = []string{
 	"the quick brown fox", "  leading spaces", "trailing spaces  ",
 	"café", "naïve", "über",
 	"你好", "こんにちは", "한글",
-	"\U0001f600", "\U0001f468‍\U0001f469‍\U0001f466", "\U0001f1ef\U0001f1f5",
+	"\U0001f600", "\U0001f468\u200d\U0001f469\u200d\U0001f466", "\U0001f1ef\U0001f1f5",
 	"é", "à́̂",
-	"​", "‎", "‮",
+	"\u200b", "\u200e", "\u202e",
 	"tab\there", "line\nbreak",
 	strings.Repeat("x", 200),
 }
