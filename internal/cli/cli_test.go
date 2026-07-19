@@ -417,6 +417,27 @@ func TestSnapTypeCapturesTheScreenAfterTheProgramReacts(t *testing.T) {
 	}
 }
 
+// A TUI that spends longer than the settle window starting up must still be
+// captured after it paints. WaitStable measures its quiet window from the
+// spawn, so without a first-output wait it reports a program that has not
+// written a byte as already settled and snap prints an empty screen. This is
+// the shape of the "snap captures nothing" reports against slow-starting
+// full-screen programs.
+// Verified to fail: removing the WaitForOutput call from capture makes this
+// print an empty screen instead of PAINTED.
+func TestSnapWaitsForASlowProgramToPaint(t *testing.T) {
+	sh := lookupShell(t)
+	code, stdout, stderr := runCLI(nil,
+		"snap", "-size", "30x6", "-timeout", "10s",
+		"--", sh, "-c", `sleep 0.5; printf 'PAINTED\n'; sleep 10`)
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "PAINTED") {
+		t.Errorf("snap captured the screen before the program painted:\n%q", stdout)
+	}
+}
+
 // Verified to fail: dropping WithEnv from capture makes the marker absent.
 func TestSnapEnvFlagReachesTheProgram(t *testing.T) {
 	sh := lookupShell(t)

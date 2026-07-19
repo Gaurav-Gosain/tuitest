@@ -184,6 +184,15 @@ func capture(o captureOpts) (captureResult, error) {
 	}
 	defer tt.Close() //nolint:errcheck
 
+	// Wait for the program's first byte before any quiet-window wait. WaitStable
+	// measures quiet from the spawn, so a TUI that takes longer than the settle
+	// interval to paint (btop and friends spend that long starting up) is
+	// reported settled while its screen is still blank, and snap prints an empty
+	// capture. A program that legitimately never writes is not an error, so a
+	// timeout here is ignored: the settle wait below still runs, and the capture
+	// is then blank because the program really did draw nothing.
+	_ = tt.WaitForOutput(o.timeout)
+
 	if o.typeIn != "" {
 		// Wait for the program to draw something before typing, so input is
 		// not delivered to a program that has not installed its handlers.
