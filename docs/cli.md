@@ -7,10 +7,14 @@ writing any Go.
 go install github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest
 ```
 
-The command set is a registry ([`internal/cli/cli.go`](../internal/cli/cli.go)),
-so help, shell completion, and the "did you mean" suggestion for an unknown
-command are all generated from the same list the dispatcher resolves against and
-cannot fall out of step with it.
+The command set is a cobra tree built in
+[`internal/cli/cli.go`](../internal/cli/cli.go) and executed through
+`charmbracelet/fang`, so help, shell completion, and the "did you mean"
+suggestion for an unknown command are all derived from the same tree and cannot
+fall out of step with it.
+
+Flags accept either spelling. `-size` and `--size` are the same flag, so every
+invocation written against the older single-dash command line still works.
 
 ## Exit codes
 
@@ -277,11 +281,14 @@ left alone.
 
 ## Shell completion
 
-Completion is generated from the command registry, so it never falls out of step
-with the commands themselves.
+Completion is cobra's. The script it writes resolves candidates by calling the
+binary back, so it never falls out of step with the commands, and it completes
+flag names, flag values and arguments as well as command names. `run` and
+`replay` offer tape files rather than every file in the directory.
 
 ```
 tuitest completion bash > /etc/bash_completion.d/tuitest
 tuitest completion zsh  > "${fpath[1]}/_tuitest"
 tuitest completion fish > ~/.config/fish/completions/tuitest.fish
+tuitest completion powershell | Out-String | Invoke-Expression
 ```

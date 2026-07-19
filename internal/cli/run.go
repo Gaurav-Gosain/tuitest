@@ -2,12 +2,12 @@ package cli
 
 import (
 	"encoding/json"
-	"flag"
 	"io"
 	"os"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest/tape"
+	"github.com/spf13/cobra"
 )
 
 // runResult is the -json shape for run.
@@ -21,13 +21,29 @@ type runResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
-func runCommand() *Command {
-	c := &Command{
-		Name:    "run",
-		Summary: "play a tape script against a program",
-		Usage:   "run [flags] script.tape",
-		Long: `Run parses a tape script and plays it against the program the tape spawns.
-Every assertion in the tape is checked; the first failure stops the run.
+func runCommand(env *Env) *cobra.Command {
+	var (
+		update    bool
+		strict    bool
+		goldenDir string
+		verbose   bool
+		jsonOut   bool
+		timeout   time.Duration
+		size      sizeFlag
+		envs      envFlag
+		term      string
+	)
+
+	c := &cobra.Command{
+		Use:   "run script.tape",
+		Short: "Play a tape script against a program",
+		Long: `Play a tape script against the program the tape spawns.
+
+This is the command CI runs. Every assertion in the tape is checked, the first
+failure stops the run, and the exit code says which kind of failure it was: 1
+for an assertion, 3 when the harness could not do its job, 4 for a wait that
+timed out. Nothing is written to the terminal on success, so a passing suite is
+silent.
 
 A tape is line oriented, one command per line, '#' starts a comment:
 
@@ -44,87 +60,90 @@ Commands: Set, Spawn, Type, Key, Wait, WaitStable, WaitOutput, WaitPrompt,
 WaitCommand, Expect, ExpectExit, Snapshot, Resize, Mouse, Paste, Raw, Focus,
 Hide, Show, Sleep.
 
-examples:
+A flag beats the tape's own Set line for the same setting, which is what makes
+--size useful for checking a layout at a second size without editing the file.
+--env accumulates instead, since environment entries add up.`,
+		Example: `  # play a tape; exit 0 when every assertion holds
   tuitest run login.tape
-  tuitest run -update login.tape            rewrite the golden files
-  tuitest run -strict login.tape            reject Sleep, forcing real waits
-  tuitest run -size 120x40 login.tape       override the tape's size
-  tuitest run -env NO_COLOR=1 login.tape    pass an environment variable
-  tuitest run -json login.tape              emit one JSON object for CI
-  tuitest run -v login.tape                 mirror PTY traffic to stderr`,
-	}
 
-	var (
-		update    bool
-		strict    bool
-		goldenDir string
-		verbose   bool
-		jsonOut   bool
-		timeout   time.Duration
-		size      sizeFlag
-		envs      envFlag
-		term      string
-	)
-	c.flags = func() *flag.FlagSet {
-		fs := newFlagSet("run")
-		fs.BoolVar(&update, "update", false, "rewrite golden snapshots instead of comparing")
-		fs.BoolVar(&strict, "strict", false, "treat Sleep as an error, so the tape must wait on conditions")
-		fs.StringVar(&goldenDir, "golden-dir", "", "directory for golden files (default \"testdata\")")
-		fs.BoolVar(&verbose, "v", false, "mirror PTY I/O to stderr")
-		fs.BoolVar(&jsonOut, "json", false, "print one JSON result object to stdout")
-		fs.DurationVar(&timeout, "timeout", 0, "default wait timeout, overriding the tape's Set WaitTimeout")
-		fs.Var(&size, "size", "terminal size as COLSxROWS, overriding the tape's Set Size")
-		fs.Var(&envs, "env", "environment variable KEY=VALUE for the program under test (repeatable)")
-		fs.StringVar(&term, "term", "", "TERM value, overriding the tape's Set Term")
-		return fs
-	}
+  # rewrite the golden files rather than comparing against them
+  tuitest run --update login.tape
 
-	c.Run = func(env *Env, args []string) int {
-		fs := c.flags()
-		if err := parseFlags(env, c, fs, args); err != nil {
-			return ExitUsage
-		}
-		if fs.NArg() != 1 {
-			env.errorf("run needs exactly one tape file, got %d", fs.NArg())
-			printCommandHelp(env.Stderr, c)
-			return ExitUsage
-		}
-		tapePath := fs.Arg(0)
+  # reject Sleep, forcing the tape to wait on conditions instead
+  tuitest run --strict login.tape
 
-		start := time.Now()
-		err := playTape(env, tapePath, playOpts{
-			update:    update,
-			strict:    strict,
-			goldenDir: goldenDir,
-			verbose:   verbose,
-			timeout:   timeout,
-			size:      size,
-			envs:      envs,
-			term:      term,
-		})
-		code := classify(err)
+  # override the tape's size, to check a layout at a second one
+  tuitest run --size 120x40 login.tape
 
-		if jsonOut {
-			res := runResult{
-				Command:    "run",
-				Tape:       tapePath,
-				Status:     map[bool]string{true: "pass", false: "fail"}[code == ExitOK],
-				Kind:       kindOf(code),
-				ExitCode:   code,
-				DurationMs: time.Since(start).Milliseconds(),
+  # pass an environment variable to the program under test
+  tuitest run --env NO_COLOR=1 login.tape
+
+  # emit one JSON object for CI to parse
+  tuitest run --json login.tape
+
+  # mirror PTY traffic to stderr while debugging a tape
+  tuitest run -v login.tape`,
+		ValidArgsFunction: tapeFileCompletion,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return usageErrorf(env, cmd, "run needs exactly one tape file, got %d", len(args))
 			}
-			if err != nil {
-				res.Error = err.Error()
+			tapePath := args[0]
+
+			start := time.Now()
+			err := playTape(env, tapePath, playOpts{
+				update:    update,
+				strict:    strict,
+				goldenDir: goldenDir,
+				verbose:   verbose,
+				timeout:   timeout,
+				size:      size,
+				envs:      envs,
+				term:      term,
+			})
+			code := classify(err)
+
+			if jsonOut {
+				res := runResult{
+					Command:    "run",
+					Tape:       tapePath,
+					Status:     map[bool]string{true: "pass", false: "fail"}[code == ExitOK],
+					Kind:       kindOf(code),
+					ExitCode:   code,
+					DurationMs: time.Since(start).Milliseconds(),
+				}
+				if err != nil {
+					res.Error = err.Error()
+				}
+				writeJSON(env.Stdout, res)
+				// The result object is the report; printing the error again on
+				// stderr would duplicate it into a CI log.
+				return silent(code)
 			}
-			writeJSON(env.Stdout, res)
-			return code
-		}
-		if err != nil {
-			env.errorf("%s", render(err))
-		}
-		return code
+			return fail(err)
+		},
 	}
+
+	f := c.Flags()
+	f.BoolVar(&update, "update", false, "rewrite golden snapshots instead of comparing")
+	f.BoolVar(&strict, "strict", false, "treat Sleep as an error, so the tape must wait on conditions")
+	f.StringVar(&goldenDir, "golden-dir", "", "directory for golden files (default \"testdata\")")
+	f.BoolVarP(&verbose, "verbose", "v", false, "mirror PTY I/O to stderr")
+	f.BoolVar(&jsonOut, "json", false, "print one JSON result object to stdout")
+	f.DurationVar(&timeout, "timeout", 0, "default wait timeout, overriding the tape's Set WaitTimeout")
+	f.Var(&size, "size", "terminal size as COLSxROWS, overriding the tape's Set Size")
+	f.Var(&envs, "env", "environment variable KEY=VALUE for the program under test (repeatable)")
+	f.StringVar(&term, "term", "", "value for TERM, overriding the tape's Set Term")
 	return c
+}
+
+// tapeFileCompletion offers tape files for the argument, which is the one thing
+// cobra's generated completion cannot work out for itself.
+func tapeFileCompletion(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return []string{"tape"}, cobra.ShellCompDirectiveFilterFileExt
 }
 
 type playOpts struct {

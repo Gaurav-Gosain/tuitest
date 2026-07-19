@@ -2,20 +2,32 @@
 // than code in main so the whole surface, including exit codes and rendered
 // error text, is testable without spawning the binary.
 //
-// The command set is a registry: Commands returns the built-in commands in the
-// order they should appear in help, and dispatch resolves a name against it.
-// Adding a command means appending one entry, which keeps help, completion, and
-// the "unknown command" suggestion automatically in step with reality.
+// Command structure, help, flag parsing, shell completion and "did you mean"
+// suggestions come from spf13/cobra, and charmbracelet/fang renders help and
+// version output. Everything the hand-rolled dispatcher did better is layered
+// on top rather than replaced:
+//
+//   - Env keeps every stream and the environment lookup injectable, so Main can
+//     be called from a test with buffers instead of a terminal. cobra writes
+//     through the same writers because the root command is given them.
+//   - Exit codes stay a first-class result. cobra's RunE only reports "an
+//     error", so commands return an exitError carrying the code that classify
+//     chose, and Main unwraps it.
+//   - Failure text is printed by this package's own renderer, not fang's, which
+//     reflows a message into one width-bounded paragraph. A timeout message is
+//     a screen dump; reflowing it destroys the thing the user needs to read.
 package cli
 
 import (
-	"flag"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
-	"github.com/Gaurav-Gosain/tuitest/internal/textdist"
+	"github.com/charmbracelet/fang"
+	"github.com/spf13/cobra"
 )
 
 // Exit codes. These are part of the tool's contract with CI: a script needs to
@@ -35,9 +47,16 @@ const (
 	ExitTimeout = 4
 )
 
-// Version is the reported version, overridden at build time with
+// Build information, overridden at link time with
 // -ldflags "-X github.com/Gaurav-Gosain/tuitest/internal/cli.Version=v1.2.3".
-var Version = "dev"
+var (
+	// Version is the reported version.
+	Version = "dev"
+	// Commit is the git revision the binary was built from.
+	Commit = "none"
+	// Date is the build timestamp.
+	Date = "unknown"
+)
 
 // Env is everything a command touches outside its arguments. Tests supply their
 // own writers and environment lookup so no command needs a real terminal.
@@ -64,188 +83,286 @@ func (e *Env) errorf(format string, args ...any) {
 	fmt.Fprintf(e.Stderr, "tuitest: "+format+"\n", args...)
 }
 
-// Command is one subcommand.
-type Command struct {
-	// Name is the word typed after "tuitest".
-	Name string
-	// Summary is the one-line description shown in the command list.
-	Summary string
-	// Usage is the argument synopsis, without the leading "tuitest".
-	Usage string
-	// Long is the full help body: what it does, then examples. It is printed
-	// after the usage line and the flag defaults by Help.
-	Long string
-	// Run executes the command with the arguments after its name.
-	Run func(env *Env, args []string) int
-	// flags builds the command's flag set, used by help and completion. It may
-	// be nil for commands that take no flags.
-	flags func() *flag.FlagSet
+// exitError is a command failure that already knows which exit code it means.
+//
+// cobra's RunE signature collapses every failure into one error value, which
+// would flatten the tool's five exit codes into "zero or one". Commands return
+// this instead, so classify's judgement survives the trip back to main.
+type exitError struct {
+	code int
+	// err is the failure to report, or nil when the command has already
+	// printed everything the user needs.
+	err error
 }
 
-// Commands returns the built-in commands in help order.
-func Commands() []*Command {
-	return []*Command{
-		runCommand(),
-		recordCommand(),
-		replayCommand(),
-		snapCommand(),
-		fuzzCommand(),
-		doctorCommand(),
-		completionCommand(),
-		versionCommand(),
+func (e *exitError) Error() string {
+	if e.err == nil {
+		return ""
 	}
+	return e.err.Error()
 }
 
-// lookup finds a command by name.
-func lookup(name string) *Command {
-	for _, c := range Commands() {
-		if c.Name == name {
-			return c
-		}
+func (e *exitError) Unwrap() error { return e.err }
+
+// fail returns a command failure whose exit code is classified from the error,
+// so a timeout stays a timeout and a spawn failure stays a harness error.
+func fail(err error) error {
+	if err == nil {
+		return nil
 	}
-	return nil
+	return &exitError{code: classify(err), err: err}
 }
 
-// Main is the entry point. args is the argument list after the program name.
-func Main(env *Env, args []string) int {
-	if len(args) == 0 {
-		printUsage(env.Stderr)
-		return ExitUsage
-	}
-
-	name := args[0]
-	switch name {
-	case "help", "-h", "-help", "--help":
-		return help(env, args[1:])
-	case "-version", "--version":
-		return lookup("version").Run(env, nil)
-	}
-	if strings.HasPrefix(name, "-") {
-		env.errorf("unknown flag %q; tuitest takes a command first", name)
-		printUsage(env.Stderr)
-		return ExitUsage
-	}
-
-	cmd := lookup(name)
-	if cmd == nil {
-		env.errorf("unknown command %q", name)
-		if s := suggest(name); s != "" {
-			fmt.Fprintf(env.Stderr, "did you mean %q?\n", s)
-		}
-		printUsage(env.Stderr)
-		return ExitUsage
-	}
-	return cmd.Run(env, args[1:])
+// failWith returns a command failure with an explicit exit code, for the cases
+// that are not derived from an error value: a terminal replay cannot step on, a
+// tape file that will not open.
+func failWith(code int, err error) error {
+	return &exitError{code: code, err: err}
 }
 
-// help implements "tuitest help [command]".
-func help(env *Env, args []string) int {
-	if len(args) == 0 {
-		printUsage(env.Stdout)
-		return ExitOK
-	}
-	cmd := lookup(args[0])
-	if cmd == nil {
-		env.errorf("unknown command %q", args[0])
-		if s := suggest(args[0]); s != "" {
-			fmt.Fprintf(env.Stderr, "did you mean %q?\n", s)
-		}
-		return ExitUsage
-	}
-	printCommandHelp(env.Stdout, cmd)
-	return ExitOK
+// silent returns a failure with no message, for commands that have already
+// written their own report and only need the exit code honoured.
+func silent(code int) error { return &exitError{code: code} }
+
+// usageErrorf reports a malformed invocation the way the flag-based CLI did:
+// the complaint, then the command's own usage, then exit 2.
+//
+// cobra prints usage itself, but only for errors it raises during parsing. An
+// argument count that only RunE can check is exactly as much a usage error, and
+// it has to look the same.
+func usageErrorf(env *Env, cmd *cobra.Command, format string, args ...any) error {
+	env.errorf(format, args...)
+	fmt.Fprint(env.Stderr, cmd.UsageString())
+	return silent(ExitUsage)
 }
 
-func printUsage(w io.Writer) {
-	fmt.Fprint(w, `tuitest drives a terminal program through a real pseudo-terminal and asserts
+// newRootCommand builds the command tree for one invocation. It is rebuilt per
+// call rather than shared, so a test that runs Main twice gets fresh flag
+// values both times.
+func newRootCommand(env *Env) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "tuitest",
+		Short: "Test terminal programs through a real pseudo-terminal",
+		Long: `tuitest drives a terminal program through a real pseudo-terminal and asserts
 on what it draws, so a TUI can be tested without writing Go.
 
-usage:
-  tuitest <command> [flags] [arguments]
+The loop is snap to look at what a program draws, record or an editor to write
+a tape, run in CI, replay to debug a failure, and fuzz to go looking for the
+inputs nobody thought to try.
 
-commands:
-`)
-	cmds := Commands()
-	width := 0
-	for _, c := range cmds {
-		if len(c.Name) > width {
-			width = len(c.Name)
-		}
-	}
-	for _, c := range cmds {
-		fmt.Fprintf(w, "  %-*s  %s\n", width, c.Name, c.Summary)
-	}
-	fmt.Fprintf(w, "  %-*s  %s\n", width, "help", "show help for a command")
-	fmt.Fprint(w, `
-Run "tuitest help <command>" for a command's flags and examples.
+Exit codes are the contract with CI, and every command uses them:
 
-exit codes:
   0  every assertion passed
   1  an assertion failed
   2  bad usage or a malformed tape
   3  harness error, such as no PTY or a program that would not start
-  4  a wait timed out
-`)
+  4  a wait timed out`,
+		Example: `  # check this machine can run a TUI at all, before anything else
+  tuitest doctor
+
+  # look at what a program actually draws, asserting nothing
+  tuitest snap -- htop
+
+  # play a tape and let the exit code decide whether CI passes
+  tuitest run login.tape
+
+  # watch the same tape run, to see where it goes wrong
+  tuitest replay login.tape`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Bare "tuitest" is a usage error, not a success that happens to
+			// print help. A script that runs the tool with an empty argument
+			// list has a bug, and exit 0 would hide it.
+			return usageErrorf(env, cmd, "no command given")
+		},
+	}
+
+	root.AddCommand(
+		runCommand(env),
+		recordCommand(env),
+		replayCommand(env),
+		snapCommand(env),
+		fuzzCommand(env),
+		doctorCommand(env),
+		versionCommand(env),
+	)
+	return root
 }
 
-func printCommandHelp(w io.Writer, c *Command) {
-	fmt.Fprintf(w, "usage: tuitest %s\n", c.Usage)
-	if c.flags != nil {
-		fs := c.flags()
-		var b strings.Builder
-		fs.SetOutput(&b)
-		fs.PrintDefaults()
-		if b.Len() > 0 {
-			fmt.Fprint(w, "\nflags:\n", b.String())
+// initCompletion installs cobra's generated completion command.
+//
+// It replaces the hand-rolled scripts. cobra's version covers four shells
+// instead of three and resolves candidates by calling the binary back through a
+// hidden command rather than baking a list into the script, so it completes
+// flag names, flag values and arguments as well as command names, and it cannot
+// fall out of step with the commands the way a generated-once script can.
+//
+// It is installed here, rather than left to Execute, for two reasons. The
+// generated subcommands capture the root's output writer at construction time,
+// so they have to be built after Main has pointed the root at the Env's
+// streams. And the parent command needs the one fix cobra does not make: it is
+// not runnable, so cobra answers "tuitest completion csh" with the help text
+// and exit 0, when an unsupported shell name is plainly a usage error.
+func initCompletion(env *Env, root *cobra.Command) {
+	root.InitDefaultCompletionCmd()
+	for _, c := range root.Commands() {
+		if c.Name() != "completion" {
+			continue
+		}
+		c.RunE = func(cmd *cobra.Command, _ []string) error {
+			return usageErrorf(env, cmd, "completion needs a shell name: bash, zsh, fish or powershell")
 		}
 	}
-	if c.Long != "" {
-		fmt.Fprintf(w, "\n%s\n", strings.TrimRight(c.Long, "\n"))
+}
+
+// Main is the entry point. args is the argument list after the program name.
+func Main(env *Env, args []string) int {
+	root := newRootCommand(env)
+
+	// cobra writes help, usage and its own parse errors through these, so the
+	// Env indirection covers the framework's output as well as the commands'.
+	root.SetOut(env.Stdout)
+	root.SetErr(env.Stderr)
+	initCompletion(env, root)
+	root.SetArgs(normalizeArgs(root, args))
+
+	// Command failures are printed here rather than by fang, whose renderer
+	// reflows an error into one paragraph and would destroy the screen dumps
+	// that make a wait failure diagnosable. See interceptErrors.
+	var cmdErr error
+	interceptErrors(root, &cmdErr)
+
+	err := fang.Execute(
+		context.Background(),
+		root,
+		fang.WithVersion(fmt.Sprintf("%s\nCommit: %s\nBuilt: %s", Version, Commit, Date)),
+		fang.WithErrorHandler(diagnosticErrorHandler),
+	)
+
+	if cmdErr != nil {
+		return report(env, cmdErr)
+	}
+	if err != nil {
+		// Everything fang can still be handed is a parse or dispatch failure:
+		// an unknown command, an unknown flag, a bad flag value. fang has
+		// already printed it.
+		return ExitUsage
+	}
+	return ExitOK
+}
+
+// report prints a command failure and returns its exit code.
+func report(env *Env, err error) int {
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		reportError(env, err)
+		return classify(err)
+	}
+	if ee.err != nil {
+		reportError(env, ee.err)
+	}
+	return ee.code
+}
+
+// interceptErrors routes every command's failure into stash instead of
+// returning it to fang, whose renderer would reflow it. The error is stashed
+// and the command reports success, so fang sees nothing to render; Main prints
+// it and picks the exit status afterwards.
+//
+// A malformed flag is rejected by cobra before any RunE runs and still goes
+// through fang, which is the right home for it: those messages are one line and
+// reflowing them costs nothing.
+func interceptErrors(cmd *cobra.Command, stash *error) {
+	for _, sub := range cmd.Commands() {
+		interceptErrors(sub, stash)
+	}
+	run := cmd.RunE
+	if run == nil {
+		return
+	}
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		if err := run(c, args); err != nil {
+			*stash = err
+			// The error is already explained; usage would bury it.
+			c.SilenceUsage = true
+		}
+		return nil
 	}
 }
 
-// suggest returns the registered command name closest to name, so a typo gets
-// a pointer rather than just a rejection. It only suggests when the names are
-// close enough that the guess is likely right.
-func suggest(name string) string {
-	best, _ := textdist.Closest(strings.ToLower(name), commandNames())
-	return best
-}
-
-// newFlagSet builds a flag set that never prints on its own. Commands render
-// their own help so the output is consistent across every subcommand.
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.Usage = func() {}
-	return fs
-}
-
-// parseFlags parses args and, on failure, reports the error followed by the
-// command's own help.
-func parseFlags(env *Env, c *Command, fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		env.errorf("%v", err)
-		printCommandHelp(env.Stderr, c)
-		return err
+// normalizeArgs accepts the single-dash long flags the tool has always taken.
+//
+// The published command line is "tuitest run -update login.tape", and every
+// script and README example written against it says -update. pflag reads a
+// single dash as a cluster of one-letter shorthands, so it would reject that
+// spelling outright. Rewriting a leading "-name" to "--name" when name is a
+// real flag of this command keeps every existing invocation working, while the
+// double-dash spelling becomes available alongside it.
+//
+// Only tokens that name a registered multi-letter flag are touched, so a
+// one-letter shorthand still parses as a shorthand, and anything after "--"
+// belongs to the program under test and is left exactly as typed.
+func normalizeArgs(root *cobra.Command, args []string) []string {
+	if len(args) == 0 {
+		return args
 	}
-	return nil
+
+	// The command set is flat, so the first token either names a command or the
+	// whole line belongs to the root.
+	cmd, rest := root, args
+	if sub, _, err := root.Find(args[:1]); err == nil && sub != root {
+		cmd, rest = sub, args[1:]
+	}
+
+	out := make([]string, 0, len(args))
+	out = append(out, args[:len(args)-len(rest)]...)
+	for i, arg := range rest {
+		if arg == "--" {
+			out = append(out, rest[i:]...)
+			break
+		}
+		out = append(out, expandSingleDash(cmd, arg))
+	}
+	return out
 }
 
-func versionCommand() *Command {
-	c := &Command{
-		Name:    "version",
-		Summary: "print the tuitest version",
-		Usage:   "version",
-		Long: `Prints the version this binary was built from.
+// expandSingleDash rewrites "-name" and "-name=value" to their double-dash
+// spelling when name is a multi-letter flag of cmd, and returns arg untouched
+// otherwise.
+func expandSingleDash(cmd *cobra.Command, arg string) string {
+	if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
+		return arg
+	}
+	name, _, _ := strings.Cut(arg[1:], "=")
+	if cmd.Flags().Lookup(name) == nil && cmd.InheritedFlags().Lookup(name) == nil {
+		return arg
+	}
+	return "-" + arg
+}
 
-examples:
+func versionCommand(env *Env) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the tuitest version",
+		Long: `Print the version this binary was built from.
+
+The version is stamped in at link time, so a binary installed with 'go install'
+reports the module version it came from and a locally built one reports "dev".
+Reach for it when a suite starts failing without a change to the tape, to pin
+down what a CI image is actually running.
+
+The root command's --version flag prints the same version along with the commit
+and the build date.`,
+		Example: `  # print the version
   tuitest version
+
+  # print the version, commit and build date
   tuitest --version`,
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			fmt.Fprintf(env.Stdout, "tuitest %s\n", Version)
+			return nil
+		},
 	}
-	c.Run = func(env *Env, _ []string) int {
-		fmt.Fprintf(env.Stdout, "tuitest %s\n", Version)
-		return ExitOK
-	}
-	return c
 }

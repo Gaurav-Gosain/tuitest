@@ -12,6 +12,11 @@ type sizeFlag struct {
 	cols, rows int
 }
 
+// Type names the value in help output. It is what pflag needs beyond the
+// standard library's flag.Value, and nothing else about these types changed in
+// the move to cobra.
+func (s *sizeFlag) Type() string { return "COLSxROWS" }
+
 func (s *sizeFlag) String() string {
 	if s == nil || s.cols == 0 {
 		return ""
@@ -43,6 +48,8 @@ func (s *sizeFlag) Set(v string) error {
 type envFlag []string
 
 func (e *envFlag) String() string { return strings.Join(*e, ",") }
+
+func (e *envFlag) Type() string { return "KEY=VALUE" }
 
 func (e *envFlag) Set(v string) error {
 	k, _, ok := strings.Cut(v, "=")
