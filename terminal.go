@@ -37,6 +37,7 @@ type config struct {
 	term       string
 	trueColor  bool
 	log        io.Writer
+	outMirror  io.Writer
 	semantic   bool
 	stabilize  time.Duration
 }
@@ -100,6 +101,15 @@ func WithStabilizeInterval(d time.Duration) Option {
 	return func(c *config) { c.stabilize = d }
 }
 
+// WithOutputMirror copies the child's output to w as it arrives. Unlike
+// WithLog, which mirrors both directions for debugging, this carries only what
+// the program wrote, so w can be a real terminal the program is rendered onto
+// while the harness still drives it headlessly. Used by tuitest record and
+// tuitest replay.
+func WithOutputMirror(w io.Writer) Option {
+	return func(c *config) { c.outMirror = w }
+}
+
 // Terminal is the harness handle for one spawned program.
 type Terminal struct {
 	cfg  config
@@ -113,9 +123,10 @@ type Terminal struct {
 	exited    bool
 	exitCode  int
 
-	log     io.Writer
-	logMu   sync.Mutex
-	tailBuf []byte // ring of recent I/O for error dumps
+	log       io.Writer
+	logMu     sync.Mutex
+	outMirror io.Writer
+	tailBuf   []byte // ring of recent I/O for error dumps
 }
 
 const tailCap = 4 * 1024
@@ -131,6 +142,7 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 		cfg:       cfg,
 		emu:       emu.New(cfg.cols, cfg.rows),
 		log:       cfg.log,
+		outMirror: cfg.outMirror,
 		exitCode:  -1,
 		lastWrite: time.Now(), // measure the first quiet window from spawn
 	}
@@ -183,6 +195,11 @@ func (t *Terminal) onData(p []byte) {
 	t.cond.Broadcast()
 	t.mu.Unlock()
 	t.mirror(p)
+	// The pump is a single goroutine, so mirroring outside the lock still
+	// delivers chunks to w in the order the child produced them.
+	if t.outMirror != nil {
+		_, _ = t.outMirror.Write(p)
+	}
 }
 
 func (t *Terminal) onClose(code int) {
@@ -262,7 +279,18 @@ func (t *Terminal) Resize(cols, rows int) error {
 }
 
 // ExitCode reports the child's exit code and whether it has exited.
+//
+// The process records its status before closing the channel Done reports on,
+// whereas this terminal's own copy is filled in by the OnClose callback that
+// runs after it. Consulting the process first closes that window, so a caller
+// that reads the exit code the instant Done fires sees the real code rather
+// than the not-yet-exited placeholder.
 func (t *Terminal) ExitCode() (int, bool) {
+	if t.proc != nil {
+		if code, exited := t.proc.ExitCode(); exited {
+			return code, true
+		}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.exitCode, t.exited
@@ -278,6 +306,11 @@ func (t *Terminal) Wait(timeout time.Duration) (int, error) {
 		return -1, &TimeoutError{Op: "Wait", Want: "child exit", Elapsed: timeout, Screen: t.Snapshot()}
 	}
 }
+
+// Done returns a channel closed once the child has exited and been reaped. It
+// lets a caller select on program exit alongside its own events, which Wait
+// cannot express because it blocks.
+func (t *Terminal) Done() <-chan struct{} { return t.proc.Done() }
 
 // Close tears down the child process group and PTY. It is idempotent.
 func (t *Terminal) Close() error {
