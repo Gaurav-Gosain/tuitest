@@ -48,7 +48,10 @@ func Ctrl(r rune) Key {
 	return Key([]byte{byte(r) & 0x1f})
 }
 
-// Alt prefixes a key or rune with ESC, the conventional meta encoding.
+// Alt prefixes a key or rune with ESC, the conventional meta encoding. It
+// accepts the same items as SendKeys; an item of an unsupported type yields a
+// bare Esc, since Alt has no way to report an error. Pass a string, rune, Key,
+// or slice of those and that cannot happen.
 func Alt(k any) Key {
 	s, err := keyString(k)
 	if err != nil {
@@ -94,7 +97,8 @@ func keyString(item any) (string, error) {
 
 // SendKeys types a sequence of named keys, chords, runes, and strings. Plain
 // strings and runes are sent literally; Key values carry their own escape
-// sequences. Example:
+// sequences. Items may be string, rune, Key, []string, []Key, or []any of
+// those; anything else is rejected with an error rather than sent. Example:
 //
 //	term.SendKeys("git status", tuitest.Enter)
 //	term.SendKeys(tuitest.Ctrl('b'), "%")

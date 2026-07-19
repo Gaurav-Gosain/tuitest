@@ -23,7 +23,11 @@ type Screen interface {
 	// Text returns the plain-text screen, one row per line, with each line's
 	// trailing blanks trimmed and trailing blank lines dropped.
 	Text() string
-	// Line returns the plain text of a single row with trailing blanks trimmed.
+	// Line returns the plain text of a single physical row with trailing blanks
+	// trimmed, or "" for an out-of-range row. It does not de-wrap: a logical
+	// line that soft-wrapped at the right margin occupies several rows and will
+	// not match as one string. Match per row, or use Text and account for the
+	// wrap, or widen the terminal with WithSize so the line fits.
 	Line(row int) string
 	// ExitCode reports the child's exit code and whether it has exited.
 	ExitCode() (code int, exited bool)
@@ -41,17 +45,25 @@ const (
 	ColorRGB
 )
 
-// Color is a cell color in one of three encodings.
+// Color is a cell color in one of three encodings. Only the fields matching
+// Kind carry meaning; the others are zero.
 type Color struct {
-	Kind    ColorKind
-	Index   uint8 // when Kind == ColorIndexed
-	R, G, B uint8 // when Kind == ColorRGB
+	// Kind selects which of the remaining fields is meaningful.
+	Kind ColorKind
+	// Index is the palette entry when Kind is ColorIndexed.
+	Index uint8
+	// R, G and B are the channel values when Kind is ColorRGB.
+	R, G, B uint8
 }
 
 // Cell is a single grid cell with its rune and visual attributes.
 type Cell struct {
-	Rune          rune
-	Width         int // 1 for normal runes, 2 for wide runes, 0 for a wide-rune continuation column
+	// Rune is the cell's first rune; combining marks are not exposed.
+	Rune rune
+	// Width is 1 for normal runes, 2 for wide runes, and 0 for the
+	// continuation column that follows a wide rune.
+	Width int
+	// Fg and Bg are the foreground and background colors.
 	Fg, Bg        Color
 	Bold          bool
 	Italic        bool

@@ -108,8 +108,9 @@ type Terminal struct {
 
 	mu        sync.Mutex
 	cond      *sync.Cond
-	lastWrite time.Time
-	closed    bool // stream ended (child EOF)
+	lastWrite time.Time // last byte received from the child
+	lastInput time.Time // last byte sent to the child
+	closed    bool      // stream ended (child EOF)
 	exited    bool
 	exitCode  int
 
@@ -234,7 +235,7 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 	}
 }
 
-// Snapshot returns an immutable view of the current screen.
+// Screen returns an immutable view of the current screen.
 func (t *Terminal) Screen() Screen {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -243,20 +244,32 @@ func (t *Terminal) Screen() Screen {
 
 // Type sends literal text with no key-name interpretation (tmux send-keys -l).
 func (t *Terminal) Type(s string) error {
-	return t.proc.Write([]byte(s))
+	return t.write([]byte(s))
 }
 
-// write mirrors input to the debug log then sends it to the child.
+// write mirrors input to the debug log, records that input was sent (which is
+// what keeps WaitStable from reporting the pre-input screen as stable), then
+// sends it to the child.
 func (t *Terminal) write(b []byte) error {
 	t.mirror(b)
+	t.markInput()
 	return t.proc.Write(b)
 }
 
+// markInput timestamps the moment input was handed to the child.
+func (t *Terminal) markInput() {
+	t.mu.Lock()
+	t.lastInput = time.Now()
+	t.mu.Unlock()
+}
+
 // Resize changes the PTY window size and the emulator grid; the child receives
-// SIGWINCH.
+// SIGWINCH. Like sending keys, a resize counts as input for WaitStable, since
+// the redraw it provokes has not arrived yet.
 func (t *Terminal) Resize(cols, rows int) error {
 	t.mu.Lock()
 	t.emu.Resize(cols, rows)
+	t.lastInput = time.Now()
 	t.mu.Unlock()
 	return t.proc.Resize(cols, rows)
 }
@@ -268,15 +281,30 @@ func (t *Terminal) ExitCode() (int, bool) {
 	return t.exitCode, t.exited
 }
 
-// Wait blocks until the child exits or timeout elapses, returning the exit code.
-func (t *Terminal) Wait(timeout time.Duration) (int, error) {
-	select {
-	case <-t.proc.Done():
-		code, _ := t.ExitCode()
-		return code, nil
-	case <-time.After(timeout):
-		return -1, &TimeoutError{Op: "Wait", Want: "child exit", Elapsed: timeout, Screen: t.Snapshot()}
+// WaitExit blocks until the child exits or timeout elapses, returning the exit
+// code. On timeout it returns -1 and a *TimeoutError, which unwraps to
+// ErrTimeout like every other wait.
+func (t *Terminal) WaitExit(timeout time.Duration) (int, error) {
+	// Wait on the terminal's own view of the exit rather than on the process
+	// handle. The pump closes the process's done channel before it delivers the
+	// exit code here, so waking on that channel could observe the code before
+	// this Terminal had recorded it and report -1 for a clean exit.
+	err := t.waitLoop("WaitExit", "the child to exit", timeout, true, func() bool {
+		return t.exited
+	})
+	if err != nil {
+		return -1, err
 	}
+	code, _ := t.ExitCode()
+	return code, nil
+}
+
+// Wait is the former name of WaitExit, kept so existing tests keep compiling.
+//
+// Deprecated: use WaitExit. "Wait" read as a sibling of the WaitFor family,
+// which wait on screen state, when in fact it waits for process exit.
+func (t *Terminal) Wait(timeout time.Duration) (int, error) {
+	return t.WaitExit(timeout)
 }
 
 // Close tears down the child process group and PTY. It is idempotent.

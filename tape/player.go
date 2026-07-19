@@ -205,7 +205,7 @@ func lastNonBlank(sc tuitest.Screen) string {
 }
 
 func (p *Player) expectExit(c Command) error {
-	code, err := p.tt.Wait(p.waitTimeout)
+	code, err := p.tt.WaitExit(p.waitTimeout)
 	if err != nil {
 		return err
 	}

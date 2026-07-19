@@ -43,7 +43,7 @@ type Process struct {
 	exited   bool
 	exitCode int
 
-	done      chan struct{} // closed once the child is reaped
+	done      chan struct{} // closed once the child is reaped and OnClose has run
 	reapOnce  sync.Once
 	closeOnce sync.Once
 }
@@ -108,6 +108,10 @@ func (p *Process) pump(h Handler) {
 	if h.OnClose != nil {
 		h.OnClose(code)
 	}
+	// Close done only after the handler has recorded the exit. A waiter woken
+	// by Done must not be able to observe a receiver that has not yet been told
+	// the child is gone.
+	close(p.done)
 }
 
 // reap waits for the child exactly once and records its exit code.
@@ -122,7 +126,6 @@ func (p *Process) reap() int {
 		p.exited = true
 		p.exitCode = code
 		p.mu.Unlock()
-		close(p.done)
 	})
 	p.mu.Lock()
 	code := p.exitCode
@@ -148,7 +151,8 @@ func (p *Process) ExitCode() (int, bool) {
 	return p.exitCode, p.exited
 }
 
-// Done returns a channel closed once the child has been reaped.
+// Done returns a channel closed once the child has been reaped and the
+// Handler's OnClose callback has returned.
 func (p *Process) Done() <-chan struct{} { return p.done }
 
 // Close tears down the whole process group and closes the PTY. It is
