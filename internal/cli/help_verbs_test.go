@@ -19,7 +19,7 @@ import (
 func TestRunHelpListsEveryTapeVerb(t *testing.T) {
 	t.Parallel()
 
-	long := runCommand().Long
+	long := runCommand(discardEnv()).Long
 	commands, ok := verbSection(long)
 	if !ok {
 		t.Fatalf("run help no longer has a Commands: section:\n%s", long)

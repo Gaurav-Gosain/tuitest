@@ -72,31 +72,31 @@ signal that the sync introduced a regression.
 
 ## Add a CLI subcommand
 
-The command set is a registry in [`internal/cli/cli.go`](../internal/cli/cli.go):
+The command set is a cobra tree assembled by `newRootCommand` in
+[`internal/cli/cli.go`](../internal/cli/cli.go). A command is a constructor that
+takes the `Env` and returns a `*cobra.Command`:
 
 ```go
-type Command struct {
-	Name    string
-	Summary string
-	Usage   string
-	Long    string
-	Run     func(env *Env, args []string) int
-	flags   func() *flag.FlagSet
-}
-
-func Commands() []*Command { ... }
+func snapCommand(env *Env) *cobra.Command { ... }
 ```
 
-Append one entry and help, shell completion, and the nearest-match suggestion
-for a typo all pick it up, because each of those reads the same list the
-dispatcher resolves against. `Env` carries the writers and the environment
-lookup, so a command is testable without a real terminal; the whole CLI test
-suite runs against synthetic writers.
+Add it to the `root.AddCommand` call and help, shell completion, and the
+nearest-match suggestion for a typo all pick it up, because each of those reads
+the same tree. `Env` carries the writers and the environment lookup, so a
+command is testable without a real terminal; the whole CLI test suite runs
+against synthetic writers, and the root command is pointed at those same writers
+so cobra's own output is captured too.
 
-Return one of `ExitOK`, `ExitAssert`, `ExitUsage`, `ExitHarness` or
-`ExitTimeout` rather than a bare integer, and if the command can fail in a way
-that already has an error type, run it through `classify` so the exit code
-follows the same rules as `run`.
+Write the help the way the rest of the tree does: a `Short` that fits one line, a
+`Long` that says when you would reach for the command rather than restating its
+flags, and an `Example` block with a comment above each invocation.
+
+Failures do not return a bare exit code. Return `fail(err)` to let `classify`
+pick between `ExitAssert`, `ExitHarness` and `ExitTimeout` from the error type,
+`failWith(code, err)` when the code is not derived from an error, `silent(code)`
+when the command has already printed its own report, and `usageErrorf` for a
+malformed invocation. Anything else returned from `RunE` is classified as if it
+had come from `fail`.
 
 ## Add a tape verb
 

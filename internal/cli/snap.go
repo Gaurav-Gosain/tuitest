@@ -1,13 +1,13 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest"
+	"github.com/spf13/cobra"
 )
 
 // snapResult is the -json shape for snap.
@@ -27,28 +27,7 @@ type snapResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
-func snapCommand() *Command {
-	c := &Command{
-		Name:    "snap",
-		Summary: "spawn a command, wait for it to settle, print the screen",
-		Usage:   "snap [flags] -- program [args...]",
-		Long: `Snap runs a program in a pseudo-terminal, waits until it stops drawing, then
-prints the screen exactly as a user would see it and exits. It writes nothing
-and asserts nothing, so it is the quickest way to find out what a TUI actually
-puts on screen, and what text a tape could wait for.
-
-Put -- before the program when the program takes flags of its own, so they are
-not parsed as tuitest's.
-
-examples:
-  tuitest snap -- htop
-  tuitest snap -size 120x40 -- vim
-  tuitest snap -wait '\$ ' -- bash -i        settle on a prompt instead
-  tuitest snap -type 'hello\r' -- ./myapp    send input, then capture
-  tuitest snap -styled -- ./myapp            include SGR styling
-  tuitest snap -json -- ./myapp | jq -r .screen`,
-	}
-
+func snapCommand(env *Env) *cobra.Command {
 	var (
 		size    sizeFlag
 		term    string
@@ -61,80 +40,106 @@ examples:
 		jsonOut bool
 		dir     string
 	)
-	c.flags = func() *flag.FlagSet {
-		fs := newFlagSet("snap")
-		fs.Var(&size, "size", "terminal size as COLSxROWS (default \"80x24\")")
-		fs.StringVar(&term, "term", "xterm-256color", "TERM value for the program")
-		fs.Var(&envs, "env", "environment variable KEY=VALUE (repeatable)")
-		fs.DurationVar(&timeout, "timeout", 5*time.Second, "how long to wait for the screen to settle")
-		fs.DurationVar(&settle, "settle", 0, "quiet window that counts as settled (default 150ms)")
-		fs.StringVar(&waitRe, "wait", "", "wait until this regex matches the screen instead of waiting for quiet")
-		fs.StringVar(&typeIn, "type", "", "type this text before capturing (\\r, \\n, \\t and \\e are unescaped)")
-		fs.BoolVar(&styled, "styled", false, "render SGR styling instead of plain text")
-		fs.BoolVar(&jsonOut, "json", false, "print one JSON result object to stdout")
-		fs.StringVar(&dir, "dir", "", "working directory for the program")
-		return fs
+
+	c := &cobra.Command{
+		Use:   "snap -- program [args...]",
+		Short: "Spawn a command, wait for it to settle, print the screen",
+		Long: `Run a program in a pseudo-terminal, wait until it stops drawing, then print
+the screen exactly as a user would see it and exit.
+
+Reach for snap first, before writing anything. It writes nothing and asserts
+nothing, so it is the quickest way to find out what a TUI actually puts on
+screen, and therefore what text a tape could reasonably wait for. It is also the
+fastest way to check a claim about a layout: run it at two sizes and compare.
+
+A program that never goes quiet, which is every TUI that animates, still gets
+its screen reported. The settle wait times out and the exit code says so, but
+the capture is the screen as it was, because that is the thing you asked for.
+
+Put -- before the program when the program takes flags of its own, so they are
+not parsed as tuitest's.`,
+		Example: `  # look at what a program draws
+  tuitest snap -- htop
+
+  # check a layout at a second size
+  tuitest snap --size 120x40 -- vim
+
+  # settle on a prompt rather than on quiet
+  tuitest snap --wait '\$ ' -- bash -i
+
+  # send input first, then capture the reaction
+  tuitest snap --type 'hello\r' -- ./myapp
+
+  # keep the SGR styling instead of flattening to text
+  tuitest snap --styled -- ./myapp
+
+  # pull just the screen out of the JSON report
+  tuitest snap --json -- ./myapp | jq -r .screen`,
+		RunE: func(cmd *cobra.Command, argv []string) error {
+			if len(argv) == 0 {
+				return usageErrorf(env, cmd, "snap needs a program to run")
+			}
+			cols, rows := size.cols, size.rows
+			if cols == 0 {
+				cols, rows = 80, 24
+			}
+			var re *regexp.Regexp
+			if waitRe != "" {
+				var err error
+				re, err = regexp.Compile(waitRe)
+				if err != nil {
+					env.errorf("--wait %q is not a valid regex: %v", waitRe, err)
+					return silent(ExitUsage)
+				}
+			}
+
+			start := time.Now()
+			res, err := capture(captureOpts{
+				argv: argv, cols: cols, rows: rows, term: term, envs: envs,
+				dir: dir, timeout: timeout, settle: settle, wait: re,
+				typeIn: unescape(typeIn), styled: styled,
+			})
+			code := classify(err)
+
+			if jsonOut {
+				out := snapResult{
+					Command: "snap", Argv: argv, Cols: cols, Rows: rows,
+					Screen: res.screen, Styled: styled,
+					Exited:     res.exited,
+					DurationMs: time.Since(start).Milliseconds(), Kind: kindOf(code),
+				}
+				if res.exited {
+					code := res.exitCode
+					out.ExitCode = &code
+				}
+				if err != nil {
+					out.Error = render(err)
+				}
+				writeJSON(env.Stdout, out)
+				return silent(code)
+			}
+			if err != nil {
+				// The screen at the moment of failure is the useful part, and
+				// the harness error already carries it, so report the error
+				// alone rather than printing the screen twice.
+				return fail(err)
+			}
+			fmt.Fprintln(env.Stdout, res.screen)
+			return nil
+		},
 	}
 
-	c.Run = func(env *Env, args []string) int {
-		fs := c.flags()
-		if err := parseFlags(env, c, fs, args); err != nil {
-			return ExitUsage
-		}
-		argv := fs.Args()
-		if len(argv) == 0 {
-			env.errorf("snap needs a program to run")
-			printCommandHelp(env.Stderr, c)
-			return ExitUsage
-		}
-		cols, rows := size.cols, size.rows
-		if cols == 0 {
-			cols, rows = 80, 24
-		}
-		var re *regexp.Regexp
-		if waitRe != "" {
-			var err error
-			re, err = regexp.Compile(waitRe)
-			if err != nil {
-				env.errorf("-wait %q is not a valid regex: %v", waitRe, err)
-				return ExitUsage
-			}
-		}
-
-		start := time.Now()
-		res, err := capture(captureOpts{
-			argv: argv, cols: cols, rows: rows, term: term, envs: envs,
-			dir: dir, timeout: timeout, settle: settle, wait: re,
-			typeIn: unescape(typeIn), styled: styled,
-		})
-		code := classify(err)
-
-		if jsonOut {
-			out := snapResult{
-				Command: "snap", Argv: argv, Cols: cols, Rows: rows,
-				Screen: res.screen, Styled: styled,
-				Exited:     res.exited,
-				DurationMs: time.Since(start).Milliseconds(), Kind: kindOf(code),
-			}
-			if res.exited {
-				code := res.exitCode
-				out.ExitCode = &code
-			}
-			if err != nil {
-				out.Error = render(err)
-			}
-			writeJSON(env.Stdout, out)
-			return code
-		}
-		if err != nil {
-			// The screen at the moment of failure is the useful part, and the
-			// harness error already carries it, so print the error alone.
-			env.errorf("%s", render(err))
-			return code
-		}
-		fmt.Fprintln(env.Stdout, res.screen)
-		return ExitOK
-	}
+	f := c.Flags()
+	f.Var(&size, "size", "terminal size as COLSxROWS (default \"80x24\")")
+	f.StringVar(&term, "term", "xterm-256color", "value for TERM in the program's environment")
+	f.Var(&envs, "env", "environment variable KEY=VALUE (repeatable)")
+	f.DurationVar(&timeout, "timeout", 5*time.Second, "how long to wait for the screen to settle")
+	f.DurationVar(&settle, "settle", 0, "quiet window that counts as settled (default 150ms)")
+	f.StringVar(&waitRe, "wait", "", "wait until this regex matches the screen instead of waiting for quiet")
+	f.StringVar(&typeIn, "type", "", "type this text before capturing (\\r, \\n, \\t and \\e are unescaped)")
+	f.BoolVar(&styled, "styled", false, "render SGR styling instead of plain text")
+	f.BoolVar(&jsonOut, "json", false, "print one JSON result object to stdout")
+	f.StringVar(&dir, "dir", "", "working directory for the program")
 	return c
 }
 

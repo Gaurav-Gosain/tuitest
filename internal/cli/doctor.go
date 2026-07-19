@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuitest/internal/ptyproc"
+	"github.com/spf13/cobra"
 )
 
 // Check statuses, ordered by severity.
@@ -34,77 +34,81 @@ type doctorResult struct {
 	Kind    string  `json:"kind"`
 }
 
-func doctorCommand() *Command {
-	c := &Command{
-		Name:    "doctor",
-		Summary: "report on the environment that tests will run in",
-		Usage:   "doctor [flags]",
-		Long: `Doctor reports the things that decide whether tuitest works here and whether
-tests will be stable: whether a pseudo-terminal can be allocated at all, what
-TERM and the terminal size are, what the bundled VT emulator understands, and
-the conditions that most often make a suite flaky.
+func doctorCommand(env *Env) *cobra.Command {
+	var jsonOut bool
+
+	c := &cobra.Command{
+		Use:   "doctor",
+		Short: "Report on the environment that tests will run in",
+		Long: `Report the things that decide whether tuitest works here and whether tests
+will be stable.
+
+Run it first on any machine that is new to you, and run it in CI before the
+suite. It checks whether a pseudo-terminal can be allocated at all, what TERM
+and the terminal size are, what the bundled VT emulator understands, and the
+conditions that most often turn a correct suite into an intermittent one: a
+read-only temp directory, a single usable CPU, a missing Go toolchain.
 
 It spawns no program under test and writes no files, so it is safe to run
-anywhere, including in a container as a preflight step.
+anywhere, including inside a container as a preflight step.
 
-Doctor exits 0 when nothing failed, and 3 when something did, so CI can gate
-on it:
+Doctor exits 0 when nothing failed and 3 when something did, so CI can gate on
+it directly.`,
+		Example: `  # check this machine
+  tuitest doctor
 
+  # gate a CI job on it
   tuitest doctor || exit 1
 
-examples:
-  tuitest doctor
-  tuitest doctor -json | jq '.checks[] | select(.status != "ok")'`,
+  # show only what is not ok
+  tuitest doctor --json | jq '.checks[] | select(.status != "ok")'`,
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			checks := diagnose(env)
+			failed := false
+			for _, ck := range checks {
+				if ck.Status == statusFail {
+					failed = true
+				}
+			}
+			code := ExitOK
+			if failed {
+				code = ExitHarness
+			}
+
+			if jsonOut {
+				writeJSON(env.Stdout, doctorResult{
+					Command: "doctor", OK: !failed, Checks: checks, Kind: kindOf(code),
+				})
+				if failed {
+					return silent(code)
+				}
+				return nil
+			}
+			width := 0
+			for _, ck := range checks {
+				if len(ck.Name) > width {
+					width = len(ck.Name)
+				}
+			}
+			for _, ck := range checks {
+				mark := map[string]string{statusOK: "ok  ", statusWarn: "warn", statusFail: "FAIL"}[ck.Status]
+				fmt.Fprintf(env.Stdout, "%s  %-*s  %s\n", mark, width, ck.Name, ck.Detail)
+				if ck.Hint != "" {
+					fmt.Fprintf(env.Stdout, "      %-*s  %s\n", width, "", ck.Hint)
+				}
+			}
+			if failed {
+				fmt.Fprintln(env.Stdout, "\nsomething above failed; tuitest will not work here until it is fixed")
+				// The report above is the explanation, so only the exit code is
+				// left to carry.
+				return silent(code)
+			}
+			return nil
+		},
 	}
 
-	var jsonOut bool
-	c.flags = func() *flag.FlagSet {
-		fs := newFlagSet("doctor")
-		fs.BoolVar(&jsonOut, "json", false, "print the report as JSON")
-		return fs
-	}
-
-	c.Run = func(env *Env, args []string) int {
-		fs := c.flags()
-		if err := parseFlags(env, c, fs, args); err != nil {
-			return ExitUsage
-		}
-		checks := diagnose(env)
-		failed := false
-		for _, ck := range checks {
-			if ck.Status == statusFail {
-				failed = true
-			}
-		}
-		code := ExitOK
-		if failed {
-			code = ExitHarness
-		}
-
-		if jsonOut {
-			writeJSON(env.Stdout, doctorResult{
-				Command: "doctor", OK: !failed, Checks: checks, Kind: kindOf(code),
-			})
-			return code
-		}
-		width := 0
-		for _, ck := range checks {
-			if len(ck.Name) > width {
-				width = len(ck.Name)
-			}
-		}
-		for _, ck := range checks {
-			mark := map[string]string{statusOK: "ok  ", statusWarn: "warn", statusFail: "FAIL"}[ck.Status]
-			fmt.Fprintf(env.Stdout, "%s  %-*s  %s\n", mark, width, ck.Name, ck.Detail)
-			if ck.Hint != "" {
-				fmt.Fprintf(env.Stdout, "      %-*s  %s\n", width, "", ck.Hint)
-			}
-		}
-		if failed {
-			fmt.Fprintln(env.Stdout, "\nsomething above failed; tuitest will not work here until it is fixed")
-		}
-		return code
-	}
+	c.Flags().BoolVar(&jsonOut, "json", false, "print the report as JSON")
 	return c
 }
 

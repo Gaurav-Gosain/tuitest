@@ -13,6 +13,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuitest"
 	"github.com/Gaurav-Gosain/tuitest/tape"
+	"github.com/spf13/cobra"
 )
 
 // echoBin is the deterministic fixture every spawning test drives. It is built
@@ -90,8 +91,25 @@ func writeTape(t *testing.T, body string) string {
 
 // --- dispatch and help ---
 
+// subcommands returns the command tree's own subcommands, which is what the
+// registry's Commands() used to return. Help, completion and typo suggestions
+// are all derived from this same tree by cobra, so a command that is registered
+// is a command that is discoverable, which is the coherence guarantee the old
+// registry existed to provide.
+func subcommands() []*cobra.Command {
+	var out []*cobra.Command
+	for _, c := range newRootCommand(discardEnv()).Commands() {
+		if c.Hidden || c.Name() == "help" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // Verified to fail: making Main return ExitOK for an unknown command, and
-// dropping the suggestion, each break this test.
+// setting SuggestionsMinimumDistance to 0 so no suggestion is offered, each
+// break this test.
 func TestUnknownCommandIsUsageErrorWithSuggestion(t *testing.T) {
 	code, _, stderr := runCLI(nil, "rnu", "x.tape")
 	if code != ExitUsage {
@@ -100,44 +118,44 @@ func TestUnknownCommandIsUsageErrorWithSuggestion(t *testing.T) {
 	if !strings.Contains(stderr, `unknown command "rnu"`) {
 		t.Errorf("stderr does not name the unknown command:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, `did you mean "run"?`) {
+	// cobra words the suggestion differently from the hand-rolled dispatcher,
+	// but it has to still be a suggestion and it has to still be "run".
+	if !strings.Contains(strings.ToLower(stderr), "did you mean") || !strings.Contains(stderr, "run") {
 		t.Errorf("stderr does not suggest the close match:\n%s", stderr)
 	}
 }
 
 // A name nothing like a command must not produce a confident wrong guess.
-// Verified to fail: removing the edit-distance budget in suggest makes this
-// report a nonsense suggestion.
 func TestUnrelatedCommandGetsNoSuggestion(t *testing.T) {
 	_, _, stderr := runCLI(nil, "zzzzzzzzzz")
-	if strings.Contains(stderr, "did you mean") {
+	if strings.Contains(strings.ToLower(stderr), "did you mean") {
 		t.Errorf("suggested a command for an unrelated name:\n%s", stderr)
 	}
 }
 
 // The top-level help has to list every registered command, or a command becomes
-// undiscoverable the moment someone adds one. This is the coherence guarantee
-// the registry exists to provide.
-// Verified to fail: dropping a command from the printUsage loop, and removing
-// an entry's Summary, both break this test.
+// undiscoverable the moment someone adds one.
+// Verified to fail: removing a command from newRootCommand's AddCommand call,
+// and blanking an entry's Short, both break this test.
 func TestHelpListsEveryRegisteredCommand(t *testing.T) {
 	code, stdout, _ := runCLI(nil, "help")
 	if code != ExitOK {
 		t.Fatalf("help exit code = %d, want 0", code)
 	}
-	for _, c := range Commands() {
-		if !strings.Contains(stdout, c.Name) {
-			t.Errorf("help does not list command %q:\n%s", c.Name, stdout)
+	for _, c := range subcommands() {
+		if !strings.Contains(stdout, c.Name()) {
+			t.Errorf("help does not list command %q:\n%s", c.Name(), stdout)
 		}
-		if c.Summary == "" {
-			t.Errorf("command %q has no summary", c.Name)
+		if c.Short == "" {
+			t.Errorf("command %q has no summary", c.Name())
 		}
-		if !strings.Contains(stdout, c.Summary) {
-			t.Errorf("help does not show the summary for %q", c.Name)
+		if !strings.Contains(stdout, c.Short) {
+			t.Errorf("help does not show the summary for %q", c.Name())
 		}
 	}
-	// The exit-code contract is part of what makes the tool scriptable.
-	for _, want := range []string{"exit codes", "assertion failed", "timed out"} {
+	// The exit-code contract is part of what makes the tool scriptable, so the
+	// root help still has to state it.
+	for _, want := range []string{"an assertion failed", "a wait timed out", "harness error"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help does not document %q:\n%s", want, stdout)
 		}
@@ -145,19 +163,24 @@ func TestHelpListsEveryRegisteredCommand(t *testing.T) {
 }
 
 // Every command must have real help with an example, since that is the whole
-// point of the track. Verified to fail: blanking any command's Long field.
+// point of the track. Verified to fail: blanking any command's Example field.
 func TestEveryCommandHasHelpWithExamples(t *testing.T) {
-	for _, c := range Commands() {
-		t.Run(c.Name, func(t *testing.T) {
-			code, stdout, _ := runCLI(nil, "help", c.Name)
+	for _, c := range subcommands() {
+		t.Run(c.Name(), func(t *testing.T) {
+			code, stdout, _ := runCLI(nil, "help", c.Name())
 			if code != ExitOK {
-				t.Fatalf("help %s exit code = %d, want 0", c.Name, code)
+				t.Fatalf("help %s exit code = %d, want 0", c.Name(), code)
 			}
-			if !strings.Contains(stdout, "usage: tuitest "+c.Name) {
-				t.Errorf("help %s has no usage line:\n%s", c.Name, stdout)
+			// fang renders section headings in upper case, so the assertion is
+			// on the sections rather than on a literal usage line.
+			if !strings.Contains(stdout, "USAGE") || !strings.Contains(stdout, "tuitest "+c.Name()) {
+				t.Errorf("help %s has no usage line:\n%s", c.Name(), stdout)
 			}
-			if !strings.Contains(stdout, "example") {
-				t.Errorf("help %s shows no examples:\n%s", c.Name, stdout)
+			if !strings.Contains(stdout, "EXAMPLES") {
+				t.Errorf("help %s shows no examples:\n%s", c.Name(), stdout)
+			}
+			if c.Long == "" {
+				t.Errorf("command %q has no long description", c.Name())
 			}
 		})
 	}
@@ -168,8 +191,47 @@ func TestNoArgumentsIsUsageError(t *testing.T) {
 	if code != ExitUsage {
 		t.Errorf("exit code = %d, want %d", code, ExitUsage)
 	}
-	if !strings.Contains(stderr, "usage:") {
+	if !strings.Contains(strings.ToLower(stderr), "usage:") {
 		t.Errorf("stderr has no usage line:\n%s", stderr)
+	}
+}
+
+// The single-dash spelling is the published one: every example in the README
+// and every script written against this tool says "-size", not "--size". pflag
+// reads a single dash as a cluster of shorthands and would reject it, so
+// normalizeArgs rewrites it. Both spellings have to work.
+// Verified to fail: removing the normalizeArgs call from Main makes the
+// single-dash cases exit 2 with "unknown shorthand flag".
+func TestSingleAndDoubleDashFlagsBothParse(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	path := writeTape(t, "Set Size 40 10\nSpawn "+echoBin+
+		"\nWait /ECHOTUI/ @5s\nType "+long+"\nKey Enter\nWait /echo: "+long+"/ @5s\n")
+
+	for _, spelling := range []string{"-size", "--size"} {
+		t.Run(spelling, func(t *testing.T) {
+			if code, _, stderr := runCLI(nil, "run", spelling, "100x10", path); code != ExitOK {
+				t.Errorf("run %s 100x10 exit code = %d, want 0; stderr:\n%s", spelling, code, stderr)
+			}
+		})
+	}
+	// The "-name=value" form has to survive the rewrite too.
+	if code, _, stderr := runCLI(nil, "run", "-size=100x10", path); code != ExitOK {
+		t.Errorf("run -size=100x10 exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+}
+
+// A flag that looks like the tool's own but belongs to the program under test
+// must be left alone. Verified to fail: rewriting past the "--" terminator
+// makes snap hand "--size" to the program instead of "-size".
+func TestFlagsAfterTheTerminatorAreNotRewritten(t *testing.T) {
+	sh := lookupShell(t)
+	code, stdout, stderr := runCLI(nil,
+		"snap", "-size", "40x6", "--", sh, "-c", `printf %s "$1"`, "sh", "-size")
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "-size") {
+		t.Errorf("the program did not receive its own -size argument:\n%s", stdout)
 	}
 }
 
@@ -587,91 +649,88 @@ func TestDoctorUsesTheInjectedEnvironment(t *testing.T) {
 
 // --- completion ---
 
-// Completion is generated from the registry, so it must stay in step with it
-// automatically.
+// Completion is cobra's, and cobra's is dynamic: the generated script calls the
+// binary back through the hidden __complete command rather than embedding a list
+// of names. That is strictly better than the hand-rolled scripts, which had to
+// be regenerated to learn about a new command, but it means the old test (parse
+// the script, look for every command name in it) can no longer be written. The
+// equivalent guarantee is asserted against the callback itself, which is what
+// the shell actually consults.
 //
-// The candidate list is extracted per shell rather than searching the whole
-// script for the name: a command name also appears in the generated per-command
-// case blocks, so a bare substring search passes even when the list a user
-// actually completes against is stale. That weaker check was written first and
-// did not fail when the list was hardcoded, which is why this one parses.
-//
-// Verified to fail: replacing commandNames with a hardcoded {"help", "run"}
-// makes every shell subtest fail on the missing commands.
-func TestCompletionScriptsOfferEveryCommandAsACandidate(t *testing.T) {
-	extract := map[string]func(string) []string{
-		// compgen -W "..." holds the top-level candidates.
-		"bash": func(s string) []string {
-			const marker = `compgen -W "`
-			i := strings.Index(s, marker)
-			if i < 0 {
-				return nil
-			}
-			rest := s[i+len(marker):]
-			return strings.Fields(rest[:strings.Index(rest, `"`)])
-		},
-		// commands=( 'name:summary' ... ) holds them for zsh.
-		"zsh": func(s string) []string {
-			start := strings.Index(s, "commands=(")
-			if start < 0 {
-				return nil
-			}
-			body := s[start:]
-			body = body[:strings.Index(body, ")")]
-			var out []string
-			for _, line := range strings.Split(body, "\n") {
-				line = strings.TrimSpace(line)
-				if !strings.HasPrefix(line, "'") {
-					continue
-				}
-				name, _, _ := strings.Cut(strings.TrimPrefix(line, "'"), ":")
-				out = append(out, name)
-			}
-			return out
-		},
-		// fish declares each candidate with its own -a flag.
-		"fish": func(s string) []string {
-			var out []string
-			for _, line := range strings.Split(s, "\n") {
-				if !strings.Contains(line, "__tuitest_no_command") {
-					continue
-				}
-				if _, after, ok := strings.Cut(line, " -a "); ok {
-					out = append(out, strings.Fields(after)[0])
-				}
-			}
-			return out
-		},
+// Verified to fail: removing a command from newRootCommand makes this report the
+// missing name.
+func TestCompletionOffersEveryCommand(t *testing.T) {
+	code, stdout, stderr := runCLI(nil, cobra.ShellCompRequestCmd, "")
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
 	}
+	offered := map[string]bool{}
+	for _, line := range strings.Split(stdout, "\n") {
+		name, _, _ := strings.Cut(line, "\t")
+		offered[strings.TrimSpace(name)] = true
+	}
+	for _, c := range subcommands() {
+		if !offered[c.Name()] {
+			t.Errorf("completion does not offer %q; it offers %v", c.Name(), offered)
+		}
+	}
+	for _, want := range []string{"help", "completion"} {
+		if !offered[want] {
+			t.Errorf("completion does not offer %q; it offers %v", want, offered)
+		}
+	}
+}
 
-	for shell, parse := range extract {
+// run's argument is a tape file, and the completion has to say so, or the shell
+// offers every file in the directory.
+// Verified to fail: dropping ValidArgsFunction from runCommand makes the
+// directive plain file completion.
+func TestRunCompletesTapeFiles(t *testing.T) {
+	code, stdout, stderr := runCLI(nil, cobra.ShellCompRequestCmd, "run", "")
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "tape") {
+		t.Errorf("run does not complete tape files:\n%s", stdout)
+	}
+}
+
+// Every shell cobra can generate a script for must actually produce one, and it
+// must go to the Env's stdout rather than the process's: the generated
+// subcommands capture their writer when they are built, which is why
+// initCompletion runs after Main has redirected the root.
+func TestCompletionScriptsGenerate(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		t.Run(shell, func(t *testing.T) {
 			code, stdout, stderr := runCLI(nil, "completion", shell)
 			if code != ExitOK {
 				t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
 			}
-			got := parse(stdout)
-			if len(got) == 0 {
-				t.Fatalf("could not find the candidate list in the %s script:\n%s", shell, stdout)
-			}
-			offered := make(map[string]bool, len(got))
-			for _, n := range got {
-				offered[n] = true
-			}
-			for _, c := range Commands() {
-				if !offered[c.Name] {
-					t.Errorf("%s completion does not offer %q as a candidate; it offers %v", shell, c.Name, got)
-				}
-			}
-			if !offered["help"] {
-				t.Errorf("%s completion does not offer \"help\"; it offers %v", shell, got)
+			if !strings.Contains(stdout, "tuitest") {
+				t.Errorf("%s completion script did not reach the captured stdout:\n%s", shell, stdout)
 			}
 		})
 	}
 }
 
+// A shell nobody supports is a usage error, not a silent success. cobra's
+// completion command is not runnable, so without the fix in initCompletion
+// "tuitest completion csh" prints help and exits 0.
+// Verified to fail: removing the RunE assignment in initCompletion.
 func TestCompletionRejectsUnknownShell(t *testing.T) {
 	code, _, stderr := runCLI(nil, "completion", "csh")
+	if code != ExitUsage {
+		t.Errorf("exit code = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "csh") {
+		t.Errorf("stderr does not name the unsupported shell:\n%s", stderr)
+	}
+}
+
+// Naming no shell at all is the same kind of mistake and must say what the
+// choices are.
+func TestCompletionWithoutAShellIsUsageError(t *testing.T) {
+	code, _, stderr := runCLI(nil, "completion")
 	if code != ExitUsage {
 		t.Errorf("exit code = %d, want %d", code, ExitUsage)
 	}
@@ -791,4 +850,20 @@ func writeScript(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// The pre-cobra CLI used the flag package, where "-help" and "-version" were
+// ordinary single-dash flags. Cobra registers those two lazily during Execute,
+// so normalization has to ask for them explicitly or every script and README
+// example using the old spelling exits 2.
+func TestSingleDashHelpAndVersionStillWork(t *testing.T) {
+	for _, arg := range []string{"-help", "-version", "--help", "--version"} {
+		t.Run(arg, func(t *testing.T) {
+			var out bytes.Buffer
+			env := &Env{Stdout: &out, Stderr: &out, Getenv: func(string) string { return "" }}
+			if code := Main(env, []string{arg}); code != 0 {
+				t.Fatalf("%s: exit = %d, want 0\n%s", arg, code, out.String())
+			}
+		})
+	}
 }

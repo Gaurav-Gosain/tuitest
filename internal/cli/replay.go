@@ -2,36 +2,18 @@ package cli
 
 import (
 	"errors"
-	"flag"
 	"os"
 
 	"github.com/Gaurav-Gosain/tuitest/tape"
 	xterm "github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
 )
 
 // ExitAborted is the conventional shell status for "interrupted by the
 // operator", used when -step is abandoned partway through.
 const ExitAborted = 130
 
-func replayCommand() *Command {
-	c := &Command{
-		Name:    "replay",
-		Summary: "play a tape onto this terminal so you can watch it",
-		Usage:   "replay [flags] script.tape",
-		Long: `Replay plays a tape and renders the program's screen as it goes, so you can
-watch what a tape does instead of reading its assertions. It wraps the same
-player that run uses, so what you see is what a headless run does.
-
-When an assertion fails, replay shows the expected and actual screens side by
-side with a '|' against every row that differs, rather than a line diff.
-
-examples:
-  tuitest replay login.tape
-  tuitest replay -speed 2 login.tape       run twice as fast
-  tuitest replay -step login.tape          pause before each command
-  tuitest replay -update login.tape        rewrite the golden files`,
-	}
-
+func replayCommand(env *Env) *cobra.Command {
 	var (
 		speed     float64
 		step      bool
@@ -41,72 +23,90 @@ examples:
 		update    bool
 		strict    bool
 	)
-	c.flags = func() *flag.FlagSet {
-		fs := newFlagSet("replay")
-		fs.Float64Var(&speed, "speed", 1, "divide every Sleep by this (2 is twice as fast)")
-		fs.BoolVar(&step, "step", false, "pause before each command until you press enter")
-		fs.BoolVar(&echo, "echo", true, "print each command as it runs")
-		fs.IntVar(&width, "width", 40, "column width for side-by-side failure output")
-		fs.StringVar(&goldenDir, "golden-dir", "", "directory for golden files (default \"testdata\")")
-		fs.BoolVar(&update, "update", false, "rewrite golden snapshots instead of comparing")
-		fs.BoolVar(&strict, "strict", false, "treat Sleep as an error, so the tape must wait on conditions")
-		return fs
-	}
 
-	c.Run = func(env *Env, args []string) int {
-		fs := c.flags()
-		if err := parseFlags(env, c, fs, args); err != nil {
-			return ExitUsage
-		}
-		if fs.NArg() != 1 {
-			env.errorf("replay needs exactly one tape file, got %d", fs.NArg())
-			printCommandHelp(env.Stderr, c)
-			return ExitUsage
-		}
-		path := fs.Arg(0)
+	c := &cobra.Command{
+		Use:   "replay script.tape",
+		Short: "Play a tape onto this terminal so you can watch it",
+		Long: `Play a tape and render the program's screen as it goes.
 
-		// Step mode reads whole lines from the operator, so the terminal must
-		// stay in its normal cooked mode. The replayed program writes to the
-		// same screen but is driven by the tape, not by this terminal, so no
-		// raw mode is needed at all here.
-		if step && !xterm.IsTerminal(os.Stdin.Fd()) {
-			env.errorf("-step needs a terminal on stdin")
-			return ExitHarness
-		}
+Reach for replay when run has failed and the message is not enough. It wraps
+the same player run uses, so what you watch is what the headless run did, and
+--step pauses before each command so you can see the screen the tape was
+looking at when it made its decision.
 
-		f, err := os.Open(path) //nolint:gosec
-		if err != nil {
-			env.errorf("%v", err)
-			return ExitHarness
-		}
-		cmds, err := tape.ParseNamed(f, path)
-		_ = f.Close()
-		if err != nil {
-			env.errorf("%s", render(err))
-			return classify(err)
-		}
+When an assertion fails, replay shows the expected and the actual screen side by
+side with a '|' against every row that differs, rather than a line diff, because
+a line diff of two screens is unreadable.
 
-		r := &tape.Replayer{
-			Render:    env.Stdout,
-			Log:       env.Stderr,
-			Speed:     speed,
-			Echo:      echo,
-			Step:      step,
-			StepIn:    os.Stdin,
-			Width:     width,
-			GoldenDir: goldenDir,
-			Update:    update,
-			Strict:    strict,
-		}
-		if err := r.Run(cmds); err != nil {
-			if errors.Is(err, tape.ErrStepAborted) {
-				return ExitAborted
+Replay is interactive by nature: --step needs a terminal on stdin, and the
+rendering assumes a terminal it is allowed to draw on. Use run in CI.`,
+		Example: `  # watch a tape run
+  tuitest replay login.tape
+
+  # run twice as fast, dividing every Sleep
+  tuitest replay --speed 2 login.tape
+
+  # pause before each command until you press enter
+  tuitest replay --step login.tape
+
+  # rewrite the golden files while watching what they became
+  tuitest replay --update login.tape`,
+		ValidArgsFunction: tapeFileCompletion,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return usageErrorf(env, cmd, "replay needs exactly one tape file, got %d", len(args))
 			}
-			// The Replayer has already rendered the failing frame; printing
-			// the error text again would repeat the whole screen.
-			return classify(err)
-		}
-		return ExitOK
+			path := args[0]
+
+			// Step mode reads whole lines from the operator, so the terminal
+			// must stay in its normal cooked mode. The replayed program writes
+			// to the same screen but is driven by the tape, not by this
+			// terminal, so no raw mode is needed at all here.
+			if step && !xterm.IsTerminal(os.Stdin.Fd()) {
+				return failWith(ExitHarness, errors.New("--step needs a terminal on stdin"))
+			}
+
+			f, err := os.Open(path) //nolint:gosec
+			if err != nil {
+				return failWith(ExitHarness, err)
+			}
+			cmds, err := tape.ParseNamed(f, path)
+			_ = f.Close()
+			if err != nil {
+				return fail(err)
+			}
+
+			r := &tape.Replayer{
+				Render:    env.Stdout,
+				Log:       env.Stderr,
+				Speed:     speed,
+				Echo:      echo,
+				Step:      step,
+				StepIn:    os.Stdin,
+				Width:     width,
+				GoldenDir: goldenDir,
+				Update:    update,
+				Strict:    strict,
+			}
+			if err := r.Run(cmds); err != nil {
+				if errors.Is(err, tape.ErrStepAborted) {
+					return silent(ExitAborted)
+				}
+				// The Replayer has already rendered the failing frame; printing
+				// the error text again would repeat the whole screen.
+				return silent(classify(err))
+			}
+			return nil
+		},
 	}
+
+	f := c.Flags()
+	f.Float64Var(&speed, "speed", 1, "divide every Sleep by this (2 is twice as fast)")
+	f.BoolVar(&step, "step", false, "pause before each command until you press enter")
+	f.BoolVar(&echo, "echo", true, "print each command as it runs")
+	f.IntVar(&width, "width", 40, "column width for side-by-side failure output")
+	f.StringVar(&goldenDir, "golden-dir", "", "directory for golden files (default \"testdata\")")
+	f.BoolVar(&update, "update", false, "rewrite golden snapshots instead of comparing")
+	f.BoolVar(&strict, "strict", false, "treat Sleep as an error, so the tape must wait on conditions")
 	return c
 }

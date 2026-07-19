@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,40 +10,14 @@ import (
 
 	"github.com/Gaurav-Gosain/tuitest/tape"
 	xterm "github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
 )
 
 // stopKey ends a recording. Ctrl+] is the telnet escape and is almost never
 // bound by a TUI, so passing everything else straight through is safe.
 const stopKey = 0x1d
 
-func recordCommand() *Command {
-	c := &Command{
-		Name:    "record",
-		Summary: "drive a program by hand and write what you did as a tape",
-		Usage:   "record [flags] -- program [args...]",
-		Long: `Record spawns a program in a pseudo-terminal, connects it to this terminal so
-you can use it normally, and writes what you did as a tape. Press Ctrl+] to
-stop.
-
-Waits are inferred, not timed. Where the screen settled, record prefers a Wait
-on text that is new and distinctive; if nothing anchorable appeared it falls
-back to WaitStable, and where the screen never changed it emits nothing, since
-think time is not part of a test. Sleep is only emitted with -idle-sleep.
-
-Use -snapshots to capture the screen behind each settle point and write the
-golden files at the same time, so the recording replays green immediately.
-
-Mouse input is not represented in the tape grammar. Mouse reports are passed
-through to the program but counted, and record warns that the tape is not a
-complete replay.
-
-examples:
-  tuitest record -o login.tape -- ./myapp
-  tuitest record -snapshots -o login.tape -- ./myapp   also write the goldens
-  tuitest record -cols 80 -rows 24 -o t.tape -- vim    record at a fixed size
-  tuitest record -- htop                               write the tape to stdout`,
-	}
-
+func recordCommand(env *Env) *cobra.Command {
 	var (
 		out       string
 		snapshots bool
@@ -54,120 +28,139 @@ examples:
 		quiet     time.Duration
 		idleSleep time.Duration
 	)
-	c.flags = func() *flag.FlagSet {
-		fs := newFlagSet("record")
-		fs.StringVar(&out, "o", "", "write the tape here (default: stdout)")
-		fs.BoolVar(&snapshots, "snapshots", false, "capture a Snapshot at each settle point and write its golden")
-		fs.StringVar(&goldenDir, "golden-dir", "testdata", "directory for goldens written by -snapshots")
-		fs.IntVar(&cols, "cols", 0, "terminal width to record at (default: this terminal)")
-		fs.IntVar(&rows, "rows", 0, "terminal height to record at (default: this terminal)")
-		fs.StringVar(&term, "term", "xterm-256color", "TERM value for the recorded program")
-		fs.DurationVar(&quiet, "quiet", tape.DefaultQuiet, "how long the screen must hold still to count as settled")
-		fs.DurationVar(&idleSleep, "idle-sleep", 0, "emit Sleep for silent pauses at least this long (0 disables)")
-		return fs
-	}
 
-	c.Run = func(env *Env, args []string) int {
-		fs := c.flags()
-		if err := parseFlags(env, c, fs, args); err != nil {
-			return ExitUsage
-		}
-		if fs.NArg() < 1 {
-			env.errorf("record needs a program to run")
-			printCommandHelp(env.Stderr, c)
-			return ExitUsage
-		}
-		argv := fs.Args()
+	c := &cobra.Command{
+		Use:   "record -- program [args...]",
+		Short: "Drive a program by hand and write what you did as a tape",
+		Long: `Spawn a program in a pseudo-terminal, connect it to this terminal so you can
+use it normally, and write what you did as a tape. Press Ctrl+] to stop.
 
-		// -o is resolved before raw mode so a bad path fails before the screen
-		// is taken over.
-		if out != "" {
-			if dir := filepath.Dir(out); dir != "" {
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					env.errorf("%v", err)
-					return ExitHarness
+Reach for record when you know what the interaction looks like but not what the
+tape should say. It produces a first draft to edit rather than a finished test,
+and the draft is usually right about the keys and wrong about the waits.
+
+Waits are inferred, not timed. Where the screen settled, record prefers a Wait
+on text that is new and distinctive; if nothing anchorable appeared it falls
+back to WaitStable, and where the screen never changed it emits nothing, since
+think time is not part of a test. Sleep is only emitted with --idle-sleep.
+
+Use --snapshots to capture the screen behind each settle point and write the
+golden files at the same time, so the recording replays green immediately.
+
+Mouse input is not represented in the tape grammar. Mouse reports are passed
+through to the program but counted, and record warns that the tape is not a
+complete replay.`,
+		Example: `  # record a session into a tape
+  tuitest record -o login.tape -- ./myapp
+
+  # also write the goldens, so the tape replays green immediately
+  tuitest record --snapshots -o login.tape -- ./myapp
+
+  # record at a fixed size rather than this terminal's
+  tuitest record --cols 80 --rows 24 -o t.tape -- vim
+
+  # write the tape to stdout to look at it before saving
+  tuitest record -- htop`,
+		RunE: func(cmd *cobra.Command, argv []string) error {
+			if len(argv) < 1 {
+				return usageErrorf(env, cmd, "record needs a program to run")
+			}
+
+			// -o is resolved before raw mode so a bad path fails before the
+			// screen is taken over.
+			if out != "" {
+				if dir := filepath.Dir(out); dir != "" {
+					if err := os.MkdirAll(dir, 0o755); err != nil {
+						return failWith(ExitHarness, err)
+					}
 				}
 			}
-		}
 
-		stdin := os.Stdin.Fd()
-		if !xterm.IsTerminal(stdin) {
-			env.errorf("record needs a terminal on stdin; use tuitest run to play a tape back headlessly")
-			return ExitHarness
-		}
+			stdin := os.Stdin.Fd()
+			if !xterm.IsTerminal(stdin) {
+				return failWith(ExitHarness, errors.New(
+					"record needs a terminal on stdin; use tuitest run to play a tape back headlessly"))
+			}
 
-		cc, rr := cols, rows
-		if cc <= 0 || rr <= 0 {
-			w, h, err := xterm.GetSize(stdin)
+			cc, rr := cols, rows
+			if cc <= 0 || rr <= 0 {
+				w, h, err := xterm.GetSize(stdin)
+				if err != nil {
+					return failWith(ExitHarness, fmt.Errorf("terminal size: %w", err))
+				}
+				if cc <= 0 {
+					cc = w
+				}
+				if rr <= 0 {
+					rr = h
+				}
+			}
+
+			rec := tape.NewRecorder()
+			rec.CaptureSnapshots = snapshots
+			rec.IdleSleep = idleSleep
+
+			resizes, stopResize := watchResize(stdin)
+			defer stopResize()
+
+			fmt.Fprintf(env.Stderr, "tuitest: recording %s at %dx%d; press Ctrl+] to stop\r\n",
+				strings.Join(argv, " "), cc, rr)
+
+			// Raw mode so the program under test sees every keystroke exactly
+			// as a terminal would deliver it. It is restored before anything is
+			// reported.
+			state, err := xterm.MakeRaw(stdin)
 			if err != nil {
-				env.errorf("terminal size: %v", err)
-				return ExitHarness
+				return failWith(ExitHarness, fmt.Errorf("raw mode: %w", err))
 			}
-			if cc <= 0 {
-				cc = w
+
+			sess := &tape.Session{
+				Argv:     argv,
+				In:       os.Stdin,
+				Out:      os.Stdout,
+				Resizes:  resizes,
+				Cols:     cc,
+				Rows:     rr,
+				Term:     term,
+				Quiet:    quiet,
+				StopKey:  stopKey,
+				Recorder: rec,
 			}
-			if rr <= 0 {
-				rr = h
+			cmds, runErr := sess.Run()
+
+			if rerr := xterm.Restore(stdin, state); rerr != nil && runErr == nil {
+				runErr = rerr
 			}
-		}
-
-		rec := tape.NewRecorder()
-		rec.CaptureSnapshots = snapshots
-		rec.IdleSleep = idleSleep
-
-		resizes, stopResize := watchResize(stdin)
-		defer stopResize()
-
-		fmt.Fprintf(env.Stderr, "tuitest: recording %s at %dx%d; press Ctrl+] to stop\r\n",
-			strings.Join(argv, " "), cc, rr)
-
-		// Raw mode so the program under test sees every keystroke exactly as a
-		// terminal would deliver it. It is restored before anything is reported.
-		state, err := xterm.MakeRaw(stdin)
-		if err != nil {
-			env.errorf("raw mode: %v", err)
-			return ExitHarness
-		}
-
-		sess := &tape.Session{
-			Argv:     argv,
-			In:       os.Stdin,
-			Out:      os.Stdout,
-			Resizes:  resizes,
-			Cols:     cc,
-			Rows:     rr,
-			Term:     term,
-			Quiet:    quiet,
-			StopKey:  stopKey,
-			Recorder: rec,
-		}
-		cmds, runErr := sess.Run()
-
-		if rerr := xterm.Restore(stdin, state); rerr != nil && runErr == nil {
-			runErr = rerr
-		}
-		fmt.Fprint(env.Stderr, "\r\n")
-		if runErr != nil {
-			env.errorf("record: %v", runErr)
-			return classify(runErr)
-		}
-
-		if err := writeTapeFile(env, out, argv, cmds); err != nil {
-			env.errorf("%v", err)
-			return ExitHarness
-		}
-		if snapshots {
-			if err := writeGoldens(env, goldenDir, rec.SnapshotFiles()); err != nil {
-				env.errorf("%v", err)
-				return ExitHarness
+			fmt.Fprint(env.Stderr, "\r\n")
+			if runErr != nil {
+				return fail(fmt.Errorf("record: %w", runErr))
 			}
-		}
-		// There is deliberately no "dropped sequences" warning here any
-		// more. Input that no protocol decodes is captured verbatim as a
-		// Raw command rather than discarded, so a recording is always a
-		// complete replay and the warning could only ever have said zero.
-		return ExitOK
+
+			if err := writeTapeFile(env, out, argv, cmds); err != nil {
+				return failWith(ExitHarness, err)
+			}
+			if snapshots {
+				if err := writeGoldens(env, goldenDir, rec.SnapshotFiles()); err != nil {
+					return failWith(ExitHarness, err)
+				}
+			}
+			// There is deliberately no "dropped sequences" warning here any
+			// more. Input that no protocol decodes is captured verbatim as a
+			// Raw command rather than discarded, so a recording is always a
+			// complete replay and the warning could only ever have said zero.
+			return nil
+		},
 	}
+
+	f := c.Flags()
+	f.StringVarP(&out, "out", "o", "", "write the tape here (default: stdout)")
+	f.BoolVar(&snapshots, "snapshots", false, "capture a Snapshot at each settle point and write its golden")
+	f.StringVar(&goldenDir, "golden-dir", "testdata", "directory for goldens written by --snapshots")
+	f.IntVar(&cols, "cols", 0, "terminal width to record at (default: this terminal)")
+	f.IntVar(&rows, "rows", 0, "terminal height to record at (default: this terminal)")
+	f.StringVar(&term, "term", "xterm-256color", "value for TERM in the recorded program's environment")
+	f.DurationVar(&quiet, "quiet", tape.DefaultQuiet, "how long the screen must hold still to count as settled")
+	f.DurationVar(&idleSleep, "idle-sleep", 0, "emit Sleep for silent pauses at least this long (0 disables)")
 	return c
 }
 
@@ -191,7 +184,7 @@ func writeTapeFile(env *Env, path string, argv []string, cmds []tape.Command) er
 }
 
 // writeGoldens saves the screens captured at each settle point, so a recording
-// made with -snapshots replays green without a separate -update pass.
+// made with --snapshots replays green without a separate --update pass.
 func writeGoldens(env *Env, dir string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil
