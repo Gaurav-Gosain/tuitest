@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/charmbracelet/x/xpty"
 )
 
 // tuitest has no Windows implementation. The PTY layer underneath it would work
@@ -30,6 +32,8 @@ func init() {
 // errors for the platform hooks the rest of the package calls.
 
 func setSysProcAttr(*exec.Cmd) {}
+
+func neutraliseLineDiscipline(xpty.Pty) error { return nil }
 
 func terminateGroup(int, <-chan struct{}) error { return nil }
 

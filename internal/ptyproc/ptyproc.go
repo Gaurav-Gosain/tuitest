@@ -77,6 +77,14 @@ func Start(cfg Config, h Handler) (*Process, error) {
 		return nil, err
 	}
 
+	// Take the line discipline out of the way before the child exists, so that
+	// every byte written to this PTY reaches the program unaltered from the very
+	// first one. See neutraliseLineDiscipline for why this cannot wait.
+	if err := neutraliseLineDiscipline(pty); err != nil {
+		_ = pty.Close()
+		return nil, err
+	}
+
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...) //nolint:gosec
 	cmd.Env = cfg.Env
 	cmd.Dir = cfg.Dir

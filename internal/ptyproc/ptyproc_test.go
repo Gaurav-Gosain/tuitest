@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,5 +75,72 @@ func TestDoneClosesAfterOnClose(t *testing.T) {
 	}
 	if code, exited := p.ExitCode(); !exited || code != 3 {
 		t.Fatalf("ExitCode() = (%d, %v), want (3, true)", code, exited)
+	}
+}
+
+// TestControlCharactersReachTheChild pins the property that makes a generated
+// reproduction trustworthy: input written to the PTY is delivered to the
+// program, not consumed by the line discipline on its way there.
+//
+// A new PTY starts in cooked mode, so before this was fixed a 0x03 sent
+// straight after the spawn raced the program's own MakeRaw. Winning the race
+// meant the byte was read; losing it meant SIGINT killed the child and the
+// harness graded a program that had never run. The fuzzer minimises exactly to
+// that shape, and the result was corpus entries that reproduced roughly one
+// time in five.
+//
+// The shell here is deliberately not a TUI and never goes raw, so the only
+// thing that can be keeping the signal from firing is the PTY configuration.
+func TestControlCharactersReachTheChild(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not on PATH")
+	}
+	for _, tool := range []string{"dd", "od", "tr"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not on PATH", tool)
+		}
+	}
+
+	// Reads one byte and reports its value, so the test can tell "delivered"
+	// from "the shell exited for some other reason".
+	script := `dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; echo`
+
+	var out strings.Builder
+	var mu sync.Mutex
+	p, err := Start(Config{Argv: []string{sh, "-c", script}, Cols: 20, Rows: 5}, Handler{
+		OnData: func(b []byte) {
+			mu.Lock()
+			out.Write(b)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+
+	// Written immediately, while the child is still starting: this is the
+	// window the bug lived in. The newline is only there to complete the line
+	// for the still-canonical read; the 0x03 in front of it is the subject.
+	if err := p.Write([]byte{3, '\n'}); err != nil {
+		t.Fatalf("writing to the pty: %v", err)
+	}
+
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never exited")
+	}
+
+	if st, _ := p.ExitStatus(); st.Signaled {
+		t.Fatalf("the child was killed by %v: the line discipline turned input into a signal "+
+			"instead of delivering it", st.Signal)
+	}
+	mu.Lock()
+	got := out.String()
+	mu.Unlock()
+	if strings.TrimSpace(got) != "3" {
+		t.Fatalf("the child read %q, want the 0x03 that was sent to it", strings.TrimSpace(got))
 	}
 }
