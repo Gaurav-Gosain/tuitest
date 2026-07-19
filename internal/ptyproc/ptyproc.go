@@ -50,6 +50,8 @@ type Process struct {
 	pty xpty.Pty
 	cmd *exec.Cmd
 
+	writeMu sync.Mutex // serializes writes to the PTY master
+
 	mu     sync.Mutex
 	exited bool
 	status Status
@@ -147,7 +149,13 @@ func (p *Process) reap() Status {
 }
 
 // Write sends input bytes to the child.
+// Write sends bytes to the child. Two goroutines write here: the caller
+// sending keystrokes, and the output pump forwarding emulator query responses.
+// The lock keeps a short write from being interleaved into the middle of an
+// escape sequence from the other writer.
 func (p *Process) Write(b []byte) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	_, err := p.pty.Write(b)
 	return err
 }

@@ -68,6 +68,12 @@ func main() {
 			os.Exit(0)
 		case b >= 0x20 && b < 0x7f && len(buf) == 1:
 			fmt.Printf("key %c\r\n", b)
+		// The answers to the startup queries above. A terminal that answers
+		// them delivers the replies on this same input channel, so they have
+		// to be consumed: left in the buffer, they prefix the next sequence
+		// and stop it from being recognised at all.
+		case strings.HasPrefix(s, esc+"[?") && b == 'c': // device attributes
+		case strings.HasPrefix(s, esc+"_G") && strings.HasSuffix(s, esc+`\`): // kitty graphics
 		default:
 			continue
 		}

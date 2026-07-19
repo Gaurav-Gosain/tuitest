@@ -18,6 +18,15 @@ import (
 type Emulator interface {
 	// Write feeds output bytes (from the child PTY) into the emulator.
 	Write(p []byte) (int, error)
+	// TakeResponses removes and returns the bytes the emulator wants to send
+	// back to the program, the answers to queries it made: cursor position
+	// reports, foreground and background colour queries, device attributes,
+	// and keyboard protocol probes. A real terminal answers these, so the
+	// harness must too, or any program that probes before drawing hangs on a
+	// retry loop and paints nothing. Callers drain after each Write and
+	// forward the result to the PTY. It must not block, and returns nil when
+	// nothing is queued.
+	TakeResponses() []byte
 	// Resize changes the emulator's grid size in cells.
 	Resize(cols, rows int)
 	// Size returns the current grid size in cells.
@@ -53,6 +62,8 @@ type adapter struct {
 }
 
 func (a *adapter) Write(p []byte) (int, error) { return a.e.Write(p) }
+
+func (a *adapter) TakeResponses() []byte { return a.e.TakeResponses() }
 
 func (a *adapter) Resize(cols, rows int) { a.e.Resize(cols, rows) }
 

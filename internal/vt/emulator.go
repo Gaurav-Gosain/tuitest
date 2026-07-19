@@ -701,6 +701,18 @@ func (e *Emulator) Read(p []byte) (n int, err error) {
 	return e.pipe.Read(p) //nolint:wrapcheck
 }
 
+// TakeResponses removes and returns any bytes the emulator has queued to send
+// back to the program, such as cursor position reports, colour queries, and
+// device attributes. Unlike Read it never blocks, so a caller can drain after
+// each Write without a dedicated goroutine. It returns nil when there is
+// nothing queued.
+func (e *Emulator) TakeResponses() []byte {
+	if e.closed.Load() {
+		return nil
+	}
+	return e.pipe.takeAll()
+}
+
 // Close closes the terminal.
 func (e *Emulator) Close() error {
 	if e.closed.Load() {

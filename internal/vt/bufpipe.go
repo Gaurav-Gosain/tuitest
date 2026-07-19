@@ -59,6 +59,20 @@ func (p *bufPipe) Read(b []byte) (int, error) {
 	return p.buf.Read(b) //nolint:wrapcheck
 }
 
+// takeAll removes and returns everything currently buffered without blocking.
+// It returns nil when the buffer is empty, so a caller draining after every
+// write does not allocate on the common path where nothing was produced.
+func (p *bufPipe) takeAll() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.buf.Len() == 0 {
+		return nil
+	}
+	out := make([]byte, p.buf.Len())
+	_, _ = p.buf.Read(out)
+	return out
+}
+
 // Close unblocks any waiting Read.
 func (p *bufPipe) Close() error {
 	p.mu.Lock()

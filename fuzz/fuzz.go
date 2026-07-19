@@ -137,8 +137,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	deadline := time.Time{}
+	// driveCtx bounds the generated runs by the same deadline, so --duration
+	// is a budget rather than a suggestion. Checking only between iterations
+	// let a session overrun by a whole iteration, which with the default
+	// action count is most of a minute. Shrinking and confirmation
+	// deliberately run on the unbounded ctx: once a failure is found, handing
+	// back a reproduction that was never minimised or verified would be a
+	// worse trade than a few seconds over budget.
+	driveCtx := ctx
 	if opts.Duration > 0 {
 		deadline = start.Add(opts.Duration)
+		var cancel context.CancelFunc
+		driveCtx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
 
 	for i := 0; ; i++ {
@@ -158,7 +169,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		iterSeed := opts.Seed + uint64(i)*0x9e3779b97f4a7c15
 		cmds := newGenerator(opts.Gen, iterSeed).Run(opts.Argv)
 
-		failure, spawnErr := driveReportingSpawn(ctx, opts, cmds)
+		failure, spawnErr := driveReportingSpawn(driveCtx, opts, cmds)
 		if spawnErr != nil {
 			return nil, fmt.Errorf("fuzz: cannot start %s: %w", strings.Join(opts.Argv, " "), spawnErr)
 		}
