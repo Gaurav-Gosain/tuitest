@@ -5,7 +5,14 @@
 # Every WaitStable is a condition on the program going quiet, so each burst
 # lands as fast as lazygit can answer it. The Sleeps are for the camera: they
 # hold each result on screen long enough to be read at a normal frame rate, and
-# they are the only fixed clock in the file.
+# they are the only fixed clock in the file. Nothing here waits on a Sleep to
+# know the program is ready, and a tape you were writing to test lazygit rather
+# than to film it would have none of them.
+#
+# Because of that, hero-session.sh filters the Sleep lines out of the trace
+# pane the recording shows. Every command in this file still runs, and the pane
+# is still the replayer's own echo: it just leaves out the camera direction, so
+# what a reader sees is the waiting that tuitest actually does for them.
 Set Size 86 22
 
 Spawn lazygit

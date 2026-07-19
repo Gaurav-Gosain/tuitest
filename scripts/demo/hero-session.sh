@@ -65,15 +65,25 @@ trace="$sandbox/trace"
 : >"$trace"
 
 # The program pane runs this rather than a one-liner wedged into the tmux
-# command list: the trailing hold is what keeps the last frame on screen, and
-# the clear wipes the terminal queries lazygit left on the normal screen before
-# it switched to the alternate one.
+# command list, because it has to turn the pane's echo off before the replay
+# starts and the trailing hold is what keeps the last frame on screen.
+#
+# The echo matters. tuitest mirrors the child's bytes to its own stdout
+# verbatim, so lazygit's terminal queries (DA1, the DECRQM probes, tmux's
+# XTVERSION) travel out of the pane and tmux answers them. Those answers arrive
+# on this script's stdin, where nothing reads them, and the line discipline
+# echoes them straight back onto the screen as ^[[?1;2;4c and friends. They sit
+# on the normal screen until lazygit exits its alternate screen, and then they
+# are the first thing the pane shows. Turning echo off stops them being drawn
+# at all, which is the only fix that does not just move the garbage somewhere
+# the camera cannot see it.
 cat >"$sandbox/drive.sh" <<DRIVE
 #!/usr/bin/env bash
+stty -echo 2>/dev/null || true
 sleep 0.8
 tuitest replay "$root/scripts/demo/tapes/hero.tape" 2>"$trace"
 status=\$?
-sleep 1.2
+sleep 0.6
 clear
 if [ "\$status" -eq 0 ]; then
 	printf '\n  tuitest replay finished: every assertion passed, exit %d\n' "\$status"
@@ -92,8 +102,16 @@ cd "$sandbox/tuitest"
 # and the program pane is split in above it so the program lands on top. The
 # leading pause covers tmux drawing its borders; without it the first frames
 # film a half-built screen.
+#
+# The second grep drops the tape's Sleep lines from the display, and only from
+# the display: every command in the tape still runs, and the trace above is the
+# replayer's own echo of them. The Sleeps in this tape are camera direction,
+# holding each result on screen long enough to be read at twelve frames a
+# second, and they are not how anyone should drive a program with tuitest. The
+# waiting that matters is on the WaitStable and Expect lines, which are what
+# this pane is meant to show a reader.
 tmux -S "$sock" -f "$sandbox/tmux.conf" new-session -s hero \
-	"tail -n +1 -f '$trace' | grep --line-buffered '^> ' | sed -u 's/^> //'" \; \
+	"tail -n +1 -f '$trace' | grep --line-buffered '^> ' | grep --line-buffered -v '^> Sleep ' | sed -u 's/^> //'" \; \
 	select-pane -T "the input tuitest is sending" \; \
 	split-window -vb -l 23 "$sandbox/drive.sh" \; \
 	select-pane -T "lazygit, driven through a pseudo-terminal"
