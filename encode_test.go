@@ -72,6 +72,10 @@ func TestMouseEncodeSGR(t *testing.T) {
 }
 
 func TestBuildEnvHermetic(t *testing.T) {
+	// Set the variable the hermetic environment must not carry. Asserting the
+	// absence of something nothing ever set passes whether or not the hermetic
+	// default works, which is how a broken build could keep this test green.
+	t.Setenv("TUIOS_SESSION", "leaked-from-the-parent")
 	c := defaultConfig()
 	c.term = "dumb"
 	c.trueColor = true

@@ -200,6 +200,14 @@ func TestTimeoutErrorHasScreen(t *testing.T) {
 	if !contains(te.Screen, "ECHOTUI") {
 		t.Fatalf("timeout error screen dump missing banner:\n%s", te.Screen)
 	}
+	// The mirrored I/O tail is the other half of what makes a timeout report
+	// actionable, and nothing else asserted that it is ever populated.
+	if !contains(te.TailLog, "ECHOTUI") {
+		t.Errorf("timeout error is missing the mirrored I/O tail:\n%q", te.TailLog)
+	}
+	if !contains(err.Error(), "last I/O") {
+		t.Errorf("timeout message does not include the I/O section:\n%s", err)
+	}
 	if !errors.Is(err, tuitest.ErrTimeout) {
 		t.Errorf("errors.Is(err, ErrTimeout) = false for %v", err)
 	}
