@@ -28,6 +28,11 @@ func TestParseErrorReportsLineAndColumn(t *testing.T) {
 		{"bad Set duration", "Set WaitTimeout soon\n", 1, 17, "not a positive duration"},
 		{"bad env entry", "Set Env NOEQUALS\n", 1, 9, "KEY=VALUE"},
 		{"unknown wait token", "Wait /ok/ +Screne\n", 1, 11, `unexpected token "+Screne"`},
+		// An option token before the pattern: the column has to come from the
+		// argument text's own offset, not from a base of 1, or the caret lands
+		// under the verb instead of the token.
+		{"unknown token before the regex", "Wait +Screne /ok/\n", 1, 6, `unexpected token "+Screne"`},
+		{"bad timeout before the regex", "Wait @soon /ok/\n", 1, 6, "not a positive duration"},
 		{"bad timeout", "Wait /ok/ @soon\n", 1, 11, "not a positive duration"},
 		{"bad regex", "Wait /(unclosed/\n", 1, 6, "regex"},
 		{"unterminated regex", "Wait /ok +Screen\n", 1, 6, "unterminated"},

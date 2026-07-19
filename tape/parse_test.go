@@ -222,3 +222,67 @@ func TestResolveKey(t *testing.T) {
 		}
 	}
 }
+
+// TestParseAcceptsCRLF covers a tape authored on Windows, or edited by a tool
+// that rewrote the line endings.
+//
+// This one passes without the TrimRight in ParseNamed, because bufio.Scanner
+// already strips a single trailing CR. It is kept as a regression guard on the
+// behaviour rather than on the implementation; the case that actually needs
+// the TrimRight is TestParseStripsResidualCarriageReturns.
+func TestParseAcceptsCRLF(t *testing.T) {
+	cmds, err := Parse(strings.NewReader("Spawn prog\r\nType hello\r\nKey Enter\r\n"))
+	if err != nil {
+		t.Fatalf("a CRLF tape did not parse: %v", err)
+	}
+	if len(cmds) != 3 {
+		t.Fatalf("parsed %d commands, want 3", len(cmds))
+	}
+	if cmds[1].Text != "hello" {
+		t.Errorf("Type text = %q, want %q (a stray CR survived)", cmds[1].Text, "hello")
+	}
+	if got := cmds[2].Keys[0]; got != "Enter" {
+		t.Errorf("Key = %q, want %q (a stray CR survived)", got, "Enter")
+	}
+}
+
+// TestParseCRLFSurvivesReprint pins that a CRLF tape and its Unix equivalent
+// print identically, so reformatting one does not silently change it.
+func TestParseCRLFSurvivesReprint(t *testing.T) {
+	crlf, err := Parse(strings.NewReader("Spawn prog\r\nType hi\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lf, err := Parse(strings.NewReader("Spawn prog\nType hi\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := Sprint(crlf), Sprint(lf); a != b {
+		t.Errorf("CRLF and LF tapes print differently:\n%q\nvs\n%q", a, b)
+	}
+}
+
+// TestParseStripsResidualCarriageReturns is the case ParseNamed's TrimRight
+// exists for. bufio.Scanner removes exactly one trailing CR, so a file that
+// went through more than one CRLF conversion, or that carries a lone CR before
+// the newline, still hands the parser a line ending in CR. That CR lands
+// inside the final token: a Key name stops resolving, and a Type line sends an
+// invisible carriage return to the program under test.
+//
+// Verified to fail: replacing the TrimRight with a bare sc.Text() makes the
+// Key case fail to resolve "Enter" and leaves a CR on the Type text.
+func TestParseStripsResidualCarriageReturns(t *testing.T) {
+	cmds, err := Parse(strings.NewReader("Spawn prog\r\r\nType hello\r\r\nKey Enter\r\r\n"))
+	if err != nil {
+		t.Fatalf("a doubled-CR tape did not parse: %v", err)
+	}
+	if len(cmds) != 3 {
+		t.Fatalf("parsed %d commands, want 3", len(cmds))
+	}
+	if cmds[1].Text != "hello" {
+		t.Errorf("Type text = %q, want %q (a residual CR survived)", cmds[1].Text, "hello")
+	}
+	if got := cmds[2].Keys[0]; got != "Enter" {
+		t.Errorf("Key = %q, want %q (a residual CR survived)", got, "Enter")
+	}
+}
