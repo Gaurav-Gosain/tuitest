@@ -184,14 +184,21 @@ func capture(o captureOpts) (captureResult, error) {
 	}
 	defer tt.Close() //nolint:errcheck
 
-	// Wait for the program's first byte before any quiet-window wait. WaitStable
-	// measures quiet from the spawn, so a TUI that takes longer than the settle
-	// interval to paint (btop and friends spend that long starting up) is
-	// reported settled while its screen is still blank, and snap prints an empty
-	// capture. A program that legitimately never writes is not an error, so a
-	// timeout here is ignored: the settle wait below still runs, and the capture
-	// is then blank because the program really did draw nothing.
-	_ = tt.WaitForOutput(o.timeout)
+	// Wait for something to actually appear on screen before any quiet-window
+	// wait. WaitStable measures quiet from the spawn, so a program that has not
+	// painted yet is reported settled and snap prints an empty capture. Waiting
+	// for the first byte is not enough on its own: a full-screen program's first
+	// bytes switch to the alternate screen and clear it, which is output that
+	// draws nothing, and the pause before the first frame is easily longer than
+	// the settle window. htop and btop both snapped blank for exactly that
+	// reason.
+	//
+	// A program whose screen is legitimately empty is not an error, so this
+	// timing out is ignored; the settle wait below still runs and the capture is
+	// then blank because the program really did draw nothing.
+	_ = tt.WaitFor(func(s tuitest.Screen) bool {
+		return strings.TrimSpace(s.Text()) != ""
+	}, o.timeout)
 
 	if o.typeIn != "" {
 		// Wait for the program to draw something before typing, so input is
@@ -219,17 +226,19 @@ func capture(o captureOpts) (captureResult, error) {
 	} else {
 		err = tt.WaitStable(o.timeout)
 	}
-	if err != nil {
-		return res, err
-	}
 
+	// Capture the screen whether or not the wait succeeded. A program that
+	// never goes quiet, which is every TUI that animates, times out the settle
+	// wait while having drawn a perfectly good screen; returning nothing there
+	// made -json report an empty screen for exactly the programs a user is most
+	// likely to be pointing snap at.
 	if o.styled {
 		res.screen = tt.SnapshotStyled()
 	} else {
 		res.screen = tt.Snapshot()
 	}
 	res.exitCode, res.exited = tt.ExitCode()
-	return res, nil
+	return res, err
 }
 
 // unescape expands the handful of backslash escapes a shell will not expand

@@ -438,6 +438,30 @@ func TestSnapWaitsForASlowProgramToPaint(t *testing.T) {
 	}
 }
 
+// A TUI that animates never goes quiet, so the settle wait times out even
+// though the program has drawn a perfectly good screen. The screen is the
+// whole point of snap, so it must be reported anyway rather than discarded
+// with the error.
+// Verified to fail: returning early on the settle error, instead of capturing
+// the screen first, makes the reported screen empty.
+func TestSnapReportsTheScreenEvenWhenItNeverSettles(t *testing.T) {
+	sh := lookupShell(t)
+	// Paints once, then keeps writing forever so the quiet window never opens.
+	code, stdout, _ := runCLI(nil,
+		"snap", "-size", "40x8", "-json", "-timeout", "1s",
+		"--", sh, "-c", `printf 'ANIMATING\n'; while :; do printf '.'; sleep 0.02; done`)
+	if code == ExitOK {
+		t.Fatalf("a program that never settles should not report success")
+	}
+	var res snapResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("decoding snap json: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(res.Screen, "ANIMATING") {
+		t.Errorf("snap discarded the screen it had on timeout: %q", res.Screen)
+	}
+}
+
 // Verified to fail: dropping WithEnv from capture makes the marker absent.
 func TestSnapEnvFlagReachesTheProgram(t *testing.T) {
 	sh := lookupShell(t)
