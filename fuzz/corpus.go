@@ -14,9 +14,16 @@ import (
 )
 
 // TapeFor renders a failure as a runnable tape file. The header records what
-// broke and how to replay it; the body is the minimised input. The result is an
-// ordinary tape, so it runs under "tuitest run" with no fuzz-specific tooling
-// and can be committed as a regression test.
+// broke and how to replay it; the body is the minimised input followed by an
+// assertion that the failure did not happen. The result is an ordinary tape, so
+// it runs under "tuitest run" with no fuzz-specific tooling and can be
+// committed as a regression test.
+//
+// The trailing assertion is what makes the file a test rather than a
+// transcript. Without it a reproduction passes even while the program still
+// crashes, since replaying the input is not the same as checking the outcome,
+// and "rerun with the same -corpus to check a fix" would be a promise the file
+// could not keep.
 func TapeFor(f *Failure) string {
 	var b strings.Builder
 
@@ -32,6 +39,9 @@ func TapeFor(f *Failure) string {
 	b.WriteString("# replay with: tuitest run <this file>\n")
 	b.WriteString("\n")
 	b.WriteString(tape.Sprint(f.Commands))
+	if a := assertionFor(f); a != "" {
+		b.WriteString(a)
+	}
 
 	if f.Screen != "" {
 		b.WriteString("\n# --- screen at the point of failure ---\n")
@@ -41,6 +51,38 @@ func TapeFor(f *Failure) string {
 	}
 	return b.String()
 }
+
+// assertionFor renders the check that fails while the bug is present and passes
+// once it is fixed. It returns "" for the kinds whose failure is not observable
+// from inside a tape, rather than emitting an assertion that would always pass
+// and read as a green regression test.
+func assertionFor(f *Failure) string {
+	switch f.Kind {
+	case FailCrash, FailDirtyExit:
+		// The program died abnormally, so asserting a clean exit fails for as
+		// long as it does and passes once it survives the input. This adds no
+		// input, so running the file reproduces exactly what the fuzzer drove.
+		return assertionMarker + "# The bug: this program should still exit cleanly after the input above.\n" +
+			"ExpectExit 0\n"
+	default:
+		// A hang, a screen inconsistency and memory growth are all judged by
+		// the fuzzer from outside the tape, by watching the process. There is
+		// no tape command that checks them without changing the reproduction
+		// (a liveness probe means sending input the fuzzer did not send), so
+		// the file stays a transcript and says so rather than carrying an
+		// assertion that would pass either way.
+		return assertionMarker + "# This failure is judged from outside the tape, by watching the process,\n" +
+			"# so there is no assertion that \"tuitest run\" could check without\n" +
+			"# changing the reproduction. The commands above are the input;\n" +
+			"# rerun \"tuitest fuzz\" against the same corpus to check a fix.\n"
+	}
+}
+
+// assertionMarker separates the reproduction from the assertion appended after
+// it. Corpus replay truncates each entry here, so re-driving a saved failure
+// sends exactly the input that was minimised and nothing else, while a person
+// running "tuitest run" on the file still gets a real assertion.
+const assertionMarker = "\n# --- assertion (not replayed by tuitest fuzz) ---\n"
 
 // corpusName derives a stable filename from the failure kind and the minimised
 // input, so re-finding the same bug overwrites its entry instead of piling up
@@ -107,11 +149,22 @@ func replayCorpus(ctx context.Context, opts Options) ([]*Failure, error) {
 	return found, nil
 }
 
+// parseTapeFile reads a corpus entry, keeping only the reproduction. Everything
+// from the assertion marker on is dropped, so replaying an entry drives the
+// input that was minimised rather than the assertion written for human use.
 func parseTapeFile(path string) ([]tape.Command, error) {
-	file, err := os.Open(path) //nolint:gosec
+	data, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close() //nolint:errcheck
-	return tape.Parse(file)
+	src := string(data)
+	if i := strings.Index(src, strings.TrimPrefix(assertionMarker, "\n")); i >= 0 {
+		src = src[:i]
+	}
+	return tape.Parse(strings.NewReader(src))
 }
+
+// LoadCorpusEntry reads a corpus entry the way a fuzzing session replays it:
+// the reproduction only, with the trailing assertion dropped. It is exported so
+// a test can check that the two halves of an entry stay separate.
+func LoadCorpusEntry(path string) ([]tape.Command, error) { return parseTapeFile(path) }

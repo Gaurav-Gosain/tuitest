@@ -153,3 +153,46 @@ func TestTypePreservesLiteralSpacing(t *testing.T) {
 		t.Errorf("text = %q, want %q", got, want)
 	}
 }
+
+// TestUnknownVerbSuggestsTheClosestOne covers the commonest newcomer mistake in
+// a tape: a misspelled verb. A bare rejection makes the reader scan the grammar
+// to find what they meant, and the CLI already does this for subcommands.
+//
+// Verified to fail: making suggestVerb always return ("", false) drops the
+// suggestion and each of these cases fails.
+func TestUnknownVerbSuggestsTheClosestOne(t *testing.T) {
+	cases := []struct{ typo, want string }{
+		{"Spwan", "Spawn"},  // transposition
+		{"spawn", "Spawn"},  // wrong case
+		{"Epect", "Expect"}, // dropped letter
+		{"Resiz", "Resize"}, // truncation
+		{"WaitStabel", "WaitStable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.typo, func(t *testing.T) {
+			_, err := tape.Parse(strings.NewReader(tc.typo + " x\n"))
+			if err == nil {
+				t.Fatalf("Parse(%q) succeeded, want an error", tc.typo)
+			}
+			if !strings.Contains(err.Error(), `did you mean "`+tc.want+`"`) {
+				t.Errorf("error does not suggest %q:\n%s", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestUnrelatedVerbDoesNotGuess pins the other side: a word nothing like a verb
+// must not be "corrected" into an unrelated one, which would send the reader
+// down the wrong path.
+//
+// Verified to fail: removing the distance budget in textdist.Closest makes it
+// suggest a verb for this and the test fails.
+func TestUnrelatedVerbDoesNotGuess(t *testing.T) {
+	_, err := tape.Parse(strings.NewReader("Frobnicate y\n"))
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), "did you mean") {
+		t.Errorf("guessed a correction for an unrelated word:\n%s", err)
+	}
+}

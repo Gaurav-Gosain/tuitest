@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Gaurav-Gosain/tuitest"
+	"github.com/Gaurav-Gosain/tuitest/internal/textdist"
 )
 
 // Kind is a tape command verb.
@@ -466,8 +467,43 @@ func parseLine(raw string) (Command, *ParseError) {
 		return c, nil
 
 	default:
-		return c, perr(verb.col, "unknown command %q", verb.text)
+		if alt, ok := suggestVerb(verb.text); ok {
+			return c, perr(verb.col, "unknown command %q, did you mean %q?", verb.text, alt)
+		}
+		return c, perr(verb.col, "unknown command %q (see \"tuitest help run\" for the command list)", verb.text)
 	}
+}
+
+// verbs lists every spelling parseLine accepts, for the did-you-mean hint. It
+// includes "Stable", which is only valid as the argument of Wait, because
+// "Stable" alone on a line is a plausible thing to write by mistake.
+func verbs() []string {
+	return []string{
+		"Set", "Spawn", "Type", "Key", "Wait", "WaitStable", "WaitOutput",
+		"WaitPrompt", "WaitCommand", "Expect", "ExpectExit", "Snapshot",
+		"Resize", "Mouse", "Paste", "Raw", "Hide", "Show", "Sleep",
+	}
+}
+
+// suggestVerb finds the verb closest to an unrecognised one. Tape verbs are
+// capitalised, so the comparison is case-insensitive: "spawn" and "Spwan"
+// should both point at "Spawn".
+func suggestVerb(name string) (string, bool) {
+	lower := strings.ToLower(name)
+	lowered := make([]string, len(verbs()))
+	for i, v := range verbs() {
+		lowered[i] = strings.ToLower(v)
+	}
+	best, ok := textdist.Closest(lower, lowered)
+	if !ok {
+		return "", false
+	}
+	for _, v := range verbs() {
+		if strings.EqualFold(v, best) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // verbTail returns everything after the first token of s, dropping exactly one

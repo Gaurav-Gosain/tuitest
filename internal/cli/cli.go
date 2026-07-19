@@ -14,6 +14,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/textdist"
 )
 
 // Exit codes. These are part of the tool's contract with CI: a script needs to
@@ -206,50 +208,8 @@ func printCommandHelp(w io.Writer, c *Command) {
 // a pointer rather than just a rejection. It only suggests when the names are
 // close enough that the guess is likely right.
 func suggest(name string) string {
-	lower := strings.ToLower(name)
-	best, bestDist := "", -1
-	for _, candidate := range commandNames() {
-		if d := editDistance(lower, candidate); bestDist < 0 || d < bestDist {
-			best, bestDist = candidate, d
-		}
-	}
-	// Allow roughly one edit per three characters, and always at least one, so
-	// a single typo is forgiven without guessing wildly at an unrelated word.
-	budget := max(len(name)/3, 1)
-	if bestDist >= 0 && bestDist <= budget {
-		return best
-	}
-	return ""
-}
-
-// editDistance is the Damerau-Levenshtein distance (optimal string alignment)
-// between a and b. It counts a transposition as one edit rather than two,
-// because swapped letters are the most common typo of all: "rnu" should suggest
-// "run" rather than being written off as too far away.
-func editDistance(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-	n, m := len(ar), len(br)
-	d := make([][]int, n+1)
-	for i := range d {
-		d[i] = make([]int, m+1)
-		d[i][0] = i
-	}
-	for j := 0; j <= m; j++ {
-		d[0][j] = j
-	}
-	for i := 1; i <= n; i++ {
-		for j := 1; j <= m; j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			d[i][j] = min(d[i-1][j]+1, min(d[i][j-1]+1, d[i-1][j-1]+cost))
-			if i > 1 && j > 1 && ar[i-1] == br[j-2] && ar[i-2] == br[j-1] {
-				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
-			}
-		}
-	}
-	return d[n][m]
+	best, _ := textdist.Closest(strings.ToLower(name), commandNames())
+	return best
 }
 
 // newFlagSet builds a flag set that never prints on its own. Commands render
