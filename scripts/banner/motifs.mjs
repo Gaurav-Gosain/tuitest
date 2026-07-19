@@ -6,10 +6,19 @@
 // function of its parameters: no randomness, no clock, no network, so the same
 // config always produces byte-identical output.
 //
-// Signature: (palette, opts) -> SVG markup string, drawn in a 360x270 viewBox.
+// Signature: (palette, opts) -> SVG markup string. The panel defaults to a
+// 360x270 viewBox, the shape the README banner reserves on its right third, and
+// `opts.w` / `opts.h` widen it for layouts with a different aspect: the social
+// preview draws the same motif as a wide band under the wordmark. Every motif
+// scales off those two numbers rather than the constants, so a motif drawn into
+// a band is re-laid-out for it, not stretched.
 
 export const MOTIF_W = 360;
 export const MOTIF_H = 270;
+
+// Panel dimensions for one call. Kept in one place so a motif never reads the
+// module constants directly and silently ignores a caller's band size.
+const box = (o) => [o.w ?? MOTIF_W, o.h ?? MOTIF_H];
 
 // Deterministic PRNG (mulberry32) for motifs that want scatter without hand
 // placing every element. Seeded from the config so output stays stable.
@@ -34,6 +43,7 @@ const DOTS = [
 // Nodes joined by edges. Used by turbograph, whose subject is a similarity
 // graph, and kept here so the reference banner stays regenerable.
 function graph(p, o = {}) {
+  const [W, H] = box(o);
   const r = rng(o.seed ?? 7);
   const n = o.nodes ?? 13;
   const pts = [];
@@ -41,7 +51,7 @@ function graph(p, o = {}) {
   for (let i = 0; i < n; i++) {
     let best = null, bestD = -1;
     for (let k = 0; k < 24; k++) {
-      const c = { x: 24 + r() * (MOTIF_W - 48), y: 20 + r() * (MOTIF_H - 40) };
+      const c = { x: 24 + r() * (W - 48), y: 20 + r() * (H - 40) };
       const d = pts.reduce((m, q) => Math.min(m, Math.hypot(q.x - c.x, q.y - c.y)), 1e9);
       if (d > bestD) { bestD = d; best = c; }
     }
@@ -70,19 +80,46 @@ function graph(p, o = {}) {
 // A terminal cell grid with a run of cells lit up, the way an assertion
 // highlights the region of the screen it matched. For tuitest, whose subject is
 // reading a real terminal grid back out of a headless program.
-function cells(p, o = {}) {
-  const cols = o.cols ?? 24, rows = o.rows ?? 14;
-  const cw = MOTIF_W / cols, ch = MOTIF_H / rows;
-  // Hand-placed lit runs: row, start col, length. Reads as text on a screen.
-  const runs = o.runs ?? [
+//
+// Two hand-placed shapes, because a run set laid out for a tall panel leaves a
+// wide band mostly empty on the right. The tall one fills the banner's right
+// third; the wide one fills the social preview's band and reads as the bottom of
+// a real screen. Both light the same thing: a two-line matched region.
+const TALL_CELLS = {
+  cols: 24, rows: 14,
+  runs: [
     [1, 2, 9], [1, 13, 6],
     [3, 2, 14], [4, 2, 7], [4, 11, 8],
     [6, 4, 11], [7, 4, 6],
     [9, 2, 5], [9, 9, 12],
     [10, 2, 17],
     [12, 2, 8],
-  ];
-  const hot = o.hot ?? [[6, 4, 11], [7, 4, 6]]; // the matched assertion region
+  ],
+  hot: [[6, 4, 11], [7, 4, 6]],
+};
+
+const WIDE_CELLS = {
+  cols: 45, rows: 6,
+  runs: [
+    [0, 1, 12], [0, 15, 7], [0, 25, 14],
+    [1, 1, 19], [1, 23, 9], [1, 35, 6],
+    [2, 3, 16], [2, 22, 6], [2, 31, 11],
+    [3, 3, 11], [3, 17, 8],
+    [4, 1, 7], [4, 10, 18], [4, 31, 5], [4, 38, 5],
+    [5, 1, 14], [5, 18, 10], [5, 30, 9],
+  ],
+  hot: [[2, 3, 16], [3, 3, 11]],
+};
+
+function cells(p, o = {}) {
+  const [W, H] = box(o);
+  const wide = (o.cols ?? (W > MOTIF_W * 1.5 ? WIDE_CELLS.cols : 24)) > 30;
+  const shape = wide ? WIDE_CELLS : TALL_CELLS;
+  const cols = o.cols ?? shape.cols, rows = o.rows ?? shape.rows;
+  const cw = W / cols, ch = H / rows;
+  // Hand-placed lit runs: row, start col, length. Reads as text on a screen.
+  const runs = o.runs ?? shape.runs;
+  const hot = o.hot ?? shape.hot; // the matched assertion region
   const key = (r, c) => `${r}:${c}`;
   const lit = new Set(), hotSet = new Set();
   runs.forEach(([r, c, l]) => { for (let i = 0; i < l; i++) lit.add(key(r, c + i)); });
@@ -90,8 +127,8 @@ function cells(p, o = {}) {
 
   let out = '';
   // Faint grid so the cell structure is visible where nothing is lit.
-  for (let c = 0; c <= cols; c++) out += `<line x1="${(c * cw).toFixed(1)}" y1="0" x2="${(c * cw).toFixed(1)}" y2="${MOTIF_H}" stroke="${p.accent}" stroke-opacity=".07" stroke-width="1"/>`;
-  for (let r = 0; r <= rows; r++) out += `<line x1="0" y1="${(r * ch).toFixed(1)}" x2="${MOTIF_W}" y2="${(r * ch).toFixed(1)}" stroke="${p.accent}" stroke-opacity=".07" stroke-width="1"/>`;
+  for (let c = 0; c <= cols; c++) out += `<line x1="${(c * cw).toFixed(1)}" y1="0" x2="${(c * cw).toFixed(1)}" y2="${H}" stroke="${p.accent}" stroke-opacity=".07" stroke-width="1"/>`;
+  for (let r = 0; r <= rows; r++) out += `<line x1="0" y1="${(r * ch).toFixed(1)}" x2="${W}" y2="${(r * ch).toFixed(1)}" stroke="${p.accent}" stroke-opacity=".07" stroke-width="1"/>`;
   // Highlight band behind the matched region.
   hot.forEach(([r, c, l]) => {
     out += `<rect x="${(c * cw - 2).toFixed(1)}" y="${(r * ch - 1).toFixed(1)}" width="${(l * cw + 4).toFixed(1)}" height="${(ch + 2).toFixed(1)}" fill="${p.accent}" fill-opacity=".13" rx="2"/>`;
@@ -113,23 +150,24 @@ function cells(p, o = {}) {
 // glyph slots: rows of uniform height, filled left to right, a new shelf opened
 // when the current one runs out of width.
 function atlas(p, o = {}) {
+  const [W, H] = box(o);
   const r = rng(o.seed ?? 11);
   const shelves = o.shelves ?? [18, 26, 18, 34, 22, 26, 18, 30, 22];
   const gap = 5;
   let y = 4, out = '', i = 0;
   // Outer atlas page boundary.
-  out += `<rect x="0.5" y="0.5" width="${MOTIF_W - 1}" height="${MOTIF_H - 1}" fill="none" stroke="${p.accent}" stroke-opacity=".22" stroke-width="1" rx="4"/>`;
+  out += `<rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" fill="none" stroke="${p.accent}" stroke-opacity=".22" stroke-width="1" rx="4"/>`;
   for (const h of shelves) {
-    if (y + h > MOTIF_H - 4) break;
+    if (y + h > H - 4) break;
     // Shelf baseline, the packer's horizontal rule.
-    out += `<line x1="2" y1="${(y + h + gap / 2).toFixed(1)}" x2="${MOTIF_W - 2}" y2="${(y + h + gap / 2).toFixed(1)}" stroke="${p.accent}" stroke-opacity=".13" stroke-width="1"/>`;
+    out += `<line x1="2" y1="${(y + h + gap / 2).toFixed(1)}" x2="${W - 2}" y2="${(y + h + gap / 2).toFixed(1)}" stroke="${p.accent}" stroke-opacity=".13" stroke-width="1"/>`;
     let x = 4;
-    while (x < MOTIF_W - 10) {
+    while (x < W - 10) {
       // Slot widths cluster around the shelf height: narrow cells, wide cells
       // for double-width glyphs, occasionally square for emoji.
       const wide = r() < 0.18;
       const w = Math.round(wide ? h * (1.6 + r() * 0.5) : h * (0.5 + r() * 0.35));
-      if (x + w > MOTIF_W - 4) break;
+      if (x + w > W - 4) break;
       // Occupied slots stay faint: the motif has to sit at the same visual
       // weight as the other three, and a full page of packed rectangles turns
       // into a solid slab long before the opacity looks high on its own.
