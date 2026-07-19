@@ -54,7 +54,7 @@ spread is real:
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |
 | Plain 80-column text lines | 64,000 to 68,000 | 5.2 to 5.5 MB/s |
-| Same with an SGR change per line | 47,000 to 61,000 | 4.5 to 5.9 MB/s |
+| Same with an SGR change per line | 44,000 to 66,000 | 4.3 to 6.4 MB/s |
 
 Adding more concurrency cannot make this faster. A VT interpreter is a state
 machine over an ordered byte stream: cell N+1 depends on every escape sequence
@@ -164,6 +164,21 @@ is off by default rather than silently platform-dependent.
 after minimisation, and one that does not reproduce is still reported but
 labelled in both the report and the tape header. A timing-dependent bug is worth
 knowing about; presenting it as solid would not be.
+
+**The fuzzer's own tests inherit that flakiness, and two of them are flaky
+today.** `TestFindsPanicAndMinimisesToTheTriggeringKey` and
+`TestFindsTerminalLeftInABadState` in
+`fuzz/fuzz_test.go` assert `Failure.Verified`, which means they assert that a
+minimised reproduction re-reproduced on the confirmation replay. That is exactly
+the property the paragraph above says is not guaranteed. Both pass in isolation
+and fail intermittently under load, because confirmation drives a real program
+through a real PTY and a loaded machine can miss the timing window: on a
+16-thread desktop, running the package six ways in parallel reproduces
+`the minimised reproduction did not reproduce on confirmation` within a handful
+of attempts, and a plain `go test ./...` hits it occasionally. Nothing is wrong
+with the fuzzer when this fires; the assertion is stricter than the behaviour it
+tests. A retry, or demoting the `Verified` check to a report rather than a
+failure, would fix it.
 
 ## What this is not for
 

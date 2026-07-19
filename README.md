@@ -361,7 +361,7 @@ otherwise-busy desktop and the spread is real.
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |
 | Plain 80-column text lines | 64,000 to 68,000 | 5.2 to 5.5 MB/s |
-| Same with an SGR change per line | 47,000 to 61,000 | 4.5 to 5.9 MB/s |
+| Same with an SGR change per line | 44,000 to 66,000 | 4.3 to 6.4 MB/s |
 
 The emulator is the only component in the read path that scales with output
 volume, and it is single-threaded by construction: a VT interpreter is a state
@@ -400,6 +400,11 @@ ones most likely to matter:
   incoming mouse reports back into `Mouse` commands: they reach the program and
   are then counted and dropped, with a warning, so a recording of a
   mouse-driven session is not a complete replay.
+- **Two of the fuzzer's own tests are flaky under load.** They assert that a
+  minimised reproduction re-reproduced on the confirmation replay, which is a
+  property the fuzzer does not guarantee: confirmation drives a real program
+  through a real PTY. They pass in isolation and fail intermittently when the
+  machine is busy. See [docs/limits.md](docs/limits.md).
 - **Fuzz generation is blind.** There is no coverage instrumentation of the
   program under test, so input comes from a structural model rather than being
   steered toward new code paths. It finds shallow bugs quickly and deep ones
@@ -451,7 +456,7 @@ go vet ./...
 go test -race ./...
 ```
 
-363 test cases across 163 test functions and 5 fuzz targets. The default suite is
+367 test cases across 163 test functions and 5 fuzz targets. The default suite is
 hermetic: it spawns a small Go echo-TUI fixture under `testdata/echotui`, a
 deliberately buggy fixture with individually selectable bugs under
 `testdata/buggytui`, and a plain `sh`. Nothing external is required.

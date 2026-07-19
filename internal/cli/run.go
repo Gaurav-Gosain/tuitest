@@ -40,8 +40,9 @@ A tape is line oriented, one command per line, '#' starts a comment:
   Snapshot after-hello
   ExpectExit 0
 
-Commands: Set, Spawn, Type, Key, Wait, WaitStable, WaitPrompt, WaitCommand,
-Expect, ExpectExit, Snapshot, Hide, Show, Sleep.
+Commands: Set, Spawn, Type, Key, Wait, WaitStable, WaitOutput, WaitPrompt,
+WaitCommand, Expect, ExpectExit, Snapshot, Resize, Mouse, Paste, Raw, Hide,
+Show, Sleep.
 
 examples:
   tuitest run login.tape
