@@ -169,7 +169,7 @@ consequences:
 - **The program negotiates the same modes.** Everything replays as recorded.
   This is the normal case.
 
-- **The program negotiates fewer modes than the recording** — say the recording
+- **The program negotiates fewer modes than the recording.** Say the recording
   was made with kitty enabled and this build no longer enables it. The tape will
   send `CSI u` sequences to a program that did not ask for them. A program that
   ignores unknown CSI sequences will see nothing; one that echoes them will
@@ -245,7 +245,7 @@ the wire form is genuinely ambiguous and the decoder has to choose.
 **`CSI R` is both the cursor position report and F3.** A function key in the
 SS3 family reaches the CSI form only with a real modifier, because its
 unmodified spelling is SS3. So `SS3 R` and `CSI 1;5R` are F3 and `Ctrl+F3`,
-while `CSI R`, `CSI 1;R` and `CSI 1;1R` are all position reports — the last one
+while `CSI R`, `CSI 1;R` and `CSI 1;1R` are all position reports, the last one
 for row 1, which is exactly the case a naive "explicit parameter" rule gets
 wrong. The same collision exists on `CSI S`.
 
