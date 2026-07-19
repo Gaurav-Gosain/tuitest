@@ -113,3 +113,37 @@ func parseKeyAttr(a *KeyAttrs, toks []token, i int) (int, error) {
 	}
 	return 0, fmt.Errorf("unknown key attribute %s", name)
 }
+
+// parseKeyLine splits a Key line into its key tokens and attributes. An
+// attribute is a token starting with '+' at the top level, which cannot be
+// confused with a modifier because modifiers are joined to their key without
+// spaces: "Ctrl+b" is one token, "+Release" is another.
+//
+// A line carrying attributes names exactly one key. Allowing several would make
+// it ambiguous which key an attribute qualifies, and the whole point of the
+// attribute is to say something specific about one keypress.
+func parseKeyLine(toks []token) (keys []token, attrs KeyAttrs, err *ParseError) {
+	for i := 0; i < len(toks); {
+		if !strings.HasPrefix(toks[i].text, "+") || toks[i].text == "+" {
+			keys = append(keys, toks[i])
+			i++
+			continue
+		}
+		next, aerr := parseKeyAttr(&attrs, toks, i)
+		if aerr != nil {
+			return nil, KeyAttrs{}, &ParseError{Col: toks[i].col, Msg: aerr.Error()}
+		}
+		i = next
+	}
+
+	if len(keys) == 0 {
+		return nil, KeyAttrs{}, &ParseError{Msg: "Key needs at least one key name"}
+	}
+	if attrs.set() && len(keys) > 1 {
+		return nil, KeyAttrs{}, &ParseError{
+			Col: keys[1].col,
+			Msg: "a Key line with attributes names exactly one key; split the others onto their own line",
+		}
+	}
+	return keys, attrs, nil
+}

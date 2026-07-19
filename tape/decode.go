@@ -25,6 +25,11 @@ type inputDecoder struct {
 	keys    []string // consecutive Key tokens not yet flushed
 	cmds    []Command
 
+	// keyModes is the mode context the buffered key run was decoded under.
+	// Keys only coalesce onto one line while this stays the same, so a line
+	// never mixes keys that need different encodings to replay.
+	keyModes Modes
+
 	// modes is the terminal state observed on the child's output stream. The
 	// same bytes mean different keys depending on what the program
 	// negotiated, so the decoder is told rather than left to guess.
@@ -129,11 +134,15 @@ func (d *inputDecoder) decodeControl(rest []byte) (n int, hold bool) {
 func (d *inputDecoder) absorb(cmds []Command) {
 	for _, c := range cmds {
 		if c.Kind == KindKey && len(c.Keys) == 1 && !c.KeyAttrs.set() {
-			d.emitKey(c.Keys[0])
+			d.emitKeyModes(c.Keys[0], mergeModes(d.modes, c.Modes))
 			continue
 		}
 		d.flush()
-		c.Modes = d.modes
+		// A protocol may report modes it inferred from the sequence
+		// itself, which is stronger evidence than the ambient context: a
+		// kitty key report proves kitty was negotiated even if the mode
+		// mirror missed the enabling sequence. Keep what it inferred.
+		c.Modes = mergeModes(d.modes, c.Modes)
 		d.cmds = append(d.cmds, c)
 	}
 }
@@ -145,10 +154,18 @@ func (d *inputDecoder) emitRaw(b []byte) {
 	d.cmds = append(d.cmds, Command{Kind: KindRaw, Text: string(b), Modes: d.modes})
 }
 
-// emitKey appends a key token, first flushing any pending printable run so the
-// commands stay in input order.
-func (d *inputDecoder) emitKey(tok string) {
+// emitKey appends a key token decoded under the ambient modes.
+func (d *inputDecoder) emitKey(tok string) { d.emitKeyModes(tok, d.modes) }
+
+// emitKeyModes appends a key token, first flushing any pending printable run so
+// the commands stay in input order, and flushing the key run when the mode
+// context changes so one Key line always replays under one set of modes.
+func (d *inputDecoder) emitKeyModes(tok string, m Modes) {
 	d.flushText()
+	if len(d.keys) > 0 && d.keyModes != m {
+		d.flushKeys()
+	}
+	d.keyModes = m
 	d.keys = append(d.keys, tok)
 }
 
@@ -187,8 +204,9 @@ func (d *inputDecoder) flushKeys() {
 	if len(d.keys) == 0 {
 		return
 	}
-	d.cmds = append(d.cmds, Command{Kind: KindKey, Keys: d.keys, Modes: d.modes})
+	d.cmds = append(d.cmds, Command{Kind: KindKey, Keys: d.keys, Modes: d.keyModes})
 	d.keys = nil
+	d.keyModes = d.modes
 }
 
 // close flushes everything still buffered. A held-back sequence at end of

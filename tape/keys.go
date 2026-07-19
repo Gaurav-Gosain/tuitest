@@ -42,51 +42,65 @@ var namedKeys = map[string]tuitest.Key{
 
 // ResolveKey turns a tape key token such as "Enter", "Ctrl+b", "Alt+x", or a
 // bare rune like "%" into the byte sequence a terminal would send.
+//
+// It resolves under default modes, which is what a Key line means on its own.
+// ResolveKeyModes takes the mode context when a recording captured one, since
+// the cursor keys have a different spelling under DECCKM.
 func ResolveKey(token string) (tuitest.Key, error) {
-	parts := strings.Split(token, "+")
-	base := parts[len(parts)-1]
-	mods := parts[:len(parts)-1]
-
-	seq, err := resolveBase(base)
-	if err != nil {
-		return "", err
-	}
-
-	for _, mod := range mods {
-		switch mod {
-		case "Ctrl", "C":
-			r, ok := singleRune(base)
-			if !ok {
-				return "", fmt.Errorf("Ctrl+ requires a single character, got %q", base)
-			}
-			seq = tuitest.Ctrl(r)
-		case "Alt", "M":
-			seq = tuitest.Alt(string(seq))
-		case "Shift", "S":
-			if r, ok := singleRune(base); ok && r >= 'a' && r <= 'z' {
-				seq = tuitest.Key(strings.ToUpper(base))
-			}
-		default:
-			return "", fmt.Errorf("unknown modifier %q", mod)
-		}
-	}
-	return seq, nil
+	return ResolveKeyModes(token, Modes{})
 }
 
-func resolveBase(base string) (tuitest.Key, error) {
-	if k, ok := namedKeys[base]; ok {
-		return k, nil
+// ResolveKeyModes resolves a key token under an explicit mode context. It
+// delegates to the same encoder the protocol registry uses, so a token the
+// recorder produced always replays as the bytes it was decoded from; there is
+// no second implementation that can drift.
+func ResolveKeyModes(token string, m Modes) (tuitest.Key, error) {
+	cmd := Command{Kind: KindKey, Keys: []string{token}, Modes: m}
+	b, err := encodeCommand(cmd, Protocols())
+	if err != nil {
+		return "", keyTokenError(token)
 	}
-	if utf8.RuneCountInString(base) == 1 {
-		return tuitest.Key(base), nil
+	return tuitest.Key(b), nil
+}
+
+// keyTokenError explains why a token did not resolve, distinguishing an unknown
+// modifier from an unknown key from a modifier that the key cannot carry. The
+// distinction is what makes the parse error actionable.
+func keyTokenError(token string) error {
+	parts := strings.Split(token, "+")
+	if len(parts) > 1 && parts[len(parts)-1] == "" {
+		parts = append(parts[:len(parts)-1], "+")
 	}
-	return "", fmt.Errorf("unknown key %q", base)
+	base := parts[len(parts)-1]
+
+	for _, mod := range parts[:len(parts)-1] {
+		if _, ok := modAliases[mod]; !ok {
+			return fmt.Errorf("unknown modifier %q", mod)
+		}
+	}
+
+	if _, named := keyByName[base]; !named {
+		switch base {
+		case "Enter", "Return", "Tab", "Esc", "Escape", "Backspace", "Space":
+		default:
+			if utf8.RuneCountInString(base) != 1 {
+				return fmt.Errorf("unknown key %q", base)
+			}
+		}
+	}
+	return fmt.Errorf("key %q cannot carry those modifiers", token)
 }
 
 func singleRune(s string) (rune, bool) {
 	if utf8.RuneCountInString(s) != 1 {
 		return 0, false
 	}
-	r, _ := utf8.DecodeRuneInString(s)
+	r, size := utf8.DecodeRuneInString(s)
+	// A byte that is not valid UTF-8 decodes to RuneError with size 1 and
+	// would otherwise pass as a one-rune key name, producing a token that
+	// encodes to bytes nothing can decode back.
+	if r == utf8.RuneError && size == 1 {
+		return 0, false
+	}
 	return r, true
 }

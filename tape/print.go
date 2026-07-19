@@ -37,6 +37,7 @@ func (c Command) String() string {
 		b.WriteString(c.Text)
 	case KindKey:
 		writeTokens(&b, c.Keys)
+		c.KeyAttrs.write(&b)
 	case KindWait, KindWaitStable, KindWaitPrompt, KindWaitCommand, KindWaitOutput, KindExpect:
 		writeWaitLike(&b, c)
 	case KindExpectExit:

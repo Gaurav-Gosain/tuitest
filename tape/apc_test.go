@@ -37,3 +37,48 @@ func TestDecodeAPCReplyIsNotKeystrokes(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordedSessionShapeMatchesTheReport reproduces the opening of the
+// session the maintainer recorded against tuios, where a kitty graphics
+// capability reply arrived on the input channel before any keystroke.
+//
+// The tape that session produced opened with three bogus commands:
+//
+//	Key Alt+_
+//	Type Gi=1;OK
+//	Key Alt+\
+//
+// The reply must survive as one command that replays as the reply, and the
+// keystrokes after it must still decode as keystrokes.
+func TestRecordedSessionShapeMatchesTheReport(t *testing.T) {
+	// The APC reply, then the "tn" the maintainer typed, then Enter.
+	const session = "\x1b_Gi=1;OK\x1b\\tn\r"
+
+	cmds := decodeCommands([]byte(session))
+
+	// The reply is one command, and not a keyboard one.
+	if cmds[0].Kind == KindKey || cmds[0].Kind == KindType {
+		t.Fatalf("the capability reply is still decoded as keyboard input:\n%s",
+			strings.TrimRight(Sprint(cmds), "\n"))
+	}
+
+	// The keystrokes after it are unaffected.
+	var typed strings.Builder
+	for _, c := range cmds[1:] {
+		if c.Kind == KindType {
+			typed.WriteString(c.Text)
+		}
+	}
+	if typed.String() != "tn" {
+		t.Errorf("keystrokes after the reply = %q, want %q", typed.String(), "tn")
+	}
+
+	// And the whole session replays byte for byte.
+	got, err := encodeCommands(cmds)
+	if err != nil {
+		t.Fatalf("re-encode: %v", err)
+	}
+	if string(got) != session {
+		t.Errorf("session does not replay faithfully\n got: %q\nwant: %q", got, session)
+	}
+}

@@ -20,8 +20,6 @@ func init() { Register(legacyKeys{}) }
 //     decode to Up and re-encode as CSI A;
 //   - a modified SS3 key is promoted to its CSI form, because SS3 has nowhere
 //     to put a parameter, which is what real terminals do too;
-//   - an 8-bit C1 introducer is re-encoded as the 7-bit ESC form, which every
-//     terminal accepts and which survives a non-UTF-8 transport.
 //
 // Each of these produces bytes that decode back to the same command, which is
 // the Canonical contract and is what the round-trip fuzz target checks.
@@ -71,7 +69,7 @@ func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 		return 2, keyCmd("Alt+Backspace"), Full
 	}
 	if buf[1] < 0x20 {
-		return 2, keyCmd("Alt+" + c0Token(buf[1])), Full
+		return 2, keyCmd(addAlt(c0Token(buf[1]))), Full
 	}
 	if !utf8.FullRune(buf[1:]) {
 		return 0, nil, Partial
@@ -80,7 +78,7 @@ func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	if r == utf8.RuneError && size == 1 {
 		return 0, nil, NoMatch
 	}
-	return 1 + size, keyCmd("Alt+" + string(r)), Full
+	return 1 + size, keyCmd("Alt+" + runeToken(r)), Full
 }
 
 // decodeCSI handles the CSI cursor and function keys. It deliberately declines
@@ -88,15 +86,10 @@ func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 // reports, focus events, kitty keys and terminal replies fall to the protocols
 // that own them.
 func (p legacyKeys) decodeCSI(buf []byte, m Modes) (int, []Command, Result) {
-	n, complete, ok := frameEnd(buf)
-	if !ok {
-		return 0, nil, NoMatch
+	body, final, n, r := csiFrame(buf)
+	if r != Full {
+		return 0, nil, r
 	}
-	if !complete {
-		return 0, nil, Partial
-	}
-	body := buf[2 : n-1]
-	final := buf[n-1]
 
 	// Private and intermediate forms are not legacy keys.
 	if len(body) > 0 && (body[0] < 0x30 || body[0] > 0x39) && body[0] != ';' {
@@ -128,12 +121,19 @@ func (p legacyKeys) decodeCSI(buf []byte, m Modes) (int, []Command, Result) {
 	default:
 		d, known := keyByLetter[final]
 		if !known {
-			if ss3, isFn := keyBySS3[final]; isFn && ss3.form == formSS3 {
-				d, known = ss3, true
+			ss3, isFn := keyBySS3[final]
+			if !isFn || ss3.form != formSS3 {
+				return 0, nil, NoMatch
 			}
-		}
-		if !known {
-			return 0, nil, NoMatch
+			// A function key in the SS3 family reaches the CSI form only
+			// when it carries the explicit "1;mod" parameters, because
+			// its unmodified spelling is SS3. Without this rule a bare
+			// CSI R would decode as F3, when in fact it is the cursor
+			// position report; the same collision exists for CSI S.
+			if len(params) < 2 {
+				return 0, nil, NoMatch
+			}
+			d = ss3
 		}
 		// The letter form takes a leading dummy parameter of 1.
 		if len(params) > 0 && params[0] != 1 {
@@ -204,9 +204,12 @@ func encodeKeyToken(tok string, m Modes) ([]byte, bool) {
 		}
 	}
 
-	// A bare rune, possibly with Ctrl and Alt applied the legacy way.
+	// A bare rune, possibly with Ctrl and Alt applied the legacy way. A
+	// control character is not a legal key token: it has a name such as
+	// Ctrl+p or Tab, and accepting the raw byte would give the same key two
+	// spellings that encode differently under other protocols.
 	r, isRune := singleRune(base)
-	if !isRune {
+	if !isRune || r < 0x20 || r == 0x7f {
 		return nil, false
 	}
 	switch {
@@ -337,4 +340,26 @@ func modParam(params []int, i int) (int, bool) {
 		return 0, false
 	}
 	return params[i] - 1, true
+}
+
+// addAlt adds the Alt modifier to an already-spelled token, keeping the
+// canonical modifier order. Concatenating "Alt+" would spell Ctrl+Alt+a as
+// "Alt+Ctrl+a", which decodes to the same key but makes the tape inconsistent
+// about how a chord is written.
+func addAlt(tok string) string {
+	mask, base, ok := splitToken(tok)
+	if !ok {
+		return "Alt+" + tok
+	}
+	return modString(mask|modAlt) + base
+}
+
+// runeToken spells a rune as a key token. A space has to be written as the name
+// Space, because whitespace separates tokens on a tape line and a literal space
+// inside a token could not be read back.
+func runeToken(r rune) string {
+	if r == ' ' {
+		return "Space"
+	}
+	return string(r)
 }

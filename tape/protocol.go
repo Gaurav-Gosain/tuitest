@@ -252,3 +252,54 @@ func commandsEqual(a, b []Command) bool {
 	}
 	return true
 }
+
+// mergeModes combines the ambient mode context with whatever a protocol
+// inferred from the sequence it just decoded. Inference wins, because a
+// sequence that only exists under a negotiated mode is direct evidence that the
+// mode is on, whereas the ambient context can lag if the enabling sequence was
+// missed.
+func mergeModes(ambient, inferred Modes) Modes {
+	out := ambient
+	if inferred.KittyFlags > out.KittyFlags {
+		out.KittyFlags = inferred.KittyFlags
+	}
+	if inferred.ModifyOtherKeys > out.ModifyOtherKeys {
+		out.ModifyOtherKeys = inferred.ModifyOtherKeys
+	}
+	out.AppCursor = out.AppCursor || inferred.AppCursor
+	out.AppKeypad = out.AppKeypad || inferred.AppKeypad
+	out.BracketedPaste = out.BracketedPaste || inferred.BracketedPaste
+	return out
+}
+
+// commandsEquivalent compares two command slices for the round-trip property,
+// treating them as equal when they drive the program identically.
+//
+// It differs from commandsEqual in exactly one respect: how consecutive keys are
+// grouped onto Key lines is not significant. "Key d" followed by "Key Ctrl+o"
+// and the single line "Key d Ctrl+o" send the same bytes in the same order, and
+// the recorder may group them differently depending on the mode context each key
+// was decoded under. Grouping is a readability choice, so requiring it to be
+// stable would be asserting something the format does not promise.
+//
+// Everything else is compared strictly, including key order, attributes and the
+// payload of Raw and Type commands.
+func commandsEquivalent(a, b []Command) bool {
+	return commandsEqual(flattenKeys(a), flattenKeys(b))
+}
+
+// flattenKeys merges adjacent attribute-free Key commands into one, which is the
+// normal form grouping differences collapse to.
+func flattenKeys(cmds []Command) []Command {
+	out := make([]Command, 0, len(cmds))
+	for _, c := range cmds {
+		last := len(out) - 1
+		if c.Kind == KindKey && !c.KeyAttrs.set() &&
+			last >= 0 && out[last].Kind == KindKey && !out[last].KeyAttrs.set() {
+			out[last].Keys = append(append([]string(nil), out[last].Keys...), c.Keys...)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}

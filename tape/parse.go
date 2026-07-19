@@ -351,8 +351,12 @@ func parseLine(raw string) (Command, *ParseError) {
 			return c, perr(verb.col, "Key needs at least one key name")
 		}
 		c.Kind = KindKey
-		c.Keys = texts(rest)
-		return c, validateKeys(rest)
+		keys, attrs, err := parseKeyLine(rest)
+		if err != nil {
+			return c, err
+		}
+		c.Keys, c.KeyAttrs = texts(keys), attrs
+		return c, validateKeys(keys)
 
 	case "Wait":
 		// "Wait Stable" is the spelled-out spelling of WaitStable; the rest of
