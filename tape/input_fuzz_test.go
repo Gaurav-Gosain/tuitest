@@ -312,7 +312,22 @@ func wholeNonKeyboard(s string) bool {
 	switch {
 	case final == 'I' || final == 'O': // focus in/out
 		return true
-	case final == 'c' || final == 'R' || final == 'y' || final == 'n': // replies
+	case final == 'R':
+		// The cursor position report shares its final byte with the CSI
+		// spelling of F3, and "CSI 1;<mod> R" is a valid reading of both:
+		// F3 with a modifier, or a report for row 1. Nothing in the byte
+		// stream separates them, so those are excluded here rather than
+		// asserted either way. See the note in docs/input-protocols.md.
+		//
+		// The first parameter is compared numerically, since "01" and "1"
+		// are the same parameter and only one of the two spellings would
+		// be caught by a textual check.
+		params, ok := parseCSIParams(body)
+		if !ok {
+			return true
+		}
+		return !(params.at(0, 0, -1) == 1 && len(params) >= 2)
+	case final == 'c' || final == 'y' || final == 'n': // replies
 		return true
 	case final == 'M' || final == 'm': // mouse
 		return true

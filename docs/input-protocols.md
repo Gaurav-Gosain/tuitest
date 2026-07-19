@@ -258,5 +258,21 @@ lopsided, take the side that fails visibly.
 
 Both chords are unambiguous under kitty, which is what the protocol is for.
 
+### One ambiguity that is not resolved
+
+`CSI 1;2R` is both the CSI spelling of `Shift+F3` and a cursor position report
+for row 1, column 2. Unlike the cases above, **nothing in the byte stream
+separates them**: both readings are well formed and both occur in practice. The
+decoder currently reads it as the key.
+
+Resolving it needs information the input stream does not carry: whether a DSR
+query is outstanding. A position report only ever arrives in answer to one, so a
+decoder that tracks outstanding queries by reply class can decide it exactly.
+`Modes` is the place that belongs, alongside the negotiated flags. Until then
+this one case can misread a report at row 1 as a function key.
+
+It is called out rather than buried because an undocumented ambiguity is how the
+original defect survived: the failure is silent either way.
+
 The last row is also why a literal Private Use Area character is never encoded
 as a kitty key code: the reader would take it for a function key.
