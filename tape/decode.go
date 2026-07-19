@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"bytes"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -35,18 +36,25 @@ var escSeq = map[string]string{
 	"\x1b[24~": "F12",
 }
 
-// escSeqByLen holds the keys of escSeq longest first, so matching prefers
-// "\x1b[15~" (F5) over any shorter sequence that shares its opening bytes.
-var escSeqByLen = func() []string {
-	out := make([]string, 0, len(escSeq))
-	for k := range escSeq {
-		out = append(out, k)
+// namedSeq is one entry of the escape table, kept as bytes so matching against
+// an input buffer needs no conversion.
+type namedSeq struct {
+	seq  []byte
+	name string
+}
+
+// escSeqByLen holds escSeq longest first, so matching prefers "\x1b[15~" (F5)
+// over any shorter sequence that shares its opening bytes.
+var escSeqByLen = func() []namedSeq {
+	out := make([]namedSeq, 0, len(escSeq))
+	for k, v := range escSeq {
+		out = append(out, namedSeq{[]byte(k), v})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if len(out[i]) != len(out[j]) {
-			return len(out[i]) > len(out[j])
+		if len(out[i].seq) != len(out[j].seq) {
+			return len(out[i].seq) > len(out[j].seq)
 		}
-		return out[i] < out[j]
+		return out[i].name < out[j].name
 	})
 	return out
 }()
@@ -165,10 +173,10 @@ func (d *inputDecoder) decodeEscape(rest []byte) (n int, hold bool) {
 		return 0, true
 	}
 
-	for _, seq := range escSeqByLen {
-		if strings.HasPrefix(string(rest), seq) {
-			d.emitKey(escSeq[seq])
-			return len(seq), false
+	for _, e := range escSeqByLen {
+		if bytes.HasPrefix(rest, e.seq) {
+			d.emitKey(e.name)
+			return len(e.seq), false
 		}
 	}
 
