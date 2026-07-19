@@ -15,6 +15,7 @@ paths, and nothing is installed on the machine running them.
 
 | tape | what it shows |
 | --- | --- |
+| `hero.tape` | the README's first image: `lazygit` being driven hard, with the command trace under it |
 | `run.tape` | a tape passing against `less`, then a stale assertion failing with a diff and the screen |
 | `snap.tape` | `snap` printing what `vim` draws, at two widths |
 | `fuzz.tape` | `fuzz` finding the fixture's panic and minimising it to a tape that replays it |
@@ -54,5 +55,20 @@ Width is set per recording, from the longest line that must not wrap: the
 failure diff in `run.tape` needs 95 columns, `fuzz.tape` needs the whole command
 on one line. Height is set to the tallest moment, because trailing blank rows
 are the easiest way to make a recording look careless.
+
+`hero.tape` is the one recording that films a screen rather than a shell.
+`hero-session.sh` builds that screen: a tmux session whose top pane is the
+program as `tuitest replay` renders it, and whose bottom pane tails the
+replayer's `-echo` trace as it is written. Neither pane is staged. It runs
+against a throwaway clone of this repository under a throwaway `HOME`, so the
+program shows `~/tuitest` wherever the repository actually lives and takes its
+palette from the config the script writes rather than from the operator's.
+
+It is also the one recording with a post-pass. A keypress there repaints a whole
+diff pane, so the raw capture lands near a megabyte; `record.sh` requantises it
+to twenty-four colours, which is where the size stops falling and is still
+pixel-identical to the source, because the palette is the sixteen terminal
+colours and a few blends. The other recordings are left alone: they are mostly
+still text, and a second pass only bands the glyphs.
 
 [vhs]: https://github.com/charmbracelet/vhs
