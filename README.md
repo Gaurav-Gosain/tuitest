@@ -318,30 +318,14 @@ what lets them carry arbitrary bytes including malformed UTF-8 and embedded
 escape sequences. The grammar, the `Set` keys, and the validation limits are in
 [docs/tape.md](docs/tape.md).
 
-`Key` takes one or more key names and chords, as in `Key Ctrl+b Alt+x Enter`.
-Modifiers are `Ctrl`, `Alt`, `Shift`, `Super`, `Hyper` and `Meta`, joined to
-their key without spaces. A key reported by the kitty keyboard protocol can
-carry extra detail as trailing attributes: `+Press`, `+Repeat` or `+Release` for
-the event type, `+Shifted X` and `+Base x` for the key's alternate layouts, and
-`+Text "..."` for the text the keypress inserts, which differs from the key
-itself for dead keys and input methods.
-
-```
-Key a +Release
-Key a +Shifted A +Base a
-Key a +Text "á"
-```
-
-A `Key` line carrying attributes names exactly one key, so an attribute is never
-ambiguous about which keypress it qualifies.
-
-A recording never loses input. Any sequence the decoder does not recognise,
-including terminal replies to capability queries, is captured verbatim as a
-`Raw` command and replays byte for byte, so a tape is a faithful replay whether
-or not a decoder exists for everything in it. See
-[docs/input-protocols.md](docs/input-protocols.md) for the guarantees, the
-round-trip property, what happens when replay negotiates different modes than
-the recording did, and how to add a protocol.
+A recording never loses input. Every input sequence is decoded by a registered
+protocol (the legacy keys, xterm modifyOtherKeys, the kitty keyboard protocol)
+or, failing that, captured verbatim as a `Raw` command that replays byte for
+byte. So a tape is a faithful replay whether or not a decoder exists for
+everything in it, and terminal replies to capability queries are never mistaken
+for keystrokes. See [docs/input-protocols.md](docs/input-protocols.md) for the
+guarantees, the round-trip property, what happens when replay negotiates
+different keyboard modes than the recording did, and how to add a protocol.
 
 ## Fuzzing a TUI
 
