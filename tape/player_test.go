@@ -6,14 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gaurav-Gosain/tuitest/tape"
 )
 
 var echoBin string
 
+const fixturePrefix = "tuitest-tape-fixture-"
+
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "tuitest-tape-fixture-")
+	// A panicking test kills the process before the cleanup below can run, so
+	// sweep anything an earlier crashed run left behind. Only directories older
+	// than an hour are removed, so a concurrent run of this package keeps its
+	// own fixture.
+	sweepStaleFixtures(fixturePrefix, time.Hour)
+
+	dir, err := os.MkdirTemp("", fixturePrefix)
 	if err != nil {
 		panic(err)
 	}
@@ -96,5 +105,24 @@ Snapshot banner
 	check.GoldenDir = goldenDir
 	if err := check.Run(cmds); err != nil {
 		t.Fatalf("golden comparison failed: %v", err)
+	}
+}
+
+// sweepStaleFixtures removes temp directories with the given prefix that are
+// older than maxAge, bounding what a crashed run can leave behind.
+func sweepStaleFixtures(prefix string, maxAge time.Duration) {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < maxAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
 	}
 }

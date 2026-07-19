@@ -1,3 +1,6 @@
 /tuitest
 /echotui
 *.test
+
+# local integration worktrees
+.worktrees/

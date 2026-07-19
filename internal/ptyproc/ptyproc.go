@@ -176,3 +176,22 @@ func (p *Process) Close() error {
 	})
 	return nil
 }
+
+// Probe reports whether a pseudo-terminal can be allocated at all, by opening
+// one and immediately closing it. It spawns no child, so it is safe to call
+// from diagnostics without risking a stray process. A non-nil error is the
+// reason allocation failed, which on a container without /dev/pts is exactly
+// what a user needs to see.
+func Probe(cols, rows int) error {
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	pty, err := xpty.NewPty(cols, rows)
+	if err != nil {
+		return err
+	}
+	return pty.Close()
+}
