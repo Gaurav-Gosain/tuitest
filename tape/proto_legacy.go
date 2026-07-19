@@ -91,10 +91,9 @@ func (p legacyKeys) decodeCSI(buf []byte, m Modes) (int, []Command, Result) {
 		return 0, nil, r
 	}
 
-	// Private and intermediate forms are not legacy keys.
-	if len(body) > 0 && (body[0] < 0x30 || body[0] > 0x39) && body[0] != ';' {
-		return 0, nil, NoMatch
-	}
+	// Only digits and ';' are legacy key parameters. A private prefix such
+	// as '?' or '<', or a sub-parameter ':', means the sequence belongs to
+	// another protocol.
 	for _, b := range body {
 		if (b < 0x30 || b > 0x39) && b != ';' {
 			return 0, nil, NoMatch
