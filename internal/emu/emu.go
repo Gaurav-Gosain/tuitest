@@ -36,6 +36,11 @@ type Emulator interface {
 	// LastCommandExit returns the exit code from the most recent command-finished
 	// marker, and whether any such marker exists.
 	LastCommandExit() (code int, ok bool)
+	// Modes reports the private modes currently set, keyed by mode number
+	// (1049 alt screen, 1000/1002/1003 mouse tracking, 2004 bracketed paste,
+	// and so on). Only modes that are set appear in the map. It exists so
+	// callers can tell whether a program restored the terminal on exit.
+	Modes() map[int]bool
 }
 
 // New builds the default ultraviolet/vt-backed emulator at the given size.
@@ -77,6 +82,8 @@ func (a *adapter) count(t vt.SemanticMarkerType) int {
 	}
 	return n
 }
+
+func (a *adapter) Modes() map[int]bool { return a.e.GetModes() }
 
 func (a *adapter) LastCommandExit() (int, bool) {
 	m := a.e.SemanticMarkers().Last(vt.MarkerCommandFinished)

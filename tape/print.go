@@ -37,7 +37,7 @@ func (c Command) String() string {
 		b.WriteString(c.Text)
 	case KindKey:
 		writeTokens(&b, c.Keys)
-	case KindWait, KindWaitStable, KindWaitPrompt, KindWaitCommand, KindExpect:
+	case KindWait, KindWaitStable, KindWaitPrompt, KindWaitCommand, KindWaitOutput, KindExpect:
 		writeWaitLike(&b, c)
 	case KindExpectExit:
 		b.WriteByte(' ')
@@ -56,6 +56,13 @@ func (c Command) String() string {
 		b.WriteString(strconv.Itoa(c.Cols))
 		b.WriteByte(' ')
 		b.WriteString(strconv.Itoa(c.Rows))
+	case KindMouse:
+		writeMouse(&b, c.Mouse)
+	case KindPaste, KindRaw:
+		// Quoted, so arbitrary bytes survive: a fuzz repro must replay the
+		// malformed UTF-8 and embedded escapes exactly as they were generated.
+		b.WriteByte(' ')
+		b.WriteString(Quote(c.Text))
 	case KindHide, KindShow:
 		// No arguments.
 	}
@@ -110,4 +117,41 @@ func Sprint(cmds []Command) string {
 	// A strings.Builder never fails to write, so the error is not reachable.
 	_ = Print(&b, cmds)
 	return b.String()
+}
+
+var (
+	mouseButtonNames = reverseButtons()
+	mouseActionNames = reverseActions()
+)
+
+func reverseButtons() map[tuitest.MouseButton]string {
+	out := make(map[tuitest.MouseButton]string, len(mouseButtons))
+	for name, b := range mouseButtons {
+		out[b] = name
+	}
+	return out
+}
+
+func reverseActions() map[tuitest.MouseAction]string {
+	out := make(map[tuitest.MouseAction]string, len(mouseActions))
+	for name, a := range mouseActions {
+		out[a] = name
+	}
+	return out
+}
+
+// writeMouse renders the arguments of a Mouse line. Modifiers come out in a
+// fixed order so that formatting is deterministic and a repro tape does not
+// change shape between runs.
+func writeMouse(b *strings.Builder, ev tuitest.MouseEvent) {
+	fmt.Fprintf(b, " %s %s %d %d", mouseActionNames[ev.Action], mouseButtonNames[ev.Button], ev.Col, ev.Row)
+	if ev.Mods&tuitest.ModCtrl != 0 {
+		b.WriteString(" +Ctrl")
+	}
+	if ev.Mods&tuitest.ModAlt != 0 {
+		b.WriteString(" +Alt")
+	}
+	if ev.Mods&tuitest.ModShift != 0 {
+		b.WriteString(" +Shift")
+	}
 }

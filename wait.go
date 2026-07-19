@@ -210,6 +210,25 @@ func (t *Terminal) WaitStable(timeout time.Duration) error {
 	})
 }
 
+// WaitForOutput blocks until the child writes anything at all after the call
+// begins, or it exits, or timeout elapses.
+//
+// This is the primitive for "wait until the program reacts to what I just
+// sent", which WaitStable does not express: WaitStable asks whether output has
+// been quiet for a window, and after a pause that is already true, so it
+// returns immediately without the program having done anything. Use WaitStable
+// to wait for a burst of output to finish, and WaitForOutput to wait for a
+// reaction to begin. A child that has exited counts as settled, since no
+// further output can arrive.
+func (t *Terminal) WaitForOutput(timeout time.Duration) error {
+	t.mu.Lock()
+	base := t.outBytes
+	t.mu.Unlock()
+	return t.waitLoop("WaitForOutput", "the program to write something", timeout, true, func() bool {
+		return t.exited || t.outBytes > base
+	})
+}
+
 func scopeText(s *screenSnapshot, scope Scope) string {
 	switch scope {
 	case ScopeLastLine:

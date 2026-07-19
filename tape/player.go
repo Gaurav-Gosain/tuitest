@@ -72,11 +72,7 @@ func NewPlayer() *Player {
 
 // Run plays every command in order. It closes the spawned terminal on return.
 func (p *Player) Run(cmds []Command) (err error) {
-	defer func() {
-		if p.tt != nil {
-			_ = p.tt.Close()
-		}
-	}()
+	defer func() { _ = p.Close() }()
 	p.applyOverrides()
 	for _, c := range cmds {
 		if p.Before != nil {
@@ -84,7 +80,7 @@ func (p *Player) Run(cmds []Command) (err error) {
 				return e
 			}
 		}
-		e := p.run(c)
+		e := p.Exec(c)
 		if p.After != nil {
 			p.After(c, e)
 		}
@@ -107,7 +103,27 @@ func (p *Player) scaleSleep(d time.Duration) time.Duration {
 	return time.Duration(float64(d) / p.SleepScale)
 }
 
-func (p *Player) run(c Command) error {
+// Terminal returns the terminal spawned by the last Spawn command, or nil
+// before the first one. Callers that drive a tape command by command via Exec
+// use it to observe the screen between commands.
+func (p *Player) Terminal() *tuitest.Terminal { return p.tt }
+
+// Close tears down the spawned terminal. It is idempotent, and Run calls it
+// automatically; drivers that use Exec directly must call it themselves.
+func (p *Player) Close() error {
+	if p.tt == nil {
+		return nil
+	}
+	tt := p.tt
+	p.tt = nil
+	return tt.Close()
+}
+
+// Exec plays a single command against the player's current state. It exists so
+// a driver such as the fuzzer can interleave its own checks between commands
+// while still executing them through exactly the same code path that replaying
+// a tape file uses.
+func (p *Player) Exec(c Command) error {
 	switch c.Kind {
 	case KindSet:
 		return p.applySet(c)
@@ -126,6 +142,8 @@ func (p *Player) run(c Command) error {
 		})
 	case KindWaitStable:
 		return p.needTerm(func() error { return p.tt.WaitStable(p.timeout(c)) })
+	case KindWaitOutput:
+		return p.needTerm(func() error { return p.tt.WaitForOutput(p.timeout(c)) })
 	case KindWaitPrompt:
 		return p.needTerm(func() error { return p.tt.WaitForPrompt(p.timeout(c)) })
 	case KindWaitCommand:
@@ -136,14 +154,24 @@ func (p *Player) run(c Command) error {
 		return p.needTerm(func() error { return p.expectExit(c) })
 	case KindSnapshot:
 		return p.needTerm(func() error { return p.snapshot(c) })
+	case KindResize:
+		return p.needTerm(func() error {
+			// Track the size so a later Spawn in the same tape starts here.
+			p.cols, p.rows = c.Cols, c.Rows
+			return p.tt.Resize(c.Cols, c.Rows)
+		})
+	case KindMouse:
+		return p.needTerm(func() error { return p.tt.SendMouse(c.Mouse) })
+	case KindPaste:
+		return p.needTerm(func() error { return p.tt.Paste(c.Text) })
+	case KindRaw:
+		return p.needTerm(func() error { return p.tt.Type(c.Text) })
 	case KindHide:
 		p.hidden = true
 		return nil
 	case KindShow:
 		p.hidden = false
 		return nil
-	case KindResize:
-		return p.needTerm(func() error { return p.tt.Resize(c.Cols, c.Rows) })
 	case KindSleep:
 		if p.Strict {
 			return fmt.Errorf("Sleep is disallowed in strict mode; wait on a condition instead")

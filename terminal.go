@@ -120,6 +120,7 @@ type Terminal struct {
 	cond      *sync.Cond
 	lastWrite time.Time // last byte received from the child
 	lastInput time.Time // last byte sent to the child
+	outBytes  int64     // total bytes read from the child
 	closed    bool      // stream ended (child EOF)
 	exited    bool
 	exitCode  int
@@ -192,6 +193,7 @@ func (t *Terminal) onData(p []byte) {
 	t.mu.Lock()
 	_, _ = t.emu.Write(p)
 	t.lastWrite = time.Now()
+	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
 	t.mu.Unlock()
@@ -289,6 +291,15 @@ func (t *Terminal) Resize(cols, rows int) error {
 	t.lastInput = time.Now()
 	t.mu.Unlock()
 	return t.proc.Resize(cols, rows)
+}
+
+// Progress reports how many bytes the child has written so far and when the
+// most recent write landed. A caller that sends input and then sees neither
+// counter move has evidence the program stopped responding.
+func (t *Terminal) Progress() (bytes int64, last time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.outBytes, t.lastWrite
 }
 
 // ExitCode reports the child's exit code and whether it has exited.

@@ -53,6 +53,15 @@ const (
 	KindSleep
 	// KindResize changes the terminal size mid-tape.
 	KindResize
+	// KindMouse sends one mouse event.
+	KindMouse
+	// KindPaste sends text as a bracketed paste.
+	KindPaste
+	// KindRaw writes bytes to the child with no interpretation.
+	KindRaw
+	// KindWaitOutput blocks until the child writes anything, bounded by its
+	// timeout. Unlike WaitStable it cannot pass without the child reacting.
+	KindWaitOutput
 )
 
 // Verb returns the canonical spelling of the command verb, the one Print emits.
@@ -88,6 +97,14 @@ func (k Kind) Verb() string {
 		return "Sleep"
 	case KindResize:
 		return "Resize"
+	case KindMouse:
+		return "Mouse"
+	case KindPaste:
+		return "Paste"
+	case KindRaw:
+		return "Raw"
+	case KindWaitOutput:
+		return "WaitOutput"
 	default:
 		return ""
 	}
@@ -138,6 +155,11 @@ type Command struct {
 
 	// Sleep
 	Dur time.Duration
+
+	// Mouse
+	Mouse tuitest.MouseEvent
+
+	// Paste / Raw carry their payload in Text.
 }
 
 // ParseError is a tape syntax error carrying the exact source position and the
@@ -334,6 +356,10 @@ func parseLine(raw string) (Command, *ParseError) {
 		c.Kind = KindWaitStable
 		return c, parseWaitLike(&c, tail, tailCol)
 
+	case "WaitOutput":
+		c.Kind = KindWaitOutput
+		return c, parseWaitLike(&c, tail, tailCol)
+
 	case "WaitPrompt":
 		c.Kind = KindWaitPrompt
 		return c, parseWaitLike(&c, tail, tailCol)
@@ -397,6 +423,28 @@ func parseLine(raw string) (Command, *ParseError) {
 		c.Cols, c.Rows = dims[0], dims[1]
 		return c, nil
 
+	case "Mouse":
+		c.Kind = KindMouse
+		ev, pe := parseMouse(verb, rest)
+		if pe != nil {
+			return c, pe
+		}
+		c.Mouse = ev
+		return c, nil
+
+	case "Paste", "Raw":
+		if verb.text == "Paste" {
+			c.Kind = KindPaste
+		} else {
+			c.Kind = KindRaw
+		}
+		text, pe := parseQuoted(verb, tail, tailCol)
+		if pe != nil {
+			return c, pe
+		}
+		c.Text = text
+		return c, nil
+
 	case "Hide":
 		c.Kind = KindHide
 		return c, nil
@@ -443,6 +491,82 @@ func verbTail(s string, tok token) (string, int) {
 		return rest, col
 	}
 	return rest[size:], col + 1
+}
+
+// parseQuoted reads the Go-quoted string argument of a Paste or Raw line.
+// Quoting is what lets these carry arbitrary bytes, including the malformed
+// UTF-8 and embedded escapes a fuzz repro needs to replay exactly.
+func parseQuoted(verb token, tail string, tailCol int) (string, *ParseError) {
+	arg := strings.TrimSpace(tail)
+	if arg == "" {
+		return "", perr(verb.col, "%s needs a quoted string, such as %s \"hi\"", verb.text, verb.text)
+	}
+	s, err := strconv.Unquote(arg)
+	if err != nil {
+		return "", perr(tailCol, "%s argument must be a quoted string: %v", verb.text, err)
+	}
+	return s, nil
+}
+
+// Quote renders s as the quoted argument for a Paste or Raw line. It is the
+// inverse of parseQuoted and is what tape writers use to emit repro scripts.
+func Quote(s string) string { return strconv.Quote(s) }
+
+var mouseButtons = map[string]tuitest.MouseButton{
+	"Left":      tuitest.MouseLeft,
+	"Middle":    tuitest.MouseMiddle,
+	"Right":     tuitest.MouseRight,
+	"WheelUp":   tuitest.MouseWheelUp,
+	"WheelDown": tuitest.MouseWheelDown,
+}
+
+var mouseActions = map[string]tuitest.MouseAction{
+	"Press":   tuitest.MousePress,
+	"Release": tuitest.MouseRelease,
+	"Move":    tuitest.MouseMove,
+}
+
+// parseMouse reads "Mouse <Action> <Button> <col> <row> [+Ctrl +Alt +Shift]".
+func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
+	var ev tuitest.MouseEvent
+	if len(tokens) < 4 {
+		return ev, perr(verb.col, "Mouse needs an action, button, col, and row")
+	}
+	action, ok := mouseActions[tokens[0].text]
+	if !ok {
+		return ev, perr(tokens[0].col, "unknown mouse action %q (want Press, Release, or Move)", tokens[0].text)
+	}
+	button, ok := mouseButtons[tokens[1].text]
+	if !ok {
+		return ev, perr(tokens[1].col, "unknown mouse button %q (want Left, Middle, Right, WheelUp, or WheelDown)", tokens[1].text)
+	}
+	pos := [2]int{}
+	for i, what := range []string{"col", "row"} {
+		n, err := strconv.Atoi(tokens[2+i].text)
+		if err != nil {
+			return ev, perr(tokens[2+i].col, "Mouse %s %q is not an integer", what, tokens[2+i].text)
+		}
+		// Mouse coordinates are zero-based cell positions, unlike the counts
+		// that Set Size and Resize take.
+		if n < 0 || n >= MaxDimension {
+			return ev, perr(tokens[2+i].col, "Mouse %s %d is out of range 0..%d", what, n, MaxDimension-1)
+		}
+		pos[i] = n
+	}
+	ev = tuitest.MouseEvent{Col: pos[0], Row: pos[1], Button: button, Action: action}
+	for _, tok := range tokens[4:] {
+		switch tok.text {
+		case "+Ctrl":
+			ev.Mods |= tuitest.ModCtrl
+		case "+Alt":
+			ev.Mods |= tuitest.ModAlt
+		case "+Shift":
+			ev.Mods |= tuitest.ModShift
+		default:
+			return ev, perr(tok.col, "unexpected token %q (want +Ctrl, +Alt, or +Shift)", tok.text)
+		}
+	}
+	return ev, nil
 }
 
 // parseWaitLike parses the optional /regex/, +Scope, and @timeout arguments

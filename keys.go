@@ -95,6 +95,21 @@ func keyString(item any) (string, error) {
 	}
 }
 
+// Bracketed paste delimiters (DEC private mode 2004). A terminal wraps pasted
+// text in these so a program can tell a paste from typing.
+const (
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+)
+
+// Paste sends text wrapped in bracketed-paste markers, the way a terminal
+// delivers a real paste. Programs that enable mode 2004 take a different code
+// path for pasted text than for typed text, and that path is often the less
+// tested one.
+func (t *Terminal) Paste(s string) error {
+	return t.write([]byte(pasteStart + s + pasteEnd))
+}
+
 // SendKeys types a sequence of named keys, chords, runes, and strings. Plain
 // strings and runes are sent literally; Key values carry their own escape
 // sequences. Items may be string, rune, Key, []string, []Key, or []any of

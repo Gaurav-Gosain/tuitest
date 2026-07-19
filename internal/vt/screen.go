@@ -103,10 +103,19 @@ func (s *Screen) setHorizontalMargins(left, right int) {
 	s.scroll.Max.X = right
 }
 
-// setVerticalMargins sets the vertical margins.
+// setVerticalMargins sets the vertical margins, clamped to the screen.
+//
+// The clamp is load bearing rather than defensive. A program's idea of the
+// terminal size lags the real one, because it only learns about a resize when
+// it handles SIGWINCH, so between a shrink and that handler it keeps emitting
+// DECSTBM for the old, larger height. Storing such a region verbatim leaves
+// Max.Y past the end of the line buffer, and the next scroll, insert, or
+// delete indexes out of range and panics, taking down the whole process
+// instead of merely drawing the wrong thing.
 func (s *Screen) setVerticalMargins(top, bottom int) {
-	s.scroll.Min.Y = top
-	s.scroll.Max.Y = bottom
+	height := s.buf.Height()
+	s.scroll.Min.Y = clamp(top, 0, max(height-1, 0))
+	s.scroll.Max.Y = clamp(bottom, s.scroll.Min.Y+1, height)
 }
 
 // setCursorX sets the cursor X position. If margins is true, the cursor is

@@ -87,6 +87,7 @@ func Commands() []*Command {
 		recordCommand(),
 		replayCommand(),
 		snapCommand(),
+		fuzzCommand(),
 		doctorCommand(),
 		completionCommand(),
 		versionCommand(),
