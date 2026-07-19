@@ -64,6 +64,14 @@ func frameEnd(buf []byte) (n int, complete, ok bool) {
 		return stringBody(buf, 2, false)
 	case 'N', 'O':
 		return singleShift(buf, 2)
+	case '\\':
+		// A lone string terminator. A well formed control string is consumed
+		// whole by stringBody and its terminator never arrives here, but a
+		// string closed by the 8-bit terminator leaves the 7-bit spelling
+		// stranded. It is a control, not text, so it is framed as one two byte
+		// sequence and recorded as a single Raw rather than splitting into a
+		// bare ESC and a literal backslash.
+		return 2, true, true
 	}
 	return 0, false, false
 }

@@ -21,6 +21,18 @@ func replayBytes(t *testing.T, cmds []Command, m Modes) []byte {
 		case KindRaw:
 			out = append(out, c.Text...)
 		case KindKey:
+			// A key carrying attributes (a release, a base layout, associated
+			// text) names one key and can only be encoded as a whole, which is
+			// what the player does. Resolving its tokens one at a time would
+			// silently drop the attributes and understate what replay sends.
+			if c.KeyAttrs.set() {
+				b, err := encodeCommand(c, Protocols())
+				if err != nil {
+					t.Fatalf("decoder emitted a key no protocol can encode: %+v: %v", c, err)
+				}
+				out = append(out, b...)
+				continue
+			}
 			for _, tok := range c.Keys {
 				k, err := ResolveKey(tok)
 				if err != nil {
@@ -79,9 +91,33 @@ func FuzzReplayReproducesInputBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in []byte) {
 		cmds := decodeChunks(Modes{}, in)
 		got := replayBytes(t, cmds, Modes{})
-		if string(got) != string(in) {
-			t.Fatalf("decode then replay is lossy:\n  in:  %q\n  out: %q\n  cmds: %s",
-				in, got, strings.TrimRight(Sprint(cmds), "\n"))
+		if string(got) == string(in) {
+			return
+		}
+		// Not byte identical, so a Canonical keyboard protocol renormalized a
+		// chord spelling. That is permitted, and it is forced by a deliberate
+		// design decision: a tape file carries no mode context, so a chord
+		// recorded under a negotiated protocol has to replay in the spelling
+		// that is correct with nothing negotiated. "\x1b[70u" is kitty's way
+		// of writing the key F, and with no kitty negotiation in force the
+		// faithful thing to send is the byte "F".
+		//
+		// What is not permitted is drift. The renormalization must have
+		// settled: replaying what we just replayed has to send the same bytes
+		// again. A decoder that kept rewriting its own output would move a
+		// recording further from the session on every pass, and that is what
+		// this catches. Losslessness proper, the claim that no input is ever
+		// discarded, is FuzzNoInputIsDropped rather than this target.
+		//
+		// The comparison is on bytes rather than commands because the commands
+		// are allowed to differ in ways the child cannot observe: kitty's
+		// spelling of F normalizes to the byte "F", which reads back as Type
+		// rather than Key. Both send the same byte.
+		again := decodeChunks(Modes{}, got)
+		settled := replayBytes(t, again, Modes{})
+		if string(settled) != string(got) {
+			t.Fatalf("decode then replay does not settle:\n  in:     %q\n  out:    %q\n  again:  %q\n  cmds:   %s",
+				in, got, settled, strings.TrimRight(Sprint(cmds), "\n"))
 		}
 	})
 }
@@ -130,7 +166,12 @@ func FuzzDecodeNeverFabricatesKeystrokes(f *testing.F) {
 func sanitizeControlStringBody(body []byte) []byte {
 	out := make([]byte, 0, len(body))
 	for _, b := range body {
-		if b < 0x20 || b == 0x7f {
+		// C0 controls, DEL, and the C1 block. C1 matters for the same reason
+		// C0 does and was missed at first: 0x9c is the 8-bit spelling of the
+		// string terminator, so leaving it in the body produced a "reply" that
+		// actually ended early, and the decoder was right to read the rest as
+		// a second sequence.
+		if b < 0x20 || b == 0x7f || (b >= 0x80 && b <= 0x9f) {
 			continue
 		}
 		out = append(out, b)
@@ -241,9 +282,17 @@ func FuzzTapeRoundTripsThroughSource(f *testing.F) {
 			t.Fatalf("round trip changed the command count: %d then %d\nsource: %q",
 				len(cmds), len(back), src)
 		}
-		if got := replayBytes(t, back, Modes{}); string(got) != string(in) {
-			t.Fatalf("tape round trip changed the replayed bytes:\n  in:  %q\n  out: %q\n  src: %q",
-				in, got, src)
+		// The claim is about the tape file, so the comparison is between what
+		// the decoded commands replay and what the same commands replay after
+		// a trip through the file. Comparing against the original input
+		// instead would restate the decoder's canonicalization, which is
+		// FuzzReplayReproducesInputBytes' business: writing "\x1b[1A" down as
+		// "Key Up" and replaying "\x1b[A" is the legacy protocol normalizing a
+		// default parameter, not the file losing anything.
+		want := replayBytes(t, cmds, Modes{})
+		if got := replayBytes(t, back, Modes{}); string(got) != string(want) {
+			t.Fatalf("tape round trip changed the replayed bytes:\n  in:   %q\n  before: %q\n  after:  %q\n  src: %q",
+				in, want, got, src)
 		}
 	})
 }

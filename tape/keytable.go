@@ -185,6 +185,19 @@ func splitToken(tok string) (mask int, base string, ok bool) {
 	if base == "" {
 		return 0, "", false
 	}
+	// A base containing whitespace has no spelling a tape file can carry,
+	// because a Key line is tokenized on whitespace: "Shift+ " would be read
+	// back as "Shift+" and fail to resolve. The space key is spelled "Space",
+	// and rejecting the literal here keeps the one key from having two
+	// spellings that different protocols encode differently.
+	// A base containing whitespace has no spelling a tape file can carry,
+	// because a Key line is tokenized on whitespace: "Shift+ " would be read
+	// back as "Shift+" and fail to resolve. The space key is spelled "Space",
+	// and rejecting the literal here keeps the one key from having two
+	// spellings that different protocols encode differently.
+	if strings.ContainsAny(base, " \t\r\n") {
+		return 0, "", false
+	}
 	if mods != "" {
 		for _, p := range strings.Split(mods, "+") {
 			bit, known := modAliases[p]

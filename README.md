@@ -319,9 +319,10 @@ escape sequences. The grammar, the `Set` keys, and the validation limits are in
 [docs/tape.md](docs/tape.md).
 
 A recording never loses input. Every input sequence is decoded by a registered
-protocol (the legacy keys, xterm modifyOtherKeys, the kitty keyboard protocol)
-or, failing that, captured verbatim as a `Raw` command that replays byte for
-byte. So a tape is a faithful replay whether or not a decoder exists for
+protocol (the legacy keys, xterm modifyOtherKeys, the kitty keyboard protocol,
+the X10, SGR, SGR-pixel and urxvt mouse encodings, bracketed paste and focus
+reporting) or, failing that, captured verbatim as a `Raw` command that replays
+byte for byte. So a tape is a faithful replay whether or not a decoder exists for
 everything in it, and terminal replies to capability queries are never mistaken
 for keystrokes. See [docs/input-protocols.md](docs/input-protocols.md) for the
 guarantees, the round-trip property, what happens when replay negotiates
@@ -405,10 +406,10 @@ ones most likely to matter:
 - **`Screen.Line` returns one physical row** and does not de-wrap, and `Cell`
   exposes only a cell's first rune, so combining marks are invisible to
   assertions.
-- **`SendMouse` speaks only SGR (1006)**, and `tuitest record` does not decode
-  incoming mouse reports back into `Mouse` commands: they reach the program and
-  are then counted and dropped, with a warning, so a recording of a
-  mouse-driven session is not a complete replay.
+- **Mouse mode 1005 (UTF-8 coordinates) is not decoded as itself.** It is
+  indistinguishable from X10 by construction, so it is read as X10 and the
+  coordinates on the `Mouse` line are wrong above column 95. The bytes still
+  replay exactly, so this costs readability rather than fidelity.
 - **Two of the fuzzer's own tests are flaky under load.** They assert that a
   minimised reproduction re-reproduced on the confirmation replay, which is a
   property the fuzzer does not guarantee: confirmation drives a real program

@@ -68,8 +68,17 @@ func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	// it opens an OSC, DCS, APC, PM or SOS string. Declining here is what
 	// stops a terminal reply such as the kitty graphics APC being shredded
 	// into Alt+_ plus text plus Alt+backslash.
+	//
+	// ESC \ is in the list for the mirror-image reason: it is the string
+	// terminator. A well formed reply is consumed whole by the framer and
+	// never reaches this code, but a reply closed by the 8-bit terminator
+	// leaves the 7-bit one stranded, and reading that as Alt+backslash is the
+	// reported defect in miniature. The trade is the documented one: a user
+	// who really presses Alt+backslash gets a Raw line, which replays exactly
+	// and only costs legibility, whereas guessing "key" corrupts a reply
+	// silently.
 	switch buf[1] {
-	case ']', 'P', '_', '^', 'X', 'N':
+	case ']', 'P', '_', '^', 'X', 'N', '\\':
 		return 0, nil, NoMatch
 	}
 

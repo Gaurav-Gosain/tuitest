@@ -65,3 +65,38 @@ func TestDecodeDragReadsAsDrag(t *testing.T) {
 		t.Errorf("decode:\n got: %q\nwant: %q", got, want)
 	}
 }
+
+// TestStrandedStringTerminatorIsNotAKeystroke covers the reported defect in its
+// smallest form. A control string closed by the 8-bit terminator leaves the
+// 7-bit spelling ESC \ stranded in the stream, and reading that as Alt+\ is the
+// same mistake as reading a whole APC reply as Alt+_ plus text: a terminal
+// reply becomes input the user never typed.
+//
+// Verified to fail on broken code: removing '\\' from the control-string
+// introducer list in legacyKeys.Decode decodes the stranded terminator as
+// "Key Alt+\", and removing the '\\' case from frameEnd splits it into a bare
+// Raw ESC followed by a literal backslash instead of one sequence.
+func TestStrandedStringTerminatorIsNotAKeystroke(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		// The stranded terminator alone.
+		{"\x1b\\", "Raw \"\\x1b\\\\\"\n"},
+		// The shape the fuzzer found: an APC closed by the 8-bit terminator,
+		// so the 7-bit one that follows belongs to nothing.
+		{"\x1b_\x9c\x1b\\", "Raw \"\\x1b_\\x9c\"\nRaw \"\\x1b\\\\\"\n"},
+		// A well formed reply is still one Raw, which is what stops this rule
+		// from costing readability where it matters.
+		{"\x1b_ok\x1b\\", "Raw \"\\x1b_ok\\x1b\\\\\"\n"},
+	} {
+		got := Sprint(decodeChunks(Modes{}, []byte(tc.in)))
+		if got != tc.want {
+			t.Errorf("decoding %q:\n  got:  %q\n  want: %q", tc.in, got, tc.want)
+		}
+		// Whatever the spelling, the bytes must survive.
+		if replayed := replayBytes(t, decodeChunks(Modes{}, []byte(tc.in)), Modes{}); string(replayed) != tc.in {
+			t.Errorf("decoding %q did not replay to itself: %q", tc.in, replayed)
+		}
+	}
+}

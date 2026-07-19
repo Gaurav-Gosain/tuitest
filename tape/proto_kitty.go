@@ -295,7 +295,14 @@ func kittyCodeFor(base string) (code int, final byte, ok bool) {
 		}
 	}
 	r, single := singleRune(base)
-	if !single || r < 0x20 {
+	// A control character is not a legal key token, which is the same rule the
+	// legacy encoder states: it has a name, such as Tab or Backspace, and
+	// accepting the raw byte as well would give one key two spellings that
+	// encode to different bytes. DEL is the case that showed the two encoders
+	// disagreeing: legacy rejected "\x7f" and kitty accepted it, so the token
+	// resolved through the permissive fallback and a tape line "Key \x7f" sent
+	// "\x1b[127u" to a program that had never negotiated kitty.
+	if !single || r < 0x20 || r == 0x7f {
 		return 0, 0, false
 	}
 	// Kitty numbers its functional keys inside the Unicode Private Use Area,
