@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/banner.png" alt="tuitest: headless testing for terminal programs, in Go" width="100%">
+</p>
+
 # tuitest
 
 [![Go reference](https://pkg.go.dev/badge/github.com/Gaurav-Gosain/tuitest.svg)](https://pkg.go.dev/github.com/Gaurav-Gosain/tuitest)
@@ -247,6 +251,35 @@ The full Go surface is in [docs/api.md](docs/api.md).
 Requirements: a Unix-like OS that can open PTYs (`/dev/ptmx`), and Go 1.25 or
 newer to install. Windows deliberately fails to build; see
 [docs/limits.md](docs/limits.md).
+
+## What it looks like
+
+Every recording below drives the real binary against a real program: `less`
+paging this repository's README, `vim` opening a file from `scripts/`, and the
+deliberately broken fixture in `testdata/buggytui`. The tapes that produce them
+are in [scripts/demo](scripts/demo) and regenerate with
+`scripts/demo/record.sh`.
+
+<table>
+  <tr>
+    <td><img src="docs/images/run.gif" alt="a tape spawns less on the README, asserts two strings and quits; the run exits 0, then a second tape asserting wording the README no longer uses fails, printing the closest line on screen, the column where it diverges, and the whole screen, and exits 1"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>a tape testing a program with no Go anywhere, and what a stale assertion prints when it fails</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/snap.gif" alt="tuitest snap runs vim on a tape file at 84 columns and prints the screen as text, then runs the same file at 52 columns where the comment lines wrap and vim truncates the filename in its status line"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>snap printing what a program draws, then the same program at a second width</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/fuzz.gif" alt="tuitest fuzz drives the buggytui fixture for five seconds, finds a crash on iteration 1, minimises ten commands to two, and writes a tape; the tape holds a Spawn line and Key F5, and running it back fails the ExpectExit assertion with exit 1"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>fuzzing a fixture that panics on F5, minimised to a two-line tape that replays it</sub></td>
+  </tr>
+</table>
 
 ## Command line
 
