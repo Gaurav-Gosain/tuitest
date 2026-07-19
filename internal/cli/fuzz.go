@@ -31,6 +31,7 @@ func fuzzCommand(env *Env) *cobra.Command {
 		settle       time.Duration
 		memGrowth    float64
 		allowDirty   bool
+		detectFFFD   bool
 		stopOnFirst  bool
 		quiet        bool
 	)
@@ -45,6 +46,9 @@ Reach for fuzz when the tapes all pass and you want to know what nobody thought
 to try. It reports crashes, hangs, screen-model corruption, and terminals left
 in a bad state, and minimises each finding into a tape that replays it, so a
 report arrives as a test rather than as a seed number.
+
+Screen invariants of your own are available from the Go API (fuzz.Options.Invariants)
+but not here, because a command line cannot carry a Go closure.
 
 Set --corpus to keep those reproductions. Entries in that directory are replayed
 first on the next run, so a corpus doubles as a regression suite and a fix can
@@ -91,10 +95,11 @@ not parsed as tuitest's.`,
 					NoResize:      noResize,
 				},
 				Limits: fuzz.Limits{
-					HangAfter:      hangAfter,
-					MaxRSSGrowth:   memGrowth,
-					MinRSSBytes:    fuzz.DefaultLimits().MinRSSBytes,
-					AllowDirtyExit: allowDirty,
+					HangAfter:              hangAfter,
+					MaxRSSGrowth:           memGrowth,
+					MinRSSBytes:            fuzz.DefaultLimits().MinRSSBytes,
+					AllowDirtyExit:         allowDirty,
+					DetectReplacementChars: detectFFFD,
 				},
 				StopOnFirst:   stopOnFirst,
 				Shrink:        !noShrink,
@@ -152,6 +157,7 @@ not parsed as tuitest's.`,
 	f.DurationVar(&settle, "settle", 2*time.Second, "bound on each wait inside an iteration")
 	f.Float64Var(&memGrowth, "max-memory-growth", 0, "fail if resident memory grows by this factor (0 disables; Linux only)")
 	f.BoolVar(&allowDirty, "allow-dirty-exit", false, "do not report a program that exits without restoring the terminal")
+	f.BoolVar(&detectFFFD, "detect-replacement-chars", false, "report U+FFFD on screen (only meaningful with --no-hostile; see docs/fuzzing.md)")
 	f.BoolVar(&stopOnFirst, "stop-on-first", false, "stop at the first failure instead of looking for distinct ones")
 	f.BoolVarP(&quiet, "quiet", "q", false, "only print the summary")
 	return c

@@ -156,6 +156,33 @@ process, and any in-tape liveness probe would mean sending input the fuzzer did
 not send, so those files are transcripts and say so. Rerun `tuitest fuzz`
 against the corpus to check a fix for them.
 
+**The replacement-character check is only sound on well-formed input, and the
+generator does not send it.** Hostile bursts carry bare continuation bytes,
+overlong encodings and surrogate halves, and generated text is truncated
+mid-rune one time in ten. Against those bytes drawing U+FFFD is correct, so the
+check goes quiet for the whole run as soon as any of them is sent; there is no
+bound on how long a program may hold input before drawing it, so a per-command
+gate would not be sound. With the default generator it therefore almost never
+fires. Pair it with `-no-hostile`, and accept that mid-rune truncation will
+still silence some runs.
+
+**An invariant is only judged at a settle, so a violation that repairs itself is
+never seen.** The check runs after every command, but a finding is only produced
+after a `WaitStable` or the end-of-iteration settle, because the fuzzer sends
+input faster than a program consumes it and a screen caught mid-redraw fails a
+reasonable invariant. A property that breaks at command ten and is back by
+command forty produces nothing.
+
+**An invariant needs guards, and writing them is the caller's problem.** The
+fuzzer sends `Ctrl+c`, so a property about a running program must go vacuous
+once it has exited. The fuzzer resizes to a single column and a single row,
+where no program maintains a layout property, so a property about chrome must go
+vacuous at a size where the chrome cannot fit. An under-guarded invariant
+produces false positives; an over-guarded one goes vacuous on exactly the
+degenerate sizes the fuzzer favours and is checked against almost nothing. There
+is no way for tuitest to write these guards for you, because it does not know
+what the program is supposed to draw.
+
 **`memory-growth` is Linux only.** It reads `/proc/<pid>/statm`; on other
 platforms the sampler reports nothing and the check never fires, which is why it
 is off by default rather than silently platform-dependent.

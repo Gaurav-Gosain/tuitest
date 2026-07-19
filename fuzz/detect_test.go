@@ -24,16 +24,27 @@ type fakeScreen struct {
 	curCol, curRow int
 	visible        bool
 	text           string
-	exitCode       int
-	exited         bool
+	// lines overrides text on a per-row basis, for the checks that read the
+	// grid row by row. When nil, every row reads as text.
+	lines    []string
+	exitCode int
+	exited   bool
 }
 
 func (s fakeScreen) Size() (int, int)           { return s.cols, s.rows }
 func (s fakeScreen) Cell(int, int) tuitest.Cell { return tuitest.Cell{Rune: ' ', Width: 1} }
 func (s fakeScreen) Cursor() (int, int, bool)   { return s.curCol, s.curRow, s.visible }
 func (s fakeScreen) Text() string               { return s.text }
-func (s fakeScreen) Line(int) string            { return s.text }
-func (s fakeScreen) ExitCode() (int, bool)      { return s.exitCode, s.exited }
+func (s fakeScreen) Line(row int) string {
+	if s.lines == nil {
+		return s.text
+	}
+	if row < 0 || row >= len(s.lines) {
+		return ""
+	}
+	return s.lines[row]
+}
+func (s fakeScreen) ExitCode() (int, bool) { return s.exitCode, s.exited }
 
 func TestCheckScreenModelAcceptsAConsistentScreen(t *testing.T) {
 	t.Parallel()

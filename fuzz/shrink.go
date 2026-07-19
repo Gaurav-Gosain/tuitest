@@ -21,9 +21,28 @@ import (
 // Every candidate costs a full spawn-and-drive, so the budget is a hard cap on
 // replays rather than on passes.
 func shrink(ctx context.Context, opts Options, f *Failure) *Failure {
-	return shrinkUsing(ctx, opts, f, func(candidate []tape.Command) bool {
-		return reproduces(ctx, opts, candidate, f.Kind)
+	// The onset is an index into Commands, so the one observed before
+	// minimisation stops meaning anything the moment commands are deleted.
+	// Keeping the observation from the last accepted candidate means the
+	// reported onset always indexes the tape the user is handed, even when the
+	// final confirmation replay does not reproduce and so cannot supply one.
+	var accepted *Failure
+	out := shrinkUsing(ctx, opts, f, func(candidate []tape.Command) bool {
+		got := drive(ctx, opts, candidate)
+		if !sameFailure(got, f) {
+			return false
+		}
+		accepted = got
+		return true
 	})
+	if accepted != nil {
+		out.Onset = accepted.Onset
+	} else {
+		// Nothing was reduced, so the original observation still describes the
+		// original commands.
+		out.Onset = f.Onset
+	}
+	return out
 }
 
 // shrinkUsing is shrink with the "does this still fail?" test injected. The
@@ -227,11 +246,18 @@ func shrinkMouse(c tape.Command) []tape.Command {
 	return out
 }
 
-// reproduces replays a candidate and reports whether it fails the same way.
+// sameFailure decides whether two observations are the same bug, which is what
+// minimisation accepts on and what deduplication keys on.
+//
 // Matching on kind rather than on the exact detail string is deliberate: the
 // cursor coordinates in a message change as input shrinks, and demanding an
-// exact match would reject every genuine reduction.
-func reproduces(ctx context.Context, opts Options, cmds []tape.Command, want FailureKind) bool {
-	f := drive(ctx, opts, cmds)
-	return f != nil && f.Kind == want
+// exact match would reject every genuine reduction. Invariants are the one
+// exception, and they need the extra arm: a session with several invariants
+// would otherwise let minimisation drift onto whichever one is easiest to
+// break, and report a reduction for a property the user was not looking at.
+func sameFailure(got, want *Failure) bool {
+	if got == nil || want == nil || got.Kind != want.Kind {
+		return false
+	}
+	return got.Invariant == want.Invariant
 }

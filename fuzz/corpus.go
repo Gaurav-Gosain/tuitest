@@ -32,6 +32,11 @@ func TapeFor(f *Failure) string {
 	if f.Original > 0 {
 		fmt.Fprintf(&b, "# minimised from %d commands to %d\n", f.Original, len(f.Commands))
 	}
+	if f.Kind == FailInvariant && f.Onset > 0 {
+		// The onset is where the property broke, which is earlier than where the
+		// checker noticed and is the line to look at first.
+		fmt.Fprintf(&b, "# the invariant first failed after command %d below\n", f.Onset)
+	}
 	if !f.Verified {
 		b.WriteString("# warning: this reduction did not reproduce on confirmation, so the failure may be timing dependent\n")
 	}
@@ -65,12 +70,14 @@ func assertionFor(f *Failure) string {
 		return assertionMarker + "# The bug: this program should still exit cleanly after the input above.\n" +
 			"ExpectExit 0\n"
 	default:
-		// A hang, a screen inconsistency and memory growth are all judged by
-		// the fuzzer from outside the tape, by watching the process. There is
-		// no tape command that checks them without changing the reproduction
-		// (a liveness probe means sending input the fuzzer did not send), so
-		// the file stays a transcript and says so rather than carrying an
-		// assertion that would pass either way.
+		// A hang, a screen inconsistency, memory growth, a replacement
+		// character and a violated invariant are all judged by the fuzzer from
+		// outside the tape: by watching the process, or by running a Go closure
+		// a tape file has no way to express. There is no tape command that
+		// checks them without changing the reproduction (a liveness probe means
+		// sending input the fuzzer did not send), so the file stays a
+		// transcript and says so rather than carrying an assertion that would
+		// pass either way.
 		return assertionMarker + "# This failure is judged from outside the tape, by watching the process,\n" +
 			"# so there is no assertion that \"tuitest run\" could check without\n" +
 			"# changing the reproduction. The commands above are the input;\n" +
