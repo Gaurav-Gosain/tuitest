@@ -31,7 +31,7 @@ func init() {
 
 func setSysProcAttr(*exec.Cmd) {}
 
-func terminateGroup(int, <-chan struct{}) {}
+func terminateGroup(int, <-chan struct{}) error { return nil }
 
 // waitSignal has no meaning on Windows, which has no signal-death exit status;
 // a crash there surfaces as an ordinary non-zero exit code instead.
