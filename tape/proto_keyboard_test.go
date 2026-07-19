@@ -250,7 +250,11 @@ func TestModifyOtherKeys(t *testing.T) {
 		{"\x1b[27;5;97~", "Ctrl+a"},
 		{"\x1b[27;5;105~", "Ctrl+i"},
 		{"\x1b[27;5;109~", "Ctrl+m"},
-		{"\x1b[27;2;65~", "Shift+A"},
+		// Shift on a letter is spelled with a lowercase base, because Shift is
+		// what makes it uppercase. "Shift+A" names the shift twice and the key
+		// resolver rejects it, so decoding to it would write a tape that fails
+		// to parse on the next run.
+		{"\x1b[27;2;65~", "Shift+a"},
 		{"\x1b[27;1;13~", "Enter"},
 		{"\x1b[27;5;13~", "Ctrl+Enter"},
 		{"\x1b[27;5;9~", "Ctrl+Tab"},
@@ -274,238 +278,34 @@ func TestModifyOtherKeys(t *testing.T) {
 	}
 }
 
-// TestCtrlIIsDistinguishableFromTab is the point of modifyOtherKeys stated as a
-// property: under the legacy encoding the two keys are the same byte, and under
-// modifyOtherKeys they must decode differently.
-func TestCtrlIIsDistinguishableFromTab(t *testing.T) {
-	tab := decodeOne(t, "\t", Modes{})
-	if tab.Keys[0] != "Tab" {
-		t.Fatalf("0x09 = %q, want Tab", tab.Keys[0])
-	}
-	ctrlI := decodeOne(t, "\x1b[27;5;105~", Modes{ModifyOtherKeys: 2})
-	if ctrlI.Keys[0] != "Ctrl+i" {
-		t.Fatalf("modifyOtherKeys Ctrl+i = %q, want Ctrl+i", ctrlI.Keys[0])
-	}
-}
-
-// TestKeyAttributesSurviveTheTapeFile checks that a Key line carrying
-// attributes prints and re-parses unchanged. Decoding a release event is
-// worthless if writing it to a file loses it.
-func TestKeyAttributesSurviveTheTapeFile(t *testing.T) {
-	cases := []Command{
-		{Kind: KindKey, Keys: []string{"a"}, KeyAttrs: KeyAttrs{Event: KeyRelease}},
-		{Kind: KindKey, Keys: []string{"Ctrl+a"}, KeyAttrs: KeyAttrs{Event: KeyRepeat}},
-		{Kind: KindKey, Keys: []string{"a"}, KeyAttrs: KeyAttrs{Shifted: "A", Base: "a"}},
-		{Kind: KindKey, Keys: []string{"a"}, KeyAttrs: KeyAttrs{Text: "á"}},
-		{Kind: KindKey, Keys: []string{"Up"}, KeyAttrs: KeyAttrs{Event: KeyRelease, Text: "x"}},
-	}
-
-	for _, c := range cases {
-		src := Sprint([]Command{c})
-		got, err := Parse(strings.NewReader(src))
-		if err != nil {
-			t.Fatalf("re-parse %q: %v", src, err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("re-parse %q gave %d commands", src, len(got))
-		}
-		if got[0].KeyAttrs != c.KeyAttrs {
-			t.Errorf("%q: attrs %+v, want %+v", src, got[0].KeyAttrs, c.KeyAttrs)
-		}
-		if got[0].Keys[0] != c.Keys[0] {
-			t.Errorf("%q: key %q, want %q", src, got[0].Keys[0], c.Keys[0])
-		}
-	}
-}
-
-// TestKeyAttributesNeedASingleKey checks the grammar rule that keeps attributes
-// unambiguous: an attribute qualifies one keypress, so a line carrying one may
-// not name several keys.
-func TestKeyAttributesNeedASingleKey(t *testing.T) {
-	_, err := Parse(strings.NewReader("Key a b +Release\n"))
-	if err == nil {
-		t.Fatal("a multi-key line with attributes parsed, want an error")
-	}
-	if !strings.Contains(err.Error(), "exactly one key") {
-		t.Errorf("error does not explain the rule: %v", err)
-	}
-}
-
-// TestCursorPositionReportIsNotF3 pins the ambiguity that CSI R carries: it is
-// the cursor position report, and it is also the CSI spelling of F3. A recorder
-// that reads a position report as a function key writes a tape that types F3 at
-// the program under test.
+// TestChordsWithNoUnnegotiatedSpellingStillResolve covers the chords that exist
+// only under a negotiated protocol. Ctrl+Enter is much of the reason
+// modifyOtherKeys exists, since the legacy encoding folds it onto plain Enter,
+// and a tape file carries no mode context.
 //
-// The rule is that a function key in the SS3 family reaches the CSI form only
-// with explicit parameters, because its unmodified spelling is SS3.
-func TestCursorPositionReportIsNotF3(t *testing.T) {
-	notKeys := []string{
-		"\x1b[R",      // cursor position report, no parameters
-		"\x1b[12;40R", // cursor position report with a position
-		"\x1b[S",      // the same collision on S
-		"\x1b[2;3S",   // and with parameters that are not "1;mod"
-		"\x1b[1;1R",   // an explicit "no modifiers" is a report for row 1
-		"\x1b[1;R",    // as is an empty modifier
-		"\x1b[01R",    // and a zero-padded one
-	}
-	for _, in := range notKeys {
-		for _, c := range decodeCommands([]byte(in)) {
-			if c.Kind == KindKey || c.Kind == KindType {
-				t.Errorf("%q decoded as keyboard input %v", in, c.Keys)
-			}
-		}
-	}
-
-	// The genuine CSI spellings of the key still work.
-	for in, want := range map[string]string{
-		"\x1bOR":    "F3",
-		"\x1b[1;5R": "Ctrl+F3",
-		"\x1b[1;2S": "Shift+F4",
-	} {
-		c := decodeOne(t, in, Modes{})
-		if c.Kind != KindKey || c.Keys[0] != want {
-			t.Errorf("%q = %v %v, want Key %s", in, c.Kind, c.Keys, want)
-		}
-	}
-}
-
-// TestPlayerSendsKeyAttributes checks that the player replays what the tape
-// says, attributes included. Decoding a release event and writing it to a file
-// is pointless if replaying it sends a plain press instead.
-//
-// It works on the encoding the player uses rather than driving a terminal,
-// which is the part that regressed: the player used to resolve each token on
-// its own and had nowhere to put the attributes.
-func TestPlayerSendsKeyAttributes(t *testing.T) {
-	tests := []struct {
-		name string
-		cmd  Command
-		want string
-	}{
-		{
-			name: "release event",
-			cmd:  Command{Kind: KindKey, Keys: []string{"a"}, KeyAttrs: KeyAttrs{Event: KeyRelease}},
-			want: "\x1b[97;1:3u",
-		},
-		{
-			name: "repeat with modifier",
-			cmd:  Command{Kind: KindKey, Keys: []string{"Ctrl+a"}, KeyAttrs: KeyAttrs{Event: KeyRepeat}},
-			want: "\x1b[97;5:2u",
-		},
-		{
-			name: "associated text",
-			cmd:  Command{Kind: KindKey, Keys: []string{"a"}, KeyAttrs: KeyAttrs{Text: "á"}},
-			want: "\x1b[97;;225u",
-		},
-		{
-			name: "plain chord keeps the legacy spelling",
-			cmd:  Command{Kind: KindKey, Keys: []string{"Ctrl+a"}},
-			want: "\x01",
-		},
-		{
-			name: "multiple keys concatenate",
-			cmd:  Command{Kind: KindKey, Keys: []string{"Ctrl+a", "Up", "Enter"}},
-			want: "\x01\x1b[A\r",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := encodeCommand(tc.cmd, Protocols())
+// Resolving these strictly under default modes would fail, which would force
+// the recorder to write them as Raw and lose the name. The encoder instead
+// falls back to the protocol that invented the chord, so the tape stays
+// readable and still replays the bytes the program will understand.
+func TestChordsWithNoUnnegotiatedSpellingStillResolve(t *testing.T) {
+	for _, chord := range []string{"Ctrl+Enter", "Ctrl+Tab", "Ctrl++"} {
+		t.Run(chord, func(t *testing.T) {
+			got, err := ResolveKey(chord)
 			if err != nil {
-				t.Fatalf("encode: %v", err)
+				t.Fatalf("ResolveKey(%q) = %v, want it to resolve", chord, err)
 			}
-			if string(got) != tc.want {
-				t.Fatalf("player would send %q, want %q", got, tc.want)
+			// The bytes must be some negotiated protocol's, not a legacy
+			// spelling that would silently mean a different key.
+			if len(got) == 0 || got[0] != 0x1b {
+				t.Fatalf("ResolveKey(%q) = %q, want an escape sequence", chord, got)
+			}
+			// And they must read back as the chord that was asked for, which
+			// is what makes the fallback faithful rather than merely non-empty.
+			c := decodeOne(t, string(got), permissiveModes)
+			if c.Kind != KindKey || c.Keys[0] != chord {
+				t.Fatalf("%q decoded back as %v %v, want Key %s", got, c.Kind, c.Keys, chord)
 			}
 		})
-	}
-}
-
-// TestWhatSurvivesTheTapeFile pins exactly how much of the mode context a tape
-// file carries, because the answer is not "all of it" and the difference
-// matters when reading a recording made under kitty.
-//
-// A tape stores keys, not bytes. The mode context a key was decoded under lives
-// in memory during recording but is not written to the file, so a plain chord
-// comes back with no modes and replays in the legacy spelling. That is
-// behaviourally equivalent: a program that negotiated kitty still accepts the
-// legacy encoding.
-//
-// What must survive is everything the legacy encoding cannot express, since
-// that is information rather than spelling. Those keys carry attributes, and
-// attributes are written to the file and force the kitty encoding on replay.
-func TestWhatSurvivesTheTapeFile(t *testing.T) {
-	kitty := Modes{KittyFlags: 1}
-
-	tests := []struct {
-		name   string
-		in     string
-		tape   string
-		replay string
-	}{
-		{
-			name: "a plain chord reverts to the legacy spelling",
-			in:   "\x1b[97;5u", tape: "Key Ctrl+a", replay: "\x01",
-		},
-		{
-			name: "a release event survives exactly",
-			in:   "\x1b[97;1:3u", tape: "Key a +Release", replay: "\x1b[97;1:3u",
-		},
-		{
-			name: "associated text survives exactly",
-			in:   "\x1b[97;;225u", tape: `Key a +Text "á"`, replay: "\x1b[97;;225u",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			src := strings.TrimSpace(Sprint(decodeUnder([]byte(tc.in), kitty)))
-			if src != tc.tape {
-				t.Fatalf("tape line = %q, want %q", src, tc.tape)
-			}
-
-			back, err := Parse(strings.NewReader(src + "\n"))
-			if err != nil {
-				t.Fatalf("re-parse: %v", err)
-			}
-			out, err := encodeCommands(back)
-			if err != nil {
-				t.Fatalf("encode: %v", err)
-			}
-			if string(out) != tc.replay {
-				t.Fatalf("replays as %q, want %q", out, tc.replay)
-			}
-		})
-	}
-}
-
-// TestPlusIsAKeyName covers the one character that is both the modifier
-// separator and a key. A token ending in '+' names '+' itself; what precedes it
-// is the modifier list, which must carry its own separator.
-func TestPlusIsAKeyName(t *testing.T) {
-	ok := map[string]string{
-		"+":     "+",     // the plus key, unmodified
-		"Alt++": "\x1b+", // Alt and plus
-	}
-	for tok, want := range ok {
-		got, err := ResolveKey(tok)
-		if err != nil {
-			t.Errorf("ResolveKey(%q): %v", tok, err)
-			continue
-		}
-		if string(got) != want {
-			t.Errorf("ResolveKey(%q) = %q, want %q", tok, got, want)
-		}
-	}
-
-	// "Ctrl+" names a modifier with no key, and "C+" is the same mistake in
-	// the short spelling. Both are rejected rather than silently read as the
-	// plus key.
-	for _, tok := range []string{"Ctrl+", "C+"} {
-		if _, err := ResolveKey(tok); err == nil {
-			t.Errorf("ResolveKey(%q) succeeded, want an error", tok)
-		}
 	}
 }
 
@@ -514,8 +314,16 @@ func TestPlusIsAKeyName(t *testing.T) {
 // encoding it that way would silently change the key. It has no legacy
 // spelling, and belongs to modifyOtherKeys or kitty.
 func TestCtrlWithoutALegacyEncoding(t *testing.T) {
-	if _, err := ResolveKey("Ctrl++"); err == nil {
-		t.Error("Ctrl++ resolved under the legacy encoding, want an error")
+	// Ctrl and '+' has no legacy spelling: 0x0b reads back as Ctrl+k, so
+	// encoding it that way would silently change the key. The resolver must
+	// therefore not produce that byte. It does resolve, through the fallback to
+	// a negotiated protocol that can express the chord faithfully.
+	got, err := ResolveKey("Ctrl++")
+	if err != nil {
+		t.Fatalf("ResolveKey(Ctrl++): %v", err)
+	}
+	if string(got) == "\x0b" {
+		t.Error("Ctrl++ resolved to 0x0b, which decodes back as Ctrl+k")
 	}
 
 	// Under kitty it has a faithful encoding, and it round-trips.

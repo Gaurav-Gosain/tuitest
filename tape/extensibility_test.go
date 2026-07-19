@@ -24,6 +24,8 @@ func (exampleProtocol) Name() string       { return "example-status" }
 func (exampleProtocol) Priority() int      { return 5 }
 func (exampleProtocol) Fidelity() Fidelity { return Exact }
 
+func (exampleProtocol) Keyboard() bool { return false }
+
 func (exampleProtocol) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	body, final, n, r := csiFrame(buf)
 	if r != Full {

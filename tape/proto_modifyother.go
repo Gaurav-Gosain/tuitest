@@ -1,6 +1,9 @@
 package tape
 
-import "strconv"
+import (
+	"strconv"
+	"unicode"
+)
 
 func init() { Register(modifyOtherKeys{}) }
 
@@ -17,6 +20,9 @@ type modifyOtherKeys struct{}
 func (modifyOtherKeys) Name() string       { return "modify-other-keys" }
 func (modifyOtherKeys) Priority() int      { return 10 }
 func (modifyOtherKeys) Fidelity() Fidelity { return Canonical }
+
+// Keyboard reports true: this protocol decodes keystrokes.
+func (modifyOtherKeys) Keyboard() bool { return true }
 
 func (p modifyOtherKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	body, final, n, r := csiFrame(buf)
@@ -89,6 +95,20 @@ func chordToken(mask int, r rune) (string, bool) {
 	if r < 0x20 {
 		return "", false
 	}
+	// The tape grammar spells a shifted letter with a lowercase base, because
+	// Shift is what turns "a" into "A"; "Shift+A" names the shift twice and the
+	// key resolver rejects it. xterm reports the shifted letter by its uppercase
+	// codepoint, so the case is folded here and restored in tokenChord.
+	if mask&modShift != 0 {
+		lower := unicode.ToLower(r)
+		if lower == r {
+			// Shift on something that is not an uppercase letter has no
+			// spelling this grammar can represent unambiguously. Decline it and
+			// let the bytes be captured raw, which still replays exactly.
+			return "", false
+		}
+		return modString(mask) + string(lower), true
+	}
 	return modString(mask) + string(r), true
 }
 
@@ -119,6 +139,15 @@ func tokenChord(tok string) (int, rune, bool) {
 	r, single := singleRune(base)
 	if !single || r < 0x20 || r == 0x7f {
 		return 0, 0, false
+	}
+	// Invert the case folding chordToken applies, so Shift+a re-encodes to the
+	// uppercase codepoint xterm actually reports.
+	if mask&modShift != 0 {
+		upper := unicode.ToUpper(r)
+		if upper == r {
+			return 0, 0, false
+		}
+		return mask, upper, true
 	}
 	return mask, r, true
 }

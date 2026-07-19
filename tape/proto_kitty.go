@@ -32,6 +32,9 @@ func (kittyKeys) Name() string       { return "kitty-keys" }
 func (kittyKeys) Priority() int      { return 20 }
 func (kittyKeys) Fidelity() Fidelity { return Canonical }
 
+// Keyboard reports true: this protocol decodes keystrokes.
+func (kittyKeys) Keyboard() bool { return true }
+
 // Kitty event types.
 const (
 	kittyPress   = 1

@@ -133,26 +133,20 @@ func TestDecodedKeysReplayToTheSameBytes(t *testing.T) {
 	}
 }
 
-// TestDecodeKeepsUnrepresentableSequences checks that a sequence with no
-// keyboard meaning neither leaks its bytes into a Type command nor vanishes.
-// It used to be counted as dropped, which made the recording an incomplete
-// replay; it is now captured verbatim so the bytes survive round trip.
-func TestDecodeKeepsUnrepresentableSequences(t *testing.T) {
-	const in = "a\x1b[<0;10;5Mb"
+// TestDecodeRepresentsMouseReports replaces a test that used to assert a mouse
+// report was *dropped*, counted, and warned about. Dropping it was the reported
+// bug: a tape missing the input that drove the session is not a replay of it.
+// The report now has a first-class representation and the surrounding text is
+// still intact.
+func TestDecodeRepresentsMouseReports(t *testing.T) {
+	var d inputDecoder
+	d.feed([]byte("a\x1b[<0;10;5Mb"))
+	d.close()
+	cmds := d.take()
 
-	cmds := decodeCommands([]byte(in))
-	for _, c := range cmds {
-		if c.Kind == KindType && strings.Contains(c.Text, "\x1b") {
-			t.Fatalf("escape sequence leaked into a Type command: %q", c.Text)
-		}
-	}
-
-	got, err := encodeCommands(cmds)
-	if err != nil {
-		t.Fatalf("re-encode: %v", err)
-	}
-	if string(got) != in {
-		t.Errorf("sequence was not preserved\n got: %q\nwant: %q\ntape:\n%s",
-			got, in, strings.TrimRight(Sprint(cmds), "\n"))
+	got := strings.TrimRight(Sprint(cmds), "\n")
+	want := "Type a\nMouse Press Left 9 4\nType b"
+	if got != want {
+		t.Errorf("mouse report not represented:\n got: %q\nwant: %q", got, want)
 	}
 }

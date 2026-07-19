@@ -156,9 +156,11 @@ func (r *Recorder) flushInput() {
 }
 
 // SetModes tells the recorder the terminal modes the program under test has
-// negotiated, so input is decoded the way the program will interpret it. The
-// same bytes are a different key under different modes, which is why this
-// cannot be inferred from the input stream alone.
+// negotiated, read from the child's output stream, so input is decoded the way
+// the program will interpret it. The same bytes are a different key under
+// different modes, and encodings such as pixel-coordinate mouse reports are
+// identical on the wire and differ only in what the program asked for, which is
+// why this cannot be inferred from the input stream alone.
 func (r *Recorder) SetModes(m Modes) { r.dec.setModes(m) }
 
 // anchor picks the line of after to wait on: the last line that is genuinely

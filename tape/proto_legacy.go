@@ -29,6 +29,9 @@ func (legacyKeys) Name() string       { return "legacy-keys" }
 func (legacyKeys) Priority() int      { return 0 }
 func (legacyKeys) Fidelity() Fidelity { return Canonical }
 
+// Keyboard reports true: this protocol decodes keystrokes.
+func (legacyKeys) Keyboard() bool { return true }
+
 func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	if len(buf) == 0 {
 		return 0, nil, NoMatch

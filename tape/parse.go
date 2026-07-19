@@ -63,6 +63,8 @@ const (
 	// KindWaitOutput blocks until the child writes anything, bounded by its
 	// timeout. Unlike WaitStable it cannot pass without the child reacting.
 	KindWaitOutput
+	// KindFocus sends a focus-in or focus-out report (mode 1004).
+	KindFocus
 )
 
 // Verb returns the canonical spelling of the command verb, the one Print emits.
@@ -106,6 +108,8 @@ func (k Kind) Verb() string {
 		return "Raw"
 	case KindWaitOutput:
 		return "WaitOutput"
+	case KindFocus:
+		return "Focus"
 	default:
 		return ""
 	}
@@ -171,6 +175,9 @@ type Command struct {
 
 	// Mouse
 	Mouse tuitest.MouseEvent
+
+	// Focus
+	FocusIn bool
 
 	// Paste / Raw carry their payload in Text.
 }
@@ -459,7 +466,28 @@ func parseLine(raw string) (Command, *ParseError) {
 		if pe != nil {
 			return c, pe
 		}
+		// A paste payload containing a bracketed-paste marker would end the
+		// paste early on the wire, leaving the rest to be read as typed input.
+		// That is the paste-injection problem bracketed paste exists to
+		// prevent, so it is rejected here rather than sent.
+		if c.Kind == KindPaste && !PasteTextIsSafe(text) {
+			return c, perr(verb.col, "Paste text contains a bracketed-paste marker, which would end the paste early; use Raw to send those bytes deliberately")
+		}
 		c.Text = text
+		return c, nil
+
+	case "Focus":
+		if len(rest) != 1 {
+			return c, perr(verb.col, "Focus needs a direction (In or Out)")
+		}
+		switch rest[0].text {
+		case "In":
+			c.Kind, c.FocusIn = KindFocus, true
+		case "Out":
+			c.Kind, c.FocusIn = KindFocus, false
+		default:
+			return c, perr(rest[0].col, "unknown focus direction %q (want In or Out)", rest[0].text)
+		}
 		return c, nil
 
 	case "Hide":
@@ -497,7 +525,7 @@ func verbs() []string {
 	return []string{
 		"Set", "Spawn", "Type", "Key", "Wait", "WaitStable", "WaitOutput",
 		"WaitPrompt", "WaitCommand", "Expect", "ExpectExit", "Snapshot",
-		"Resize", "Mouse", "Paste", "Raw", "Hide", "Show", "Sleep",
+		"Resize", "Mouse", "Paste", "Raw", "Focus", "Hide", "Show", "Sleep",
 	}
 }
 
@@ -565,17 +593,32 @@ func parseQuoted(verb token, tail string, tailCol int) (string, *ParseError) {
 func Quote(s string) string { return strconv.Quote(s) }
 
 var mouseButtons = map[string]tuitest.MouseButton{
-	"Left":      tuitest.MouseLeft,
-	"Middle":    tuitest.MouseMiddle,
-	"Right":     tuitest.MouseRight,
-	"WheelUp":   tuitest.MouseWheelUp,
-	"WheelDown": tuitest.MouseWheelDown,
+	"Left":       tuitest.MouseLeft,
+	"Middle":     tuitest.MouseMiddle,
+	"Right":      tuitest.MouseRight,
+	"WheelUp":    tuitest.MouseWheelUp,
+	"WheelDown":  tuitest.MouseWheelDown,
+	"WheelLeft":  tuitest.MouseWheelLeft,
+	"WheelRight": tuitest.MouseWheelRight,
+	"Back":       tuitest.MouseBackward,
+	"Forward":    tuitest.MouseForward,
+	"None":       tuitest.MouseNone,
 }
 
 var mouseActions = map[string]tuitest.MouseAction{
 	"Press":   tuitest.MousePress,
 	"Release": tuitest.MouseRelease,
 	"Move":    tuitest.MouseMove,
+	"Drag":    tuitest.MouseDrag,
+}
+
+// mouseEncodings names the wire format a Mouse line replays in. SGR is the
+// default and is left unwritten, so an ordinary tape reads exactly as it did
+// before legacy encodings were supported.
+var mouseEncodings = map[string]tuitest.MouseEncoding{
+	"+X10":   tuitest.MouseX10,
+	"+Urxvt": tuitest.MouseURXVT,
+	"+SGR":   tuitest.MouseSGR,
 }
 
 // parseMouse reads "Mouse <Action> <Button> <col> <row> [+Ctrl +Alt +Shift]".
@@ -586,11 +629,11 @@ func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
 	}
 	action, ok := mouseActions[tokens[0].text]
 	if !ok {
-		return ev, perr(tokens[0].col, "unknown mouse action %q (want Press, Release, or Move)", tokens[0].text)
+		return ev, perr(tokens[0].col, "unknown mouse action %q (want Press, Release, Move, or Drag)", tokens[0].text)
 	}
 	button, ok := mouseButtons[tokens[1].text]
 	if !ok {
-		return ev, perr(tokens[1].col, "unknown mouse button %q (want Left, Middle, Right, WheelUp, or WheelDown)", tokens[1].text)
+		return ev, perr(tokens[1].col, "unknown mouse button %q (want Left, Middle, Right, None, WheelUp, WheelDown, WheelLeft, WheelRight, Back, or Forward)", tokens[1].text)
 	}
 	pos := [2]int{}
 	for i, what := range []string{"col", "row"} {
@@ -614,9 +657,21 @@ func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
 			ev.Mods |= tuitest.ModAlt
 		case "+Shift":
 			ev.Mods |= tuitest.ModShift
+		case "+Pixel":
+			ev.Pixel = true
 		default:
-			return ev, perr(tok.col, "unexpected token %q (want +Ctrl, +Alt, or +Shift)", tok.text)
+			enc, ok := mouseEncodings[tok.text]
+			if !ok {
+				return ev, perr(tok.col, "unexpected token %q (want +Ctrl, +Alt, +Shift, +Pixel, +X10, +Urxvt, or +SGR)", tok.text)
+			}
+			ev.Enc = enc
 		}
+	}
+	// A legacy encoding cannot say which button was released, so a tape that
+	// asks it to would replay as a report naming no button at all. Refusing is
+	// better than silently sending something the program reads differently.
+	if _, ok := ev.Encode(); !ok {
+		return ev, perr(verb.col, "Mouse %s %s has no representation in its wire encoding", tokens[0].text, tokens[1].text)
 	}
 	return ev, nil
 }

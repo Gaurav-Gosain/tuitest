@@ -64,6 +64,13 @@ func (c Command) String() string {
 		// malformed UTF-8 and embedded escapes exactly as they were generated.
 		b.WriteByte(' ')
 		b.WriteString(Quote(c.Text))
+	case KindFocus:
+		b.WriteByte(' ')
+		if c.FocusIn {
+			b.WriteString("In")
+		} else {
+			b.WriteString("Out")
+		}
 	case KindHide, KindShow:
 		// No arguments.
 	}
@@ -154,5 +161,18 @@ func writeMouse(b *strings.Builder, ev tuitest.MouseEvent) {
 	}
 	if ev.Mods&tuitest.ModShift != 0 {
 		b.WriteString(" +Shift")
+	}
+	if ev.Pixel {
+		b.WriteString(" +Pixel")
+	}
+	// SGR is the default and stays unwritten, so an ordinary Mouse line reads
+	// exactly as it always has. A legacy encoding is named, because replaying
+	// it as SGR would send a program that only enabled mode 1000 bytes it does
+	// not understand.
+	switch ev.Enc {
+	case tuitest.MouseX10:
+		b.WriteString(" +X10")
+	case tuitest.MouseURXVT:
+		b.WriteString(" +Urxvt")
 	}
 }

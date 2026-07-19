@@ -90,8 +90,25 @@ func (d *inputDecoder) feed(chunk []byte) {
 	}
 }
 
+// maxPendingBytes bounds how much of an unterminated sequence the decoder will
+// hold waiting for a final byte. A control sequence is a few dozen bytes even
+// with generous parameters, so anything past this is a program that will never
+// terminate it, or input that is not a control sequence at all. Without a bound
+// the hold grows for as long as the bytes keep arriving.
+const maxPendingBytes = 4096
+
 // hold stashes an incomplete sequence for the next chunk to complete.
+//
+// The hold is bounded: past maxPendingBytes the sequence is never going to
+// terminate, so waiting longer only grows the buffer. Giving up emits the bytes
+// verbatim as Raw rather than discarding them, so the recording still replays
+// the session exactly whether or not the bytes could be named.
 func (d *inputDecoder) hold(rest []byte) {
+	if len(rest) > maxPendingBytes {
+		d.emitRaw(rest)
+		d.pending = nil
+		return
+	}
 	d.pending = append([]byte(nil), rest...)
 }
 
@@ -162,7 +179,7 @@ func (d *inputDecoder) emitKey(tok string) { d.emitKeyModes(tok, d.modes) }
 // context changes so one Key line always replays under one set of modes.
 func (d *inputDecoder) emitKeyModes(tok string, m Modes) {
 	d.flushText()
-	if len(d.keys) > 0 && d.keyModes != m {
+	if len(d.keys) > 0 && !d.keyModes.sameEncoding(m) {
 		d.flushKeys()
 	}
 	d.keyModes = m

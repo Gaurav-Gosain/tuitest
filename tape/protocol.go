@@ -1,6 +1,9 @@
 package tape
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Result reports how much of the buffer a protocol recognized.
 type Result int
@@ -36,6 +39,12 @@ const (
 // The same bytes are a different key depending on what the program under test
 // negotiated, so the decoder cannot be a pure function of the input stream: it
 // has to be told the modes observed on the child's output stream.
+//
+// Named fields carry the negotiated keyboard state that is not a DEC private
+// mode, such as the kitty flag stack. The lookup carries everything that is
+// one, so a protocol added later can ask about any mode it likes without this
+// struct growing a field for it. That is what keeps the extensibility claim
+// true for modes as well as for sequences.
 type Modes struct {
 	// AppCursor is DECCKM (mode 1). Cursor keys send SS3 rather than CSI.
 	AppCursor bool
@@ -48,6 +57,62 @@ type Modes struct {
 	ModifyOtherKeys int
 	// BracketedPaste is DEC private mode 2004.
 	BracketedPaste bool
+
+	// lookup answers for any DEC private mode, normally by reading the live
+	// terminal. It is shared rather than copied, so a Modes is cheap to pass
+	// by value and protocols must treat it as read only.
+	lookup func(int) bool
+}
+
+// NewModes builds a Modes from a DEC private mode lookup, normally the live
+// terminal's. The named fields that shadow a DEC mode are filled from the same
+// lookup, so a protocol may read either without them disagreeing.
+func NewModes(lookup func(int) bool) Modes {
+	m := Modes{lookup: lookup}
+	if lookup != nil {
+		m.AppCursor = lookup(1)
+		m.BracketedPaste = lookup(2004)
+	}
+	return m
+}
+
+// ModeSet builds a Modes from a fixed set of DEC private mode numbers. It is
+// the form tests use, where there is no live terminal to ask.
+func ModeSet(set map[int]bool) Modes {
+	return NewModes(func(n int) bool { return set[n] })
+}
+
+// DEC reports whether the given DEC private mode is set. The zero Modes reports
+// every mode unset, which is the state of a terminal that has just started: no
+// mode is on until the program turns it on.
+func (m Modes) DEC(n int) bool {
+	switch n {
+	case 1:
+		if m.AppCursor {
+			return true
+		}
+	case 2004:
+		if m.BracketedPaste {
+			return true
+		}
+	}
+	if m.lookup == nil {
+		return false
+	}
+	return m.lookup(n)
+}
+
+// sameEncoding reports whether two mode contexts would encode a key the same
+// way. Only the negotiated state the encoders read is compared; the DEC lookup
+// is a live view of the terminal and is not comparable, nor should it be, since
+// two keys recorded under the same negotiation belong on one line however many
+// unrelated modes changed between them.
+func (m Modes) sameEncoding(o Modes) bool {
+	return m.AppCursor == o.AppCursor &&
+		m.AppKeypad == o.AppKeypad &&
+		m.KittyFlags == o.KittyFlags &&
+		m.ModifyOtherKeys == o.ModifyOtherKeys &&
+		m.BracketedPaste == o.BracketedPaste
 }
 
 // Protocol decodes one input protocol into tape commands and encodes those
@@ -73,6 +138,14 @@ type Protocol interface {
 
 	// Fidelity states whether Encode reproduces bytes exactly.
 	Fidelity() Fidelity
+
+	// Keyboard reports whether this protocol decodes keyboard input, and so
+	// whether it is allowed to emit KindKey and KindType. A protocol that
+	// decodes terminal replies must return false: reading a reply as
+	// keystrokes corrupts a recording silently, which is the failure this
+	// rule exists to make structurally impossible rather than merely
+	// discouraged.
+	Keyboard() bool
 }
 
 // registry holds the registered protocols in registration order.
@@ -131,7 +204,13 @@ func dispatch(buf []byte, m Modes) (n int, cmds []Command, r Result) {
 			if pn <= 0 || pn > len(buf) {
 				continue
 			}
+			if !validDecode(p, pcmds) {
+				continue
+			}
 			if !reencodes(p, pcmds, buf[:pn], m) {
+				continue
+			}
+			if !representable(pcmds) {
 				continue
 			}
 			if !found || pn > bestN || (pn == bestN && p.Priority() > bestPrio) {
@@ -147,6 +226,40 @@ func dispatch(buf []byte, m Modes) (n int, cmds []Command, r Result) {
 		return 0, nil, Partial
 	}
 	return 0, nil, NoMatch
+}
+
+// validDecode enforces the rule that only a keyboard protocol may produce
+// keyboard commands. This is the invariant behind the reported corruption: an
+// APC reply read as Alt+_ , typed text and Alt+\ replays as nonsense, and
+// unlike a dropped sequence it does so silently. A protocol that breaks the
+// rule is ignored and its bytes fall through to Raw, which replays them
+// correctly if unreadably.
+func validDecode(p Protocol, cmds []Command) bool {
+	if p.Keyboard() {
+		return true
+	}
+	for _, c := range cmds {
+		if c.Kind == KindKey || c.Kind == KindType {
+			return false
+		}
+	}
+	return true
+}
+
+// representable reports whether commands survive being written to a tape and
+// read back. A recording is a file, so a decode that cannot be written down is
+// not a decode: a key token containing whitespace resolves perfectly in memory
+// and then fails to parse on the next run.
+//
+// Checking this at the registry rather than in each protocol means a protocol
+// cannot introduce the failure at all. The bytes fall through to Raw, which is
+// always representable because it is quoted.
+func representable(cmds []Command) bool {
+	back, err := Parse(strings.NewReader(Sprint(cmds)))
+	if err != nil {
+		return false
+	}
+	return commandsEquivalent(cmds, back)
 }
 
 // reencodes checks that a candidate decode survives the round trip its
@@ -217,7 +330,48 @@ func encodeCommand(c Command, ordered []Protocol) ([]byte, error) {
 			return b, nil
 		}
 	}
+
+	// Nothing claimed the token under the modes in force. Some chords exist
+	// only under a negotiated protocol: Ctrl+Enter is what modifyOtherKeys was
+	// invented to express, and the legacy encoding folds it onto plain Enter.
+	// A tape file carries no mode context, so resolving such a token strictly
+	// under default modes would fail, and the recorder would be forced to write
+	// those keys as Raw rather than by name.
+	//
+	// So the token is offered again with every protocol's own negotiation
+	// assumed. This is a fallback rather than the first choice, which is what
+	// keeps an ordinary key in its ordinary spelling: legacy claims "a" on the
+	// first pass and the question never arises. A token only reaches here when
+	// no unnegotiated encoding of it exists at all, and in that case the bytes
+	// of the protocol that invented the chord are the only faithful answer.
+	for _, p := range ordered {
+		if b, ok := p.Encode(c, permissiveModes); ok {
+			return b, nil
+		}
+	}
 	return nil, &unencodableError{cmd: c}
+}
+
+// permissiveModes assumes every negotiable input protocol is active. It is used
+// only as the second pass of encodeCommand, to resolve chords that have no
+// spelling outside a negotiated protocol.
+var permissiveModes = Modes{
+	KittyFlags:      1,
+	ModifyOtherKeys: 2,
+}
+
+// wireBytes renders one command to the bytes a terminal would send for it,
+// consulting the registered protocols in dispatch order. It is what the player
+// uses for commands it has no direct terminal call for, such as Focus, so the
+// bytes replayed are the bytes some protocol claims to own rather than a
+// spelling written out a second time in the player.
+func wireBytes(c Command, m Modes) ([]byte, bool) {
+	for _, p := range Protocols() {
+		if b, ok := p.Encode(c, m); ok {
+			return b, true
+		}
+	}
+	return nil, false
 }
 
 type unencodableError struct{ cmd Command }

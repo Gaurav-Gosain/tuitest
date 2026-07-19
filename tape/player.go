@@ -166,6 +166,14 @@ func (p *Player) Exec(c Command) error {
 		return p.needTerm(func() error { return p.tt.Paste(c.Text) })
 	case KindRaw:
 		return p.needTerm(func() error { return p.tt.Type(c.Text) })
+	case KindFocus:
+		return p.needTerm(func() error {
+			b, ok := wireBytes(c, Modes{})
+			if !ok {
+				return fmt.Errorf("focus command has no wire encoding")
+			}
+			return p.tt.Type(string(b))
+		})
 	case KindHide:
 		p.hidden = true
 		return nil
