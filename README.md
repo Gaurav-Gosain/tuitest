@@ -22,7 +22,7 @@ works equally against a Bubble Tea app, a Rust or C TUI, vim, or a bare shell.
 go get github.com/Gaurav-Gosain/tuitest
 ```
 
-The tape CLI, if you want it:
+The command-line tool, which tests a TUI without any Go:
 
 ```
 go install github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest
@@ -266,19 +266,168 @@ func (t *Terminal) Close() error
 
 `Close` is idempotent and is registered automatically by `StartT`.
 
-## The tape CLI
+## The command line
 
-`cmd/tuitest` runs a line-oriented, VHS-inspired script so tests can be written
-without Go. It is a thin front end over the same API and adds no capability the
-library lacks.
+`tuitest` is usable on its own: you can test a TUI, or just look at one, without
+writing any Go. Install it with `go install
+github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest`.
 
 ```
-tuitest run script.tape
-tuitest run -update script.tape      # rewrite golden snapshots
-tuitest run -strict script.tape      # make Sleep an error
-tuitest run -v script.tape           # mirror PTY I/O to stderr
-tuitest run -golden-dir dir script.tape
+tuitest <command> [flags] [arguments]
+
+run         play a tape script against a program
+snap        spawn a command, wait for it to settle, print the screen
+doctor      report on the environment that tests will run in
+completion  print a shell completion script
+version     print the tuitest version
+help        show help for a command
 ```
+
+Every command has its own help with examples: `tuitest help run`.
+
+### Exit codes
+
+Exit codes are the contract with CI. They separate "your program is wrong" from
+"the tool could not run it", so a script can react to each without parsing
+stderr.
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | every assertion passed |
+| 1 | an assertion failed: `Expect`, `Snapshot`, or `ExpectExit` did not hold, or the program exited before a wait was satisfied |
+| 2 | bad usage, or a tape that would not parse |
+| 3 | harness error: no PTY, a program that would not start, an unreadable golden file |
+| 4 | a wait timed out |
+
+### tuitest snap
+
+The fastest way to see what a TUI actually draws. It spawns the program, waits
+until it stops drawing, prints the screen, and exits. It asserts nothing, so it
+is the natural first step before writing a tape: run it, see the screen, then
+pick the text worth waiting for.
+
+```
+tuitest snap -- htop
+tuitest snap -size 120x40 -- vim
+tuitest snap -wait '\$ ' -- bash -i          settle on a prompt instead of on quiet
+tuitest snap -type 'hello\r' -- ./myapp      send input first, then capture
+tuitest snap -styled -- ./myapp              keep the SGR styling
+tuitest snap -json -- ./myapp | jq -r .screen
+```
+
+Put `--` before the program so its own flags are not read as tuitest's.
+
+`-type` waits for the program to react before capturing, because the screen has
+usually been quiet for longer than the settle window by the time the input is
+sent, and a naive capture would show the screen as it was beforehand. When the
+response matters, pair it with `-wait`.
+
+### tuitest run
+
+Plays a tape. The tape grammar is unchanged; the flags around it are new.
+
+```
+tuitest run login.tape
+tuitest run -update login.tape           rewrite the golden files
+tuitest run -strict login.tape           reject Sleep, forcing real waits
+tuitest run -size 120x40 login.tape      override the tape's Set Size
+tuitest run -term screen-256color login.tape
+tuitest run -timeout 10s login.tape      override the tape's Set WaitTimeout
+tuitest run -env NO_COLOR=1 login.tape   repeatable
+tuitest run -golden-dir testdata login.tape
+tuitest run -json login.tape             one JSON object, for CI
+tuitest run -v login.tape                mirror PTY traffic to stderr
+```
+
+A flag beats the tape's own `Set` line for the same setting, which is the
+direction that makes `-size 120x40` useful for checking a layout at a second
+size without editing the file. `-env` accumulates instead, since environment
+entries add up.
+
+### tuitest doctor
+
+Reports whether tuitest will work here and whether tests will be stable: PTY
+allocation, the platform, `TERM`, the size the program under test will get, what
+the bundled emulator understands, and the usual causes of flakiness. It spawns
+no program and writes no files, so it is safe as a CI preflight step.
+
+```
+tuitest doctor
+tuitest doctor -json | jq '.checks[] | select(.status != "ok")'
+```
+
+It exits 3 when a check fails, so `tuitest doctor || exit 1` gates a build.
+
+### Machine-readable output
+
+`-json` on `run`, `snap`, and `doctor` prints one object to stdout. `run`
+reports the status, the `kind` matching the exit code, the duration, and the
+full error text including the screen at the moment of failure:
+
+```json
+{
+  "command": "run",
+  "tape": "login.tape",
+  "status": "fail",
+  "kind": "assertion",
+  "exitCode": 1,
+  "durationMs": 214,
+  "error": "tape line 6: ExpectExit failed\n  want: exit status 0\n  got:  exit status 3"
+}
+```
+
+### Error messages
+
+A failure has to be readable without rerunning anything, so each kind of failure
+prints what a person actually needs.
+
+A timeout says what it was waiting for, how long it waited, and what was on
+screen at that moment:
+
+```
+tuitest: tape line 3: WaitForMatch timed out after 801ms waiting for match nevergonnahappen
+--- screen ---
+ECHOTUI
+>
+```
+
+A failed `Expect` contrasts expected with actual and marks where they diverge.
+For a literal pattern it finds the closest line on screen; for a pattern with
+metacharacters there is no single expected string, so it shows the screen
+instead of inventing a comparison:
+
+```
+tuitest: tape line 7: Expect failed
+  want: regex /echo: hj/ to match the whole screen
+  got:  no match
+  the closest line on screen was:
+    want | echo: hj
+    got  | echo: hi
+         |        ^ first difference at column 8
+```
+
+A parse error names the file, line, and column, and points at the token:
+
+```
+tuitest: login.tape:3:11: unexpected token "+Screne" (want /regex/, +Screen, +Line, or @timeout)
+  3 | Wait /ok/ +Screne @5s
+    |           ^
+```
+
+### Shell completion
+
+Completion is generated from the command registry, so it never falls out of step
+with the commands themselves.
+
+```
+tuitest completion bash > /etc/bash_completion.d/tuitest
+tuitest completion zsh  > "${fpath[1]}/_tuitest"
+tuitest completion fish > ~/.config/fish/completions/tuitest.fish
+```
+
+### The tape language
+
+A tape is line oriented, one command per line, with `#` starting a comment.
 
 ```
 # Comments start with '#'.
