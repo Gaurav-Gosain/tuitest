@@ -12,9 +12,10 @@ it when a tuios checkout is available.
 tuios's `internal/vt` is, as the name says, internal: Go will not let another
 module import it. Promoting it to a public package in tuios would make tuitest
 depend on the program it most often tests, and would freeze an emulator API
-that is still moving. The copy is behind `internal/emu`, a five-method
-interface, so the emulator can be replaced without touching tuitest's public
-surface.
+that is still moving. The copy is behind `internal/emu`, a nine-method
+interface of which only five are needed for a working harness, so the emulator
+can be replaced without touching tuitest's public surface. See
+[docs/extending.md](../../docs/extending.md).
 
 ## The hazard
 
