@@ -1,6 +1,10 @@
-// Command tuitest runs tape scripts against terminal programs under test. It is
-// a thin front-end over the tuitest Go API: tuitest run script.tape parses the
-// tape and drives a tuitest.Terminal, and -update rewrites golden snapshots.
+// Command tuitest drives terminal programs under test from the command line.
+//
+//	tuitest run script.tape        replay a tape and check its assertions
+//	tuitest fuzz -- program        hunt for crashes, hangs, and corruption
+//
+// It is a thin front-end over the tuitest Go API: everything it does is
+// available to a Go test, and both subcommands drive the same tape player.
 package main
 
 import (
@@ -15,8 +19,41 @@ func main() {
 	os.Exit(run())
 }
 
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: tuitest <command> [flags] [arguments]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "commands:")
+	fmt.Fprintln(os.Stderr, "  run    replay a tape script against a program")
+	fmt.Fprintln(os.Stderr, "  fuzz   drive a program with randomised input and report failures")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "run 'tuitest <command> -h' for the flags of a command")
+}
+
 func run() int {
-	fs := flag.NewFlagSet("tuitest", flag.ContinueOnError)
+	args := os.Args[1:]
+	if len(args) < 1 {
+		usage()
+		return 2
+	}
+
+	switch args[0] {
+	case "run":
+		return runTape(args[1:])
+	case "fuzz":
+		return runFuzz(args[1:])
+	case "-h", "--help", "help":
+		usage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "tuitest: unknown command %q\n", args[0])
+		usage()
+		return 2
+	}
+}
+
+// runTape implements "tuitest run [flags] script.tape".
+func runTape(args []string) int {
+	fs := flag.NewFlagSet("tuitest run", flag.ContinueOnError)
 	update := fs.Bool("update", false, "rewrite golden snapshots instead of comparing")
 	strict := fs.Bool("strict", false, "treat Sleep as an error")
 	goldenDir := fs.String("golden-dir", "", "directory for golden files (default: ./testdata)")
@@ -26,18 +63,7 @@ func run() int {
 		fs.PrintDefaults()
 	}
 
-	args := os.Args[1:]
-	if len(args) < 1 {
-		fs.Usage()
-		return 2
-	}
-	sub := args[0]
-	if sub != "run" {
-		fmt.Fprintf(os.Stderr, "tuitest: unknown subcommand %q\n", sub)
-		fs.Usage()
-		return 2
-	}
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
