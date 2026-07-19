@@ -8,7 +8,68 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/charmbracelet/x/xpty"
+	"golang.org/x/sys/unix"
 )
+
+// neutraliseLineDiscipline stops a freshly created PTY from acting on the input
+// written to it, so that the bytes tuitest sends are the bytes the program
+// reads.
+//
+// A new PTY comes up in the kernel's default cooked mode, with ISIG, ECHO and
+// IXON all on. In that state the line discipline, not the program under test,
+// is what consumes some of the input: a 0x03 becomes SIGINT and kills the child
+// outright, a 0x13 stops the output stream through flow control, and every byte
+// sent is echoed back down the master, where it arrives looking exactly like
+// output the program produced.
+//
+// A TUI normally hides all of this by calling MakeRaw during startup, which is
+// why the problem is invisible most of the time. It is a race, though: input
+// that lands before the program has finished its own terminal setup is still
+// handled by the line discipline. The same tape then either drives the program
+// or kills it, depending on how quickly the child was scheduled, which makes a
+// test that sends input early nondeterministic under load. Configuring the PTY
+// here, before the child is even started, closes that window: there is no
+// instant at which a signal-generating line discipline is attached to a running
+// child.
+//
+// Only the settings that reinterpret or manufacture bytes are cleared. Line
+// editing (ICANON), CR/NL input mapping and all output processing are left as
+// the kernel set them, because those are what a real terminal does to a program
+// that has not gone raw, and a harness that changed them would be testing the
+// program against a terminal nobody has.
+func neutraliseLineDiscipline(pty xpty.Pty) error {
+	u, ok := pty.(*xpty.UnixPty)
+	if !ok {
+		return nil
+	}
+	fd := int(u.Slave().Fd())
+
+	t, err := unix.IoctlGetTermios(fd, getTermios)
+	if err != nil {
+		return fmt.Errorf("ptyproc: reading pty terminal settings: %w", err)
+	}
+
+	// Signal generation is the one that actually destroys a run: a ^C in the
+	// input stream kills the child outright instead of being delivered to it.
+	// The implementation-defined extensions (^V, ^O) rewrite input in the same
+	// way, on a smaller scale.
+	t.Lflag &^= unix.ISIG | unix.IEXTEN
+	// Echo makes the line discipline write tuitest's own keystrokes back down
+	// the master, where they are indistinguishable from output the program
+	// produced. That corrupts the screen model and the output-byte counter the
+	// hang detector reads.
+	t.Lflag &^= unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ECHONL
+	// ^S/^Q flow control stops the output stream until a matching ^Q arrives,
+	// so a single stray byte can stall a session for as long as it runs.
+	t.Iflag &^= unix.IXON | unix.IXOFF | unix.IXANY
+
+	if err := unix.IoctlSetTermios(fd, setTermios, t); err != nil {
+		return fmt.Errorf("ptyproc: applying pty terminal settings: %w", err)
+	}
+	return nil
+}
 
 // setSysProcAttr puts the child in its own session (and therefore its own
 // process group, pgid == pid) with the PTY as its controlling terminal. The
