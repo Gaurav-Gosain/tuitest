@@ -44,8 +44,11 @@ func classify(err error) int {
 	if errors.As(err, &te) {
 		return ExitTimeout
 	}
-	var ae *tape.AssertionError
-	if errors.As(err, &ae) {
+	// Every tape assertion type, not just AssertionError: Snapshot and Expect
+	// failures report through their own types so replay can render them, and
+	// they mean exactly the same thing to a CI script.
+	var af tape.AssertionFailure
+	if errors.As(err, &af) {
 		return ExitAssert
 	}
 	var ce *tuitest.ClosedError

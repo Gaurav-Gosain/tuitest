@@ -51,6 +51,11 @@ func (c Command) String() string {
 	case KindSleep:
 		b.WriteByte(' ')
 		b.WriteString(c.Dur.String())
+	case KindResize:
+		b.WriteByte(' ')
+		b.WriteString(strconv.Itoa(c.Cols))
+		b.WriteByte(' ')
+		b.WriteString(strconv.Itoa(c.Rows))
 	case KindHide, KindShow:
 		// No arguments.
 	}
@@ -96,4 +101,13 @@ func Print(w io.Writer, cmds []Command) error {
 		return fmt.Errorf("tape: print: %w", err)
 	}
 	return nil
+}
+
+// Sprint is Print into a string, for the callers that build a tape in memory
+// (record writing a header before the commands, tests comparing source).
+func Sprint(cmds []Command) string {
+	var b strings.Builder
+	// A strings.Builder never fails to write, so the error is not reachable.
+	_ = Print(&b, cmds)
+	return b.String()
 }

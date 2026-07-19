@@ -29,18 +29,25 @@ func TestFailedExpectIsAnAssertionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an assertion failure")
 	}
-	var ae *tape.AssertionError
-	if !errors.As(err, &ae) {
-		t.Fatalf("error is %T, want *tape.AssertionError: %v", err, err)
+	// A failed Expect reports as *tape.ExpectError, which carries the screen so
+	// replay can render it. It must still satisfy tape.AssertionFailure, since
+	// that is what the CLI classifies the exit code off.
+	var af tape.AssertionFailure
+	if !errors.As(err, &af) {
+		t.Fatalf("error is %T, want a tape.AssertionFailure: %v", err, err)
 	}
-	if ae.Op != "Expect" {
-		t.Errorf("Op = %q, want \"Expect\"", ae.Op)
+	var ee *tape.ExpectError
+	if !errors.As(err, &ee) {
+		t.Fatalf("error is %T, want *tape.ExpectError: %v", err, err)
 	}
-	if !strings.Contains(ae.Want, "nowhere") {
-		t.Errorf("Want %q does not name the pattern", ae.Want)
+	if !strings.Contains(ee.Want, "nowhere") {
+		t.Errorf("Want %q does not name the pattern", ee.Want)
 	}
-	if !strings.Contains(ae.Detail, "ECHOTUI") {
-		t.Errorf("Detail does not include the screen:\n%s", ae.Detail)
+	if !strings.Contains(ee.Detail, "ECHOTUI") {
+		t.Errorf("Detail does not include the screen:\n%s", ee.Detail)
+	}
+	if !strings.Contains(ee.Screen, "ECHOTUI") {
+		t.Errorf("Screen was not captured:\n%s", ee.Screen)
 	}
 }
 

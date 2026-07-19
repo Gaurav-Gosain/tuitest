@@ -24,6 +24,17 @@ type Player struct {
 	Strict bool
 	// Out receives progress and diagnostic lines.
 	Out io.Writer
+	// Mirror, when set, receives the spawned program's output as it arrives, so
+	// a caller can render the run onto a real terminal. See tuitest replay.
+	Mirror io.Writer
+	// SleepScale divides every Sleep duration, so 2 replays at double speed.
+	// Zero or negative means unscaled.
+	SleepScale float64
+	// Before runs just before each command; a non-nil error aborts the run. It
+	// is how replay implements step mode and command echo.
+	Before func(Command) error
+	// After runs just after each command with the error it produced, if any.
+	After func(Command, error)
 
 	// The Override fields are command-line settings that win over the tape's
 	// own Set lines: an explicit flag should beat the file it is pointed at.
@@ -68,11 +79,32 @@ func (p *Player) Run(cmds []Command) (err error) {
 	}()
 	p.applyOverrides()
 	for _, c := range cmds {
-		if e := p.run(c); e != nil {
+		if p.Before != nil {
+			if e := p.Before(c); e != nil {
+				return e
+			}
+		}
+		e := p.run(c)
+		if p.After != nil {
+			p.After(c, e)
+		}
+		if e != nil {
+			// A typed LineError, not fmt.Errorf: the CLI recovers the line
+			// number and the underlying error separately to classify the
+			// exit code and to render the message without a doubled prefix.
 			return &LineError{Line: c.Line, Err: e}
 		}
 	}
 	return nil
+}
+
+// scaleSleep applies SleepScale, so replay can run a tape faster or slower
+// without rewriting it.
+func (p *Player) scaleSleep(d time.Duration) time.Duration {
+	if p.SleepScale <= 0 {
+		return d
+	}
+	return time.Duration(float64(d) / p.SleepScale)
 }
 
 func (p *Player) run(c Command) error {
@@ -110,11 +142,13 @@ func (p *Player) run(c Command) error {
 	case KindShow:
 		p.hidden = false
 		return nil
+	case KindResize:
+		return p.needTerm(func() error { return p.tt.Resize(c.Cols, c.Rows) })
 	case KindSleep:
 		if p.Strict {
 			return fmt.Errorf("Sleep is disallowed in strict mode; wait on a condition instead")
 		}
-		time.Sleep(c.Dur)
+		time.Sleep(p.scaleSleep(c.Dur))
 		return nil
 	default:
 		return fmt.Errorf("unhandled command kind %d", c.Kind)
@@ -192,6 +226,9 @@ func (p *Player) spawn(c Command) error {
 	if p.Out != nil && p.Out != io.Discard {
 		opts = append(opts, tuitest.WithLog(p.Out))
 	}
+	if p.Mirror != nil {
+		opts = append(opts, tuitest.WithOutputMirror(p.Mirror))
+	}
 	tt, err := tuitest.Start(c.Argv, opts...)
 	if err != nil {
 		return err
@@ -230,11 +267,15 @@ func (p *Player) expect(c Command) error {
 	if c.Regex.MatchString(hay) {
 		return nil
 	}
-	return &AssertionError{
-		Op:     "Expect",
+	// One error type carries both audiences: Screen lets replay render the
+	// failing frame side by side, Detail carries the headless explanation of
+	// which line came closest and where it first differed.
+	return &ExpectError{
+		Regex:  c.Regex.String(),
+		Scope:  c.Scope,
 		Line:   c.Line,
+		Screen: sc.Text(),
 		Want:   fmt.Sprintf("regex /%s/ to match the %s", c.Regex, scope),
-		Got:    "no match",
 		Detail: explainNoMatch(c.Regex.String(), hay, sc.Text()),
 	}
 }
@@ -343,13 +384,7 @@ func (p *Player) snapshot(c Command) error {
 		return fmt.Errorf("read golden %s: %w (set UPDATE_GOLDEN to create it)", path, err)
 	}
 	if string(wantBytes) != got {
-		return &AssertionError{
-			Op:     "Snapshot",
-			Line:   c.Line,
-			Want:   fmt.Sprintf("the screen to match golden %s", path),
-			Got:    "a different screen",
-			Detail: tuitest.Diff(string(wantBytes), got),
-		}
+		return &SnapshotError{Name: c.Name, Path: path, Line: c.Line, Want: string(wantBytes), Got: got}
 	}
 	return nil
 }

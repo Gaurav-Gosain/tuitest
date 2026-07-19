@@ -84,6 +84,8 @@ type Command struct {
 func Commands() []*Command {
 	return []*Command{
 		runCommand(),
+		recordCommand(),
+		replayCommand(),
 		snapCommand(),
 		doctorCommand(),
 		completionCommand(),

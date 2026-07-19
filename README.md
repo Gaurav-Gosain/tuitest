@@ -469,7 +469,8 @@ ExpectExit 0
 ```
 
 Commands: `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`, `WaitPrompt`,
-`WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Hide`, `Show`, `Sleep`.
+`WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Resize`, `Hide`, `Show`,
+`Sleep`.
 
 `Set` accepts `Size cols rows`, `Term name`, `Env KEY=VALUE`, `WaitTimeout dur`
 and `StabilizeInterval dur`. Durations must be positive and `Size` must be
@@ -544,6 +545,15 @@ Known limitations, in rough order of how likely you are to hit them:
   accordingly rather than assuming an instant drain.
 - **`SendMouse` only speaks SGR (1006).** The older X10 and UTF-8 mouse
   encodings are not emitted.
+- **`tuitest record` captures keys, resizes and timing, not mouse input.** The
+  tape grammar has no mouse verb, so mouse reports and other sequences with no
+  tape equivalent are dropped from a recording. Recording warns when this
+  happens, since the resulting tape is then not a complete replay of what you
+  did.
+- **A recorded wait is only as distinctive as the screen was.** If nothing
+  identifiable appeared, the recorder falls back to `WaitStable`, which is
+  weaker; skim a recording before trusting it as a test, which is why the output
+  is written to be readable and edited.
 
 ## Comparison with the alternatives
 

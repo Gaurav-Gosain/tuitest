@@ -51,6 +51,8 @@ const (
 	KindShow
 	// KindSleep sleeps for a fixed duration.
 	KindSleep
+	// KindResize changes the terminal size mid-tape.
+	KindResize
 )
 
 // Verb returns the canonical spelling of the command verb, the one Print emits.
@@ -84,6 +86,8 @@ func (k Kind) Verb() string {
 		return "Show"
 	case KindSleep:
 		return "Sleep"
+	case KindResize:
+		return "Resize"
 	default:
 		return ""
 	}
@@ -124,6 +128,9 @@ type Command struct {
 
 	// ExpectExit
 	Code int
+
+	// Resize
+	Cols, Rows int
 
 	// Snapshot
 	Name   string
@@ -369,6 +376,25 @@ func parseLine(raw string) (Command, *ParseError) {
 			}
 			c.Styled = true
 		}
+		return c, nil
+
+	case "Resize":
+		if len(rest) != 2 {
+			return c, perr(verb.col, "Resize needs cols and rows")
+		}
+		dims := [2]int{}
+		for i, what := range []string{"cols", "rows"} {
+			n, err := strconv.Atoi(rest[i].text)
+			if err != nil {
+				return c, perr(rest[i].col, "Resize %s %q is not an integer", what, rest[i].text)
+			}
+			if n < 1 || n > MaxDimension {
+				return c, perr(rest[i].col, "Resize %s %d is out of range 1..%d", what, n, MaxDimension)
+			}
+			dims[i] = n
+		}
+		c.Kind = KindResize
+		c.Cols, c.Rows = dims[0], dims[1]
 		return c, nil
 
 	case "Hide":
