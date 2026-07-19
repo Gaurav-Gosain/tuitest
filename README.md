@@ -12,15 +12,18 @@ You bring a terminal program, any language, any framework, and a tape script or
 a Go test function. tuitest gives back a real pseudo-terminal to run it on, a VT
 emulator that turns its output into a grid of cells, waits that block on screen
 state instead of sleeping, and assertions that compare what a user would see.
-The module has four direct dependencies (`charmbracelet/ultraviolet` for the
-cell model, `charmbracelet/x/ansi` for color parsing, `charmbracelet/x/xpty` for
-PTY allocation, `charmbracelet/x/term` for the recorder's raw mode); everything
-else in `go.mod` is indirect. There is one binary and one importable package,
-and nothing to run alongside them.
+The importable library has four direct dependencies (`charmbracelet/ultraviolet`
+for the cell model, `charmbracelet/x/ansi` for color parsing,
+`charmbracelet/x/xpty` for PTY allocation, `charmbracelet/x/term` for the
+recorder's raw mode). The command line adds `spf13/cobra` and
+`charmbracelet/fang`, which appear in `go.mod` because the binary and the
+library share one module, but nothing outside `cmd/tuitest` and `internal/cli`
+imports them, so they never reach a consumer's binary. There is one binary and
+one importable package, and nothing to run alongside them.
 
 It is built to be taken apart. The emulator sits behind `internal/emu.Emulator`,
 a nine-method interface; PTY and process lifetime live in `internal/ptyproc` with
-no knowledge of screens; the tape language, the CLI command registry, and the
+no knowledge of screens; the tape language, the cobra command tree, and the
 fuzzer are each their own package layered on the same public `Terminal`.
 
 The command line and the Go package are two ways in, and neither is the lesser
@@ -113,7 +116,7 @@ flowchart TB
   end
 
   subgraph CLI["cmd/tuitest + internal/cli"]
-    REG[command registry<br/>run, record, replay, snap, fuzz, doctor]
+    REG[cobra command tree<br/>run, record, replay, snap, fuzz, doctor]
   end
 
   subgraph Lang["tape"]
@@ -290,14 +293,16 @@ tuitest replay      play a tape onto this terminal so you can watch # -step, -sp
 tuitest snap        spawn, wait for quiet, print the screen         # asserts nothing
 tuitest fuzz        drive with randomised input, report what breaks # writes tape repros
 tuitest doctor      report on the environment tests will run in     # spawns nothing
-tuitest completion  print a bash, zsh or fish completion script     # from the registry
+tuitest completion  print a bash, zsh, fish or powershell script    # cobra generated
 tuitest version     print the tuitest version                       # set by -ldflags -X
 tuitest help        show help for a command                         # tuitest help run
 ```
 
-Every command has its own help with examples (`tuitest help run`), and the
-completion script is generated from the same registry the dispatcher uses, so it
-cannot fall out of step with the commands. `run`, `snap` and `doctor` accept
+Every command has its own help with examples (`tuitest help run`). Commands,
+help and completion are built on `spf13/cobra` and rendered by
+`charmbracelet/fang`; completion is resolved by calling the binary back rather
+than from a script baked at build time, so it cannot fall out of step with the
+commands. Flags take either spelling: `-size` and `--size` both work. `run`, `snap` and `doctor` accept
 `-json` and print one object to stdout: `run` reports `status`, a `kind` naming
 the exit code, `durationMs`, and the full error text including the screen at the
 moment of failure.
@@ -479,8 +484,8 @@ covers the harness primitives and produces golden text, not video.
 Each seam is narrow on purpose:
 
 - Swap the VT emulator (implement `internal/emu.Emulator`, nine methods).
-- Add a CLI subcommand (append one `*Command` to `Commands()`; help, completion
-  and typo suggestions follow automatically).
+- Add a CLI subcommand (one `*cobra.Command` added in `newRootCommand`; help,
+  completion and typo suggestions follow automatically).
 - Add a tape verb (one `Kind`, one `Verb()` case, one parse case, one player
   case, one printer case).
 - Drive the harness from your own runner (import the root package; `tape` and

@@ -124,6 +124,8 @@ type Terminal struct {
 	closed    bool      // stream ended (child EOF)
 	exited    bool
 	exitCode  int
+	// pendingResp holds emulator responses produced before proc was stored.
+	pendingResp []byte
 
 	log       io.Writer
 	logMu     sync.Mutex
@@ -163,7 +165,11 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.mu.Lock()
 	t.proc = proc
+	t.mu.Unlock()
+	// Flush anything the emulator answered while proc was still unset.
+	t.sendResponses(nil)
 	return t, nil
 }
 
@@ -203,13 +209,45 @@ func (t *Terminal) onData(p []byte) {
 	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
+	resp := t.emu.TakeResponses()
 	t.mu.Unlock()
+	t.sendResponses(resp)
 	t.mirror(p)
 	// The pump is a single goroutine, so mirroring outside the lock still
 	// delivers chunks to w in the order the child produced them.
 	if t.outMirror != nil {
 		_, _ = t.outMirror.Write(p)
 	}
+}
+
+// sendResponses forwards emulator query answers back to the child. Without
+// this a program that probes the terminal before drawing, which most Bubble
+// Tea and termenv programs do to detect the background colour, waits out its
+// retry loop and renders nothing.
+//
+// The output pump can deliver data before Start has stored the process handle,
+// so responses produced that early are held and flushed once it exists. They
+// are not mirrored to the debug log or counted as caller input: they are the
+// terminal answering on its own behalf, and treating them as input would keep
+// WaitStable from ever settling, since each response arrives with the output
+// that provoked it.
+func (t *Terminal) sendResponses(resp []byte) {
+	t.mu.Lock()
+	proc := t.proc
+	if proc == nil {
+		t.pendingResp = append(t.pendingResp, resp...)
+		t.mu.Unlock()
+		return
+	}
+	if len(t.pendingResp) > 0 {
+		resp = append(t.pendingResp, resp...)
+		t.pendingResp = nil
+	}
+	t.mu.Unlock()
+	if len(resp) == 0 {
+		return
+	}
+	_ = proc.Write(resp)
 }
 
 func (t *Terminal) onClose(code int) {

@@ -69,6 +69,8 @@ func kindOf(code int) string {
 		return "usage"
 	case ExitTimeout:
 		return "timeout"
+	case ExitBlank:
+		return "blank"
 	default:
 		return "harness"
 	}

@@ -13,7 +13,7 @@ read, tested, or replaced without the others.
 | [`internal/emu`](../internal/emu/emu.go) | The `Emulator` interface and the adapter onto the vendored VT |
 | [`internal/vt`](../internal/vt) | The VT interpreter itself, copied from tuios (see [VENDOR.md](../internal/vt/VENDOR.md)) |
 | [`tape`](../tape/parse.go) | The tape language: parser, player, recorder, printer, replay renderer |
-| [`internal/cli`](../internal/cli/cli.go) | The command registry, flag parsing, exit codes, JSON output, diagnostics |
+| [`internal/cli`](../internal/cli/cli.go) | The cobra command tree, flag parsing, exit codes, JSON output, diagnostics |
 | [`fuzz`](../fuzz/fuzz.go) | Input generation, failure detection, delta-debugging minimisation, corpus |
 | [`tuiosx`](../tuiosx/tuiosx.go) | tuios-specific spawn and chord helpers; nothing in the core depends on it |
 
@@ -27,7 +27,7 @@ flowchart TB
   end
 
   subgraph Front["Front ends"]
-    CLIREG[internal/cli<br/>command registry]
+    CLIREG[internal/cli<br/>cobra command tree]
     GOTEST[go test<br/>StartT]
   end
 
