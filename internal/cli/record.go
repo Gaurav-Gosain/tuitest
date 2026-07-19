@@ -162,10 +162,6 @@ examples:
 				return ExitHarness
 			}
 		}
-		if n := rec.Dropped(); n > 0 {
-			fmt.Fprintf(env.Stderr,
-				"tuitest: warning: dropped %d input sequence(s) with no tape equivalent (mouse or paste); the tape is not a complete replay\n", n)
-		}
 		return ExitOK
 	}
 	return c

@@ -133,21 +133,20 @@ func TestDecodedKeysReplayToTheSameBytes(t *testing.T) {
 	}
 }
 
-// TestDecodeDropsUnrepresentableSequences checks that a mouse report is consumed
-// rather than leaking its bytes into a Type command, and that it is counted so
-// the recorder can warn about it.
-func TestDecodeDropsUnrepresentableSequences(t *testing.T) {
+// TestDecodeRepresentsMouseReports replaces a test that used to assert a mouse
+// report was *dropped*, counted, and warned about. Dropping it was the reported
+// bug: a tape missing the input that drove the session is not a replay of it.
+// The report now has a first-class representation and the surrounding text is
+// still intact.
+func TestDecodeRepresentsMouseReports(t *testing.T) {
 	var d inputDecoder
 	d.feed([]byte("a\x1b[<0;10;5Mb"))
 	d.close()
 	cmds := d.take()
 
 	got := strings.TrimRight(Sprint(cmds), "\n")
-	want := "Type a\nType b"
+	want := "Type a\nMouse Press Left 9 4\nType b"
 	if got != want {
-		t.Errorf("mouse report leaked into the tape:\n got: %q\nwant: %q", got, want)
-	}
-	if d.dropped != 1 {
-		t.Errorf("dropped = %d, want 1", d.dropped)
+		t.Errorf("mouse report not represented:\n got: %q\nwant: %q", got, want)
 	}
 }

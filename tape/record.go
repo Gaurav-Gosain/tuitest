@@ -76,6 +76,12 @@ func (r *Recorder) Header(cols, rows int, term string, env []string, argv []stri
 	r.cmds = append(r.cmds, Command{Kind: KindSpawn, Argv: argv})
 }
 
+// ObserveModes supplies the terminal mode context the decoder needs, read from
+// the child's output stream. It is what lets the decoder tell apart encodings
+// that are identical on the wire and differ only in what the program asked for,
+// such as pixel-coordinate mouse reports.
+func (r *Recorder) ObserveModes(m Modes) { r.dec.modes = m }
+
 // Input records a chunk of raw input the user sent to the program.
 func (r *Recorder) Input(chunk []byte) {
 	r.dec.feed(chunk)
@@ -154,11 +160,6 @@ func (r *Recorder) flushInput() {
 	r.dec.flush()
 	r.cmds = append(r.cmds, r.dec.take()...)
 }
-
-// Dropped reports how many input sequences had no tape representation, such as
-// mouse reports. A non-zero count means the recording is not a complete replay
-// of the session and the caller should say so.
-func (r *Recorder) Dropped() int { return r.dec.dropped }
 
 // anchor picks the line of after to wait on: the last line that is genuinely
 // new, long enough to be distinctive, and that does not already match before.

@@ -177,6 +177,11 @@ func (s *Session) Run() ([]Command, error) {
 		}
 
 		start := time.Now()
+		// The modes the program has set determine how its input is read, so
+		// they are sampled from the live terminal immediately before the input
+		// that arrived under them is decoded.
+		st := tt.TermState()
+		rec.ObserveModes(NewModes(st.Mode))
 		rec.Input(chunk)
 		if err := tt.Type(string(chunk)); err != nil {
 			// The program is gone; stop cleanly rather than reporting a write

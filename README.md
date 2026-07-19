@@ -254,8 +254,13 @@ a silent mismatch: `Enter`, `Tab`, `Esc`, `Space`, `Backspace`, `Delete`, `Up`,
 `F1` through `F12`. `Ctrl(r rune)` builds a control byte (`Ctrl('b')` is 0x02)
 and `Alt(k any)` prefixes with ESC.
 
-`SendMouse` emits SGR (mode 1006) sequences. It writes them unconditionally, so
-a program that never enabled mouse reporting simply will not react.
+`SendMouse` emits the encoding named by the event's `Enc` field: SGR (mode
+1006) by default, or `MouseX10` (modes 9, 1000, 1002 and 1003) and `MouseURXVT`
+(mode 1015) for the legacy formats. It writes them unconditionally, so a program
+that never enabled mouse reporting simply will not react. An event the chosen
+encoding cannot express is an error rather than an approximation: X10 cannot
+carry a coordinate past 222, and neither legacy encoding can say which button
+was released.
 
 `Paste` wraps text in bracketed-paste markers (mode 2004), the way a terminal
 delivers a real paste. Programs take a different code path for pasted text than
@@ -504,6 +509,49 @@ A recording is meant to be read and edited. It is written with a header saying
 where it came from, and the waits are the part worth skimming before you trust
 it as a test.
 
+#### What a recording captures
+
+Everything. A recorder that quietly drops input produces a tape that does not
+reproduce the session, which makes every test built from it unsound, so the
+decoder is built so that dropping is not a state it can reach.
+
+Input is matched first against named keys, then against the registered input
+protocols, which currently cover every mouse encoding (X10, the 1000/1002/1003
+event modes, SGR 1006, SGR-pixel 1016 and urxvt 1015), bracketed paste, and
+focus reporting. Anything left over is framed as an ECMA-48 control sequence and
+captured verbatim as a `Raw` command, which replays byte for byte.
+
+That last step is the one that matters. It means a tape is a faithful replay
+*regardless* of how many protocols are understood, and it turns protocol support
+into a readability improvement rather than a correctness requirement. The
+property is fuzzed, not merely asserted: decoding any byte stream and replaying
+the result reproduces the original bytes exactly.
+
+It also fixes a corruption that is worse than a dropped sequence, because a
+dropped one announces itself and a corrupted one does not. Programs query the
+terminal constantly, for device attributes, cursor position, colours, and kitty
+graphics and keyboard support, and the replies arrive on the input channel. A
+kitty graphics reply, `ESC _ Gi=1;OK ESC \`, used to be decoded as three
+keystrokes: `Key Alt+_`, `Type Gi=1;OK`, `Key Alt+\`. Replaying that sent
+nonsense to the program. Replies are now recognised as control strings and
+captured whole, and a fuzz target asserts that no well-formed control string can
+ever decode to a `Key` or `Type` command.
+
+#### Adding an input protocol
+
+A protocol is one self-contained unit: a decoder from bytes to commands, an
+encoder from commands back to bytes, and its tests. Implement `tape.Protocol`
+and call `tape.Register` from an `init`. Nothing in the recorder, the parser,
+the player or any other protocol changes. `tape/proto_focus.go` is a complete
+example, and was deliberately written last through this seam to check the claim.
+
+Two invariants keep semantic decoding safe. A protocol that reports a match must
+be able to re-encode what it just produced, and for a protocol declaring `Exact`
+fidelity the re-encoding is compared byte for byte against the input; if either
+check fails the sequence falls through to `Raw` and still replays exactly. So a
+protocol cannot lose fidelity that the raw fallback would have preserved, even
+by accident.
+
 ### tuitest replay
 
 Plays a tape onto your terminal and renders the program as it goes, so you can
@@ -637,12 +685,20 @@ commands no-ops until `Show`, which is how you skip capture during setup steps.
 Golden files default to `./testdata`. Under `-strict`, `Sleep` is rejected,
 which is a useful way to keep a suite honest.
 
-`Resize cols rows` changes the terminal size mid-tape. `Mouse` takes an action,
-a button, a column and a row, plus optional `+Ctrl`, `+Alt`, and `+Shift`, as in
-`Mouse Press Left 10 5 +Ctrl`. `Paste` and `Raw` take a Go-quoted string, which
-is what lets them carry arbitrary bytes, including malformed UTF-8 and embedded
-escape sequences: `Raw "\x1b[1;2;3m"`. `Paste` wraps its text in bracketed-paste
-markers; `Raw` writes the bytes exactly as given.
+`Resize cols rows` changes the terminal size mid-tape. `Mouse` takes an action
+(`Press`, `Release`, `Move` or `Drag`), a button (`Left`, `Middle`, `Right`,
+`None`, `WheelUp`, `WheelDown`, `WheelLeft`, `WheelRight`, `Back` or
+`Forward`), a column and a row, plus optional `+Ctrl`, `+Alt` and `+Shift`, as
+in `Mouse Press Left 10 5 +Ctrl`. A drag reads as consecutive `Mouse Drag`
+lines. `+Pixel` marks coordinates reported in pixels (mode 1016), and `+X10` or
+`+Urxvt` name a legacy wire encoding so a replay sends the program the same
+bytes it originally received. `Focus In` and `Focus Out` send focus reports
+(mode 1004). `Paste` and `Raw` take a Go-quoted string, which is what lets them
+carry arbitrary bytes, including malformed UTF-8 and embedded escape sequences:
+`Raw "\x1b[1;2;3m"`. `Paste` wraps its text in bracketed-paste markers and
+rejects a payload containing one, since that would end the paste early and
+deliver the remainder as typed input; use `Raw` to send those bytes
+deliberately. `Raw` writes the bytes exactly as given.
 
 ## Fuzzing a TUI
 
@@ -789,14 +845,11 @@ Known limitations, in rough order of how likely you are to hit them:
 - **Emulator throughput is a few thousand lines per second.** A program that
   emits a very large burst will feel PTY backpressure. Size heavy-output tests
   accordingly rather than assuming an instant drain.
-- **`SendMouse` only speaks SGR (1006).** The older X10 and UTF-8 mouse
-  encodings are not emitted.
-- **`tuitest record` captures keys, resizes and timing, not mouse input.** The
-  grammar has a `Mouse` verb and the player sends mouse events, but the recorder
-  does not yet decode incoming mouse reports back into it. Those reports reach
-  the program under test and are then counted and dropped from the tape, and
-  recording warns when it happens, since the result is not a complete replay of
-  what you did.
+- **Mode 1005 (UTF-8 mouse) is read as X10.** The two are indistinguishable by
+  construction: any three bytes that form a 1005 report are also a syntactically
+  valid X10 one. A 1005 report is therefore recorded with the wrong coordinates
+  in its `Mouse` line, but it still replays byte for byte, so the program under
+  test receives what it originally received.
 - **A recorded wait is only as distinctive as the screen was.** If nothing
   identifiable appeared, the recorder falls back to `WaitStable`, which is
   weaker; skim a recording before trusting it as a test, which is why the output

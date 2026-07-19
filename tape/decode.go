@@ -66,10 +66,10 @@ type inputDecoder struct {
 	keys    []string // consecutive Key tokens not yet flushed
 	cmds    []Command
 
-	// dropped counts input sequences with no tape representation, such as
-	// mouse reports. The recorder surfaces this so a recording that silently
-	// lost input is not mistaken for a faithful one.
-	dropped int
+	// modes is the terminal mode context observed from the child's output. It
+	// is what makes otherwise ambiguous encodings decidable, such as an
+	// SGR-pixel mouse report, which is byte for byte an ordinary SGR one.
+	modes Modes
 }
 
 // feed decodes one chunk of raw input.
@@ -122,7 +122,20 @@ func (d *inputDecoder) feed(chunk []byte) {
 
 // decodeEscape handles a run starting with ESC. It returns how many bytes were
 // consumed, or hold=true when the chunk ended inside an incomplete sequence.
+//
+// The order matters and is the whole design. Named keys come first, because
+// they are the most specific and most readable reading. Then the registered
+// protocols, each of which recognises a sequence class the tape has a first
+// class representation for. Then, and this is the part that makes a recording
+// trustworthy regardless of how many protocols exist, the framer: it finds the
+// end of any escape sequence at all without knowing what it means, and the
+// bytes are captured verbatim as Raw.
+//
+// Nothing reaches the end of this function without being represented. There is
+// no drop path, which is why the recorder no longer has a dropped counter to
+// report.
 func (d *inputDecoder) decodeEscape(rest []byte) (n int, hold bool) {
+	// A named key, but only when the buffer definitely holds all of it.
 	for _, seq := range escSeqByLen {
 		if strings.HasPrefix(string(rest), seq) {
 			d.emitKey(escSeq[seq])
@@ -130,58 +143,110 @@ func (d *inputDecoder) decodeEscape(rest []byte) (n int, hold bool) {
 		}
 	}
 
-	// An incomplete CSI or SS3 introducer: hold it and retry with more bytes.
-	if incompleteEscape(rest) {
+	// A registered protocol: mouse, paste, focus, and whatever is added later.
+	if n, cmds, ok, holdProto := decodeSequence(rest, d.modes); ok {
+		d.flush()
+		d.cmds = append(d.cmds, cmds...)
+		return n, false
+	} else if holdProto {
 		return 0, true
 	}
 
-	// A complete but unrepresentable sequence (mouse report, bracketed paste,
-	// kitty key). Consume it so its bytes do not leak into a Type command.
-	if len(rest) >= 2 && (rest[1] == '[' || rest[1] == 'O') {
-		if end := csiEnd(rest); end > 0 {
-			d.flushText()
-			d.dropped++
-			return end, false
-		}
-	}
-
-	// ESC + printable rune within one chunk is the Alt (meta) encoding.
-	if len(rest) >= 2 && rest[1] >= 0x20 && rest[1] != 0x7f {
+	// ESC + printable rune within one chunk is the Alt (meta) encoding. This is
+	// only reached for an ESC that does not introduce a sequence at all, which
+	// is why it no longer swallows OSC, DCS and APC introducers the way it once
+	// turned an APC reply into Alt+underscore and typed text.
+	if len(rest) >= 2 && isMetaPrefix(rest[1]) {
 		if rest[1] >= utf8.RuneSelf && !utf8.FullRune(rest[1:]) {
 			return 0, true
 		}
-		r, size := utf8.DecodeRune(rest[1:])
-		d.emitKey("Alt+" + string(r))
+		_, size := utf8.DecodeRune(rest[1:])
+		if tok, ok := metaToken(rest[:1+size]); ok {
+			d.emitKey(tok)
+			return 1 + size, false
+		}
+		// The key has no chord spelling that reads back as itself, so it is
+		// captured raw instead. See metaToken.
+		d.emitRaw(rest[:1+size])
 		return 1 + size, false
+	}
+
+	// Anything else that starts a sequence: frame it and keep the bytes.
+	switch size, r := frame(rest); r {
+	case frameIncomplete:
+		return 0, true
+	case frameComplete:
+		if size == 1 {
+			d.emitKey("Esc")
+			return 1, false
+		}
+		d.emitRaw(rest[:size])
+		return size, false
 	}
 
 	d.emitKey("Esc")
 	return 1, false
 }
 
-// incompleteEscape reports whether rest is a proper prefix of a sequence that
-// more bytes could still complete. A bare trailing ESC is deliberately not
-// treated as incomplete: it is the Esc key.
-func incompleteEscape(rest []byte) bool {
-	if len(rest) < 2 {
+// isMetaPrefix reports whether a byte following ESC should be read as the meta
+// encoding of a key rather than as the introducer of a control sequence.
+//
+// The control-string introducers are excluded by name. Reading ESC _ as
+// Alt+underscore is exactly the bug that turned a kitty graphics capability
+// reply into three bogus keystrokes, so the exclusion is the fix.
+func isMetaPrefix(b byte) bool {
+	switch b {
+	case '[', ']', 'P', '_', '^', 'X', 'O', 'N':
 		return false
 	}
-	if rest[1] != '[' && rest[1] != 'O' {
-		return false
-	}
-	// Still inside the parameter bytes of a CSI/SS3 with no final byte yet.
-	return csiEnd(rest) == 0
+	return b >= 0x20 && b != 0x7f
 }
 
-// csiEnd returns the length of the CSI or SS3 sequence at the head of rest, or
-// 0 if it is not yet terminated. A final byte is in the range 0x40-0x7e.
-func csiEnd(rest []byte) int {
-	for i := 2; i < len(rest); i++ {
-		if rest[i] >= 0x40 && rest[i] <= 0x7e {
-			return i + 1
-		}
+// metaToken spells the meta-encoded key in seq, which is ESC followed by one
+// rune, as an Alt chord. It reports false when that spelling would not read
+// back as exactly the bytes in seq.
+//
+// The check is not decoration, and it is deliberately made against the original
+// bytes rather than against the decoded rune. Two distinct things go wrong
+// otherwise:
+//
+//   - '+' is the chord grammar's own separator, so "Alt++" parses as an Alt
+//     chord over an empty base and does not resolve at all. A recording
+//     containing it replays as an error rather than as the key that was
+//     pressed.
+//   - a byte that is not valid UTF-8 decodes to the replacement rune, whose
+//     spelling is three bytes. Comparing against the decoded rune would find
+//     those three bytes equal to themselves and happily record a keystroke the
+//     user never made, in place of the byte they did send.
+//
+// Rather than special-case either, the token is resolved and compared against
+// its source bytes, which also holds for whatever is added to the key grammar
+// later. Anything that fails falls back to a raw capture and still replays
+// exactly.
+func metaToken(seq []byte) (string, bool) {
+	r, _ := utf8.DecodeRune(seq[1:])
+	tok := "Alt+" + string(r)
+	// A Key line is whitespace delimited, so a token containing whitespace
+	// would be read back as a different, shorter token. Alt+Space is the real
+	// case: it resolves perfectly well in memory and only falls apart once the
+	// tape is written out and parsed again.
+	if len(strings.Fields(tok)) != 1 || strings.Fields(tok)[0] != tok {
+		return "", false
 	}
-	return 0
+	k, err := ResolveKey(tok)
+	if err != nil || string(k) != string(seq) {
+		return "", false
+	}
+	return tok, true
+}
+
+// emitRaw records bytes that no protocol claimed, verbatim. Replaying a Raw
+// command writes exactly these bytes back to the child, so an unrecognised
+// sequence still reproduces the session precisely; recognising it later only
+// makes the tape easier to read.
+func (d *inputDecoder) emitRaw(b []byte) {
+	d.flush()
+	d.cmds = append(d.cmds, Command{Kind: KindRaw, Text: string(b)})
 }
 
 // ctrlToken names a C0 control byte as a tape Ctrl chord. The mapping is the
@@ -249,12 +314,14 @@ func (d *inputDecoder) close() {
 	if len(d.pending) > 0 {
 		stuck := d.pending
 		d.pending = nil
-		// A lone trailing ESC is the Esc key; a truncated multi-byte sequence
-		// has no faithful representation, so it is counted rather than guessed.
+		// A lone trailing ESC is the Esc key. Anything else is a sequence the
+		// stream ended in the middle of: it is captured verbatim rather than
+		// guessed at or dropped, so the tape still replays the exact bytes the
+		// session produced.
 		if len(stuck) == 1 && stuck[0] == 0x1b {
 			d.emitKey("Esc")
 		} else {
-			d.dropped++
+			d.emitRaw(stuck)
 		}
 	}
 	d.flush()

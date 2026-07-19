@@ -58,16 +58,24 @@ func TestColorSpec(t *testing.T) {
 
 func TestMouseEncodeSGR(t *testing.T) {
 	ev := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MousePress}
-	if got := ev.encodeSGR(); got != "\x1b[<0;5;10M" {
-		t.Errorf("press = %q", got)
+	if got, ok := ev.EncodeSGR(); !ok || got != "\x1b[<0;5;10M" {
+		t.Errorf("press = %q, %v", got, ok)
 	}
 	rel := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MouseRelease}
-	if got := rel.encodeSGR(); got != "\x1b[<0;5;10m" {
-		t.Errorf("release = %q", got)
+	if got, ok := rel.EncodeSGR(); !ok || got != "\x1b[<0;5;10m" {
+		t.Errorf("release = %q, %v", got, ok)
 	}
 	wheel := MouseEvent{Col: 0, Row: 0, Button: MouseWheelUp, Action: MousePress, Mods: ModCtrl}
-	if got := wheel.encodeSGR(); got != "\x1b[<80;1;1M" {
-		t.Errorf("wheel+ctrl = %q, want \\x1b[<80;1;1M", got)
+	if got, ok := wheel.EncodeSGR(); !ok || got != "\x1b[<80;1;1M" {
+		t.Errorf("wheel+ctrl = %q, %v, want \\x1b[<80;1;1M", got, ok)
+	}
+	drag := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MouseDrag}
+	if got, ok := drag.EncodeSGR(); !ok || got != "\x1b[<32;5;10M" {
+		t.Errorf("drag = %q, %v, want \\x1b[<32;5;10M", got, ok)
+	}
+	move := MouseEvent{Col: 4, Row: 9, Button: MouseNone, Action: MouseMove}
+	if got, ok := move.EncodeSGR(); !ok || got != "\x1b[<35;5;10M" {
+		t.Errorf("move = %q, %v, want \\x1b[<35;5;10M", got, ok)
 	}
 }
 
