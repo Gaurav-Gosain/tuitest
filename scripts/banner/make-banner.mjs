@@ -22,7 +22,7 @@
 // See README.md in this directory.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -194,6 +194,11 @@ function magick(args) {
 
 export function renderBanner(cfg, outPath) {
   const chromium = findChromium();
+  // ImageMagick will not create the output directory, and the error it raises
+  // names the file rather than the missing parent, which reads as a permissions
+  // problem. Create the parent first so a fresh clone can write straight to
+  // docs/images/ before that directory exists.
+  mkdirSync(dirname(resolve(outPath)), { recursive: true });
   // Scratch dir under the OS temp root, removed in the finally block whatever
   // happens. Chromium is given its own profile inside it so a run never
   // touches, or is blocked by, the user's real browser profile.
