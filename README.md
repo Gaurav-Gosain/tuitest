@@ -10,6 +10,12 @@ actually see: TUI authors, shell tooling authors, and people maintaining
 terminal multiplexers. It has no knowledge of any particular UI framework, so it
 works equally against a Bubble Tea app, a Rust or C TUI, vim, or a bare shell.
 
+There are two ways to use it, and neither is the lesser one. The `tuitest`
+command tests a TUI from a script called a tape, with no Go anywhere; the Go
+package does the same thing from a test function when you want the program's
+own language. The command is not a demo of the library, it is the interface
+most people should reach for first.
+
 It also fuzzes. `tuitest fuzz` points randomised but structured input at any
 terminal program and hunts for crashes, hangs, and terminals left in a broken
 state, then minimises whatever it finds into a tape file that replays it. See
@@ -17,21 +23,81 @@ state, then minimises whatever it finds into a tape file that replays it. See
 
 ## Requirements
 
-- Go 1.25 or newer.
 - A Unix-like OS that can open PTYs (`/dev/ptmx`). Windows is not supported and
   deliberately fails to build; see Limitations.
+- Go 1.25 or newer to install, and to use the package. Running tapes needs no Go.
 
 ## Installation
-
-```
-go get github.com/Gaurav-Gosain/tuitest
-```
 
 The command-line tool, which tests a TUI without any Go:
 
 ```
 go install github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest
 ```
+
+The Go package, for tests written in Go:
+
+```
+go get github.com/Gaurav-Gosain/tuitest
+```
+
+## Quick start, without writing any Go
+
+Check that the environment can run a TUI at all. It exits non-zero if not, so
+it works as a CI gate:
+
+```
+tuitest doctor
+```
+
+Look at what a program actually draws. This writes nothing and asserts nothing,
+and is the fastest way to find the text a test could wait for:
+
+```
+tuitest snap -- htop
+```
+
+Write that as a test. A tape is one command per line:
+
+```
+# login.tape
+Set Size 60 10
+Spawn less README.md
+Wait /tuitest/
+Expect /headless testing harness/
+Key q
+ExpectExit 0
+```
+
+Run it. It exits 0 when every assertion holds, and prints the screen when one
+does not:
+
+```
+tuitest run login.tape
+```
+
+If you would rather not write the tape by hand, record one. This connects the
+program to your terminal, you drive it normally, and it writes down what you
+did; press Ctrl+] to stop:
+
+```
+tuitest record -o login.tape -- ./myapp
+```
+
+Watch a tape run, which is the quickest way to see why one fails:
+
+```
+tuitest replay login.tape
+```
+
+And point the fuzzer at the program to find what no one thought to test:
+
+```
+tuitest fuzz -duration 30s -corpus ./corpus -- ./myapp
+```
+
+That is the whole loop: `snap` to look, `record` or an editor to write, `run` in
+CI, `replay` to debug, `fuzz` to go looking for trouble.
 
 ## A minimal example
 
@@ -337,7 +403,10 @@ github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest`.
 tuitest <command> [flags] [arguments]
 
 run         play a tape script against a program
+record      drive a program by hand and write what you did as a tape
+replay      play a tape onto this terminal so you can watch it
 snap        spawn a command, wait for it to settle, print the screen
+fuzz        drive a program with randomised input and report what breaks
 doctor      report on the environment that tests will run in
 completion  print a shell completion script
 version     print the tuitest version
@@ -404,6 +473,53 @@ A flag beats the tape's own `Set` line for the same setting, which is the
 direction that makes `-size 120x40` useful for checking a layout at a second
 size without editing the file. `-env` accumulates instead, since environment
 entries add up.
+
+### tuitest record
+
+Spawns a program, connects it to your terminal so you can drive it normally, and
+writes what you did as a tape. `Ctrl+]` ends the recording.
+
+```
+tuitest record -o login.tape -- ./myapp
+tuitest record -snapshots -o login.tape -- ./myapp   also write the goldens
+tuitest record -cols 80 -rows 24 -o t.tape -- vim    record at a fixed size
+tuitest record -- htop                               write the tape to stdout
+```
+
+The interesting part is what it does about timing, because that is the
+difference between a tape that documents a session and one that is worth
+running in CI. Wherever the screen settles, record prefers a `Wait` on text that
+is both new and distinctive; if nothing anchorable appeared it falls back to
+`WaitStable`; and if the screen never changed at all it emits nothing, since
+your thinking time is not part of the test. It never writes a `Sleep` unless you
+ask for one with `-idle-sleep`. An anchor that already matched the previous
+screen is rejected, because a wait on text that is already there passes
+instantly and synchronises nothing.
+
+`-snapshots` captures the screen behind each settle point and writes the golden
+files at the same time, so a recording replays green immediately instead of
+needing a separate `-update` pass.
+
+A recording is meant to be read and edited. It is written with a header saying
+where it came from, and the waits are the part worth skimming before you trust
+it as a test.
+
+### tuitest replay
+
+Plays a tape onto your terminal and renders the program as it goes, so you can
+watch what a tape does rather than reading its assertions.
+
+```
+tuitest replay login.tape
+tuitest replay -speed 2 login.tape      run twice as fast
+tuitest replay -step login.tape         pause before each command
+tuitest replay -update login.tape       rewrite the golden files
+```
+
+It wraps the same player `run` uses, so what you watch is what a headless run
+does. When an assertion fails it shows the expected and actual screens in two
+columns with a `|` against every row that differs, which is easier to read than
+a line diff when the difference is a matter of layout.
 
 ### tuitest doctor
 
@@ -676,14 +792,34 @@ Known limitations, in rough order of how likely you are to hit them:
 - **`SendMouse` only speaks SGR (1006).** The older X10 and UTF-8 mouse
   encodings are not emitted.
 - **`tuitest record` captures keys, resizes and timing, not mouse input.** The
-  tape grammar has no mouse verb, so mouse reports and other sequences with no
-  tape equivalent are dropped from a recording. Recording warns when this
-  happens, since the resulting tape is then not a complete replay of what you
-  did.
+  grammar has a `Mouse` verb and the player sends mouse events, but the recorder
+  does not yet decode incoming mouse reports back into it. Those reports reach
+  the program under test and are then counted and dropped from the tape, and
+  recording warns when it happens, since the result is not a complete replay of
+  what you did.
 - **A recorded wait is only as distinctive as the screen was.** If nothing
   identifiable appeared, the recorder falls back to `WaitStable`, which is
   weaker; skim a recording before trusting it as a test, which is why the output
   is written to be readable and edited.
+- **A recorded `Enter` may appear as `Ctrl+j`.** In raw mode a terminal sends
+  0x0d for Enter and the recorder names that `Enter`. Some pipes deliver 0x0a
+  instead, which is `Ctrl+j`; naming it `Enter` would replay different bytes
+  than were recorded, so the literal name is kept.
+- **Hang detection is the fuzzer's one heuristic.** There is no universal
+  liveness probe for a TUI: no key is guaranteed to produce output, and the
+  program does not answer the status queries a terminal would. It is tuned to
+  stay quiet, requiring several unanswered inputs and then a full grace period,
+  so it will miss a program that wedged while a draw was already in flight.
+- **Only crash reproductions carry an assertion.** A crash or a dirty exit ends
+  in `ExpectExit 0`, so the file is red until the bug is fixed. A hang, a screen
+  inconsistency and memory growth are judged from outside the tape by watching
+  the process, and any in-tape liveness probe would mean sending input the
+  fuzzer did not send, so those files are transcripts and say so. Rerun
+  `tuitest fuzz` against the corpus to check a fix for them.
+- **Fuzz generation is blind.** There is no coverage instrumentation of the
+  program under test, so input is generated from a structural model rather than
+  steered toward new code paths. It finds shallow bugs quickly and deep ones
+  only by luck.
 
 ## Comparison with the alternatives
 

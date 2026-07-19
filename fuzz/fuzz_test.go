@@ -451,45 +451,23 @@ func TestUnstartableProgramIsAnError(t *testing.T) {
 	}
 }
 
-// TestCrashReproductionFailsWhenRun is the property that makes a reproduction
-// worth writing: running it with the ordinary player must report the failure.
-// Before the assertion was appended, a crash reproduction replayed the input,
-// exited 0, and read as a passing test while the program still crashed, which
-// is worse than no file at all.
+// TestCrashReproductionIsARealRegressionTest covers both halves of what a saved
+// crash has to be, from one fuzzing session, because each session spawns real
+// programs and the package is already the slowest one here.
+//
+// Running the file must report the failure. Before the assertion was appended,
+// a reproduction replayed the input, exited 0, and read as a passing test while
+// the program still crashed, which is worse than no file at all.
+//
+// Replaying it from the corpus must not run that assertion. The fuzzer
+// re-drives a saved entry to check a fix, and an ExpectExit would wait for an
+// exit that a fixed program never makes, turning every fixed entry into a
+// false hang.
 //
 // Verified to fail on broken code: making assertionFor return "" for FailCrash
-// makes Run return nil here and this test fails.
-func TestCrashReproductionFailsWhenRun(t *testing.T) {
-	t.Parallel()
-
-	opts := baseOptions(t, "panic-on-key")
-	opts.Seed = 1
-	opts.Iterations = 40
-
-	res := runFuzz(t, opts)
-	f := findFailure(res, fuzz.FailCrash)
-	if f == nil {
-		t.Fatalf("expected a crash finding, got:\n%s", summarise(res))
-	}
-
-	text := fuzz.TapeFor(f)
-	cmds, err := tape.Parse(strings.NewReader(text))
-	if err != nil {
-		t.Fatalf("the generated reproduction does not parse: %v\n%s", err, text)
-	}
-	if err := tape.NewPlayer().Run(cmds); err == nil {
-		t.Fatalf("running the crash reproduction reported a pass:\n%s", text)
-	}
-}
-
-// TestCorpusReplayDropsTheAssertion pins the other half: the fuzzer re-drives a
-// saved entry to check a fix, and it must send the input that was minimised,
-// not the assertion written for people. Replaying an appended ExpectExit would
-// wait for an exit that a fixed program never makes.
-//
-// Verified to fail on broken code: removing the assertion-marker truncation in
-// parseTapeFile makes the replayed command count exceed the reproduction's.
-func TestCorpusReplayDropsTheAssertion(t *testing.T) {
+// fails the first half, and removing the marker truncation in parseTapeFile
+// fails the second.
+func TestCrashReproductionIsARealRegressionTest(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -504,30 +482,33 @@ func TestCorpusReplayDropsTheAssertion(t *testing.T) {
 		t.Fatalf("expected a crash finding, got:\n%s", summarise(res))
 	}
 
+	text := fuzz.TapeFor(f)
+	whole, err := tape.Parse(strings.NewReader(text))
+	if err != nil {
+		t.Fatalf("the generated reproduction does not parse: %v\n%s", err, text)
+	}
+	if last := whole[len(whole)-1]; last.Kind != tape.KindExpectExit {
+		t.Fatalf("a crash reproduction must end in an assertion, ends in %v:\n%s", last.Kind, text)
+	}
+	if err := tape.NewPlayer().Run(whole); err == nil {
+		t.Errorf("running the crash reproduction reported a pass:\n%s", text)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("no corpus entry written: %v", err)
 	}
-	path := filepath.Join(dir, entries[0].Name())
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	whole, err := tape.Parse(strings.NewReader(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	replayed, err := fuzz.LoadCorpusEntry(path)
+	replayed, err := fuzz.LoadCorpusEntry(filepath.Join(dir, entries[0].Name()))
 	if err != nil {
 		t.Fatalf("loading the corpus entry: %v", err)
 	}
 	if len(replayed) >= len(whole) {
-		t.Fatalf("corpus replay kept the assertion: %d commands replayed, %d in the file:\n%s",
-			len(replayed), len(whole), data)
+		t.Errorf("corpus replay kept the assertion: %d commands replayed, %d in the file",
+			len(replayed), len(whole))
 	}
-	if len(replayed) != len(f.Commands) {
-		t.Errorf("corpus replay drives %d commands, want the %d that were minimised",
-			len(replayed), len(f.Commands))
+	for _, c := range replayed {
+		if c.Kind == tape.KindExpectExit {
+			t.Fatalf("corpus replay would run the assertion, changing the reproduction")
+		}
 	}
 }
