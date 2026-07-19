@@ -3,6 +3,7 @@
 package ptyproc
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -38,4 +39,15 @@ func terminateGroup(pid int, done <-chan struct{}) {
 	case <-done:
 	case <-time.After(grace):
 	}
+}
+
+// waitSignal reports whether the child was killed by a signal, and which one.
+// A signal death is how a real crash (SIGSEGV, SIGABRT, SIGBUS) surfaces;
+// os.ProcessState.ExitCode flattens all of them to -1.
+func waitSignal(st *os.ProcessState) (bool, syscall.Signal) {
+	ws, ok := st.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return false, 0
+	}
+	return true, ws.Signal()
 }
