@@ -1,79 +1,72 @@
-// Command tuitest runs tape scripts against terminal programs under test. It is
-// a thin front-end over the tuitest Go API: tuitest run script.tape parses the
-// tape and drives a tuitest.Terminal, and -update rewrites golden snapshots.
+// Command tuitest drives terminal programs from tape scripts. It is a thin
+// front-end over the tuitest Go API:
+//
+//	tuitest run script.tape       play a tape headlessly and assert on it
+//	tuitest record -o s.tape prog interact with prog and write what you did
+//	tuitest replay script.tape    play a tape onto your terminal to watch it
+//
+// Together record and replay close the loop: record produces a tape from a real
+// session, run turns it into a test, and replay shows you the frame where that
+// test went wrong.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-
-	"github.com/Gaurav-Gosain/tuitest/tape"
 )
 
 func main() {
 	os.Exit(run())
 }
 
-func run() int {
-	fs := flag.NewFlagSet("tuitest", flag.ContinueOnError)
-	update := fs.Bool("update", false, "rewrite golden snapshots instead of comparing")
-	strict := fs.Bool("strict", false, "treat Sleep as an error")
-	goldenDir := fs.String("golden-dir", "", "directory for golden files (default: ./testdata)")
-	verbose := fs.Bool("v", false, "mirror PTY I/O to stderr")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: tuitest run [flags] script.tape")
-		fs.PrintDefaults()
-	}
+func usage() {
+	fmt.Fprint(os.Stderr, `usage: tuitest <command> [flags] [args]
 
+commands:
+  run     play a tape and assert on it
+  record  record an interactive session into a tape
+  replay  play a tape onto this terminal, rendering as it goes
+
+run "tuitest <command> -h" for the flags of a command
+`)
+}
+
+func run() int {
 	args := os.Args[1:]
 	if len(args) < 1 {
-		fs.Usage()
-		return 2
-	}
-	sub := args[0]
-	if sub != "run" {
-		fmt.Fprintf(os.Stderr, "tuitest: unknown subcommand %q\n", sub)
-		fs.Usage()
-		return 2
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fs.Usage()
+		usage()
 		return 2
 	}
 
-	tapePath := fs.Arg(0)
-	f, err := os.Open(tapePath) //nolint:gosec
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "tuitest: %v\n", err)
-		return 1
+	switch args[0] {
+	case "run":
+		return runCmd(args[1:])
+	case "record":
+		return recordCmd(args[1:])
+	case "replay":
+		return replayCmd(args[1:])
+	case "-h", "--help", "help":
+		usage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "tuitest: unknown subcommand %q\n", args[0])
+		usage()
+		return 2
 	}
-	defer f.Close() //nolint:errcheck
+}
 
-	cmds, err := tape.Parse(f)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "tuitest: parse %s: %v\n", tapePath, err)
-		return 1
+// newFlagSet builds a flag set that prints the given usage line.
+func newFlagSet(name, usageLine string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, usageLine)
+		fs.PrintDefaults()
 	}
+	return fs
+}
 
-	p := tape.NewPlayer()
-	if *goldenDir != "" {
-		p.GoldenDir = *goldenDir
-	}
-	if *update {
-		p.Update = true
-	}
-	p.Strict = *strict
-	if *verbose {
-		p.Out = os.Stderr
-	}
-
-	if err := p.Run(cmds); err != nil {
-		fmt.Fprintf(os.Stderr, "tuitest: %v\n", err)
-		return 1
-	}
-	return 0
+func errf(format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "tuitest: "+format+"\n", args...)
+	return 1
 }

@@ -278,6 +278,9 @@ tuitest run -update script.tape      # rewrite golden snapshots
 tuitest run -strict script.tape      # make Sleep an error
 tuitest run -v script.tape           # mirror PTY I/O to stderr
 tuitest run -golden-dir dir script.tape
+
+tuitest record -o script.tape ./myapp  # record a session into a tape
+tuitest replay script.tape             # watch a tape run
 ```
 
 ```
@@ -296,15 +299,78 @@ ExpectExit 0
 ```
 
 Commands: `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`, `WaitPrompt`,
-`WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Hide`, `Show`, `Sleep`.
+`WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Resize`, `Hide`, `Show`,
+`Sleep`.
 
 `Set` accepts `Size cols rows`, `Term name`, `Env KEY=VALUE`, `WaitTimeout dur`
 and `StabilizeInterval dur`. The wait-like commands take an optional `/regex/`,
 a `+Screen` or `+Line` scope, and an `@timeout` such as `@5s`. `Type` preserves
-the literal spacing of the rest of its line. `Hide` makes subsequent `Snapshot`
-commands no-ops until `Show`, which is how you skip capture during setup steps.
-Golden files default to `./testdata`. Under `-strict`, `Sleep` is rejected,
-which is a useful way to keep a suite honest.
+the literal spacing of the rest of its line. `Resize cols rows` changes the
+window mid-run, so the child gets a real `SIGWINCH`. `Hide` makes subsequent
+`Snapshot` commands no-ops until `Show`, which is how you skip capture during
+setup steps. Golden files default to `./testdata`. Under `-strict`, `Sleep` is
+rejected, which is a useful way to keep a suite honest.
+
+## Recording a tape
+
+Writing tapes by hand gets tedious, so `tuitest record` writes one for you. It
+spawns the program on a PTY, passes your real terminal through to it so you
+interact normally, and captures what you did.
+
+```
+tuitest record -o login.tape ./myapp
+tuitest record -o login.tape -snapshots ./myapp   # also write goldens
+```
+
+Press `Ctrl+]` to stop. The result is a tape a human would want to edit, not a
+keystroke dump: printable runs coalesce into `Type` commands, everything else
+becomes named `Key` tokens, and terminal resizes become `Resize`.
+
+Timing is the interesting part, because a recording full of fixed sleeps is
+exactly the brittle test this harness exists to avoid. At each point where the
+screen stopped changing, the recorder picks the strongest synchronization it
+can justify:
+
+- if distinctive new text appeared, it waits on that text, so the tape survives
+  the program being slower or faster on replay;
+- if the screen changed but nothing anchorable appeared, it emits `WaitStable`;
+- if the screen never changed, it emits nothing, because your think-time is not
+  part of the test.
+
+`Sleep` is only emitted if you opt in with `-idle-sleep`, for programs whose
+behavior genuinely depends on wall-clock delay.
+
+With `-snapshots`, a `Snapshot` is taken at every settle point and its golden is
+written at the same time, so the recording doubles as golden generation and
+replays green immediately.
+
+## Replaying a tape
+
+`tuitest replay` plays a tape onto your terminal in real time, so a failing test
+can be watched rather than deduced.
+
+```
+tuitest replay script.tape
+tuitest replay -speed 2 script.tape    # twice as fast
+tuitest replay -step script.tape       # pause before each command
+```
+
+Each command is printed as it runs, and the program is rendered live. When an
+assertion fails, replay shows the frame it failed on: a golden mismatch is
+printed as the expected and actual screens side by side, with a `|` marking each
+row that differs.
+
+```
+FAIL snapshot "banner" (testdata/banner.golden)
+
+expected (golden)          actual (screen)
+------------------------   ------------------------
+ECHOTUI                    ECHOTUI
+> WRONG LINE HERE        | >
+```
+
+Recording and replay close the loop: record a session, keep the tape as a test,
+and replay it when it breaks.
 
 ## How it works
 
@@ -359,6 +425,15 @@ Known limitations, in rough order of how likely you are to hit them:
   accordingly rather than assuming an instant drain.
 - **`SendMouse` only speaks SGR (1006).** The older X10 and UTF-8 mouse
   encodings are not emitted.
+- **`tuitest record` captures keys, resizes and timing, not mouse input.** The
+  tape grammar has no mouse verb, so mouse reports and other sequences with no
+  tape equivalent are dropped from a recording. Recording warns when this
+  happens, since the resulting tape is then not a complete replay of what you
+  did.
+- **A recorded wait is only as distinctive as the screen was.** If nothing
+  identifiable appeared, the recorder falls back to `WaitStable`, which is
+  weaker; skim a recording before trusting it as a test, which is why the output
+  is written to be readable and edited.
 
 ## Comparison with the alternatives
 
