@@ -292,3 +292,28 @@ func indexOf(hay, needle string) int {
 	}
 	return -1
 }
+
+// TestTerminalQueryAnswered checks that a query the child issues is answered
+// through the real PTY path. A terminal that never replies leaves programs
+// that probe before drawing (background colour detection, cursor position
+// reports) stuck in a retry loop, which shows up as a blank capture.
+func TestTerminalQueryAnswered(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	if _, err := exec.LookPath("stty"); err != nil {
+		t.Skip("stty not available")
+	}
+	// Ask for the cursor position, then read whatever comes back within the
+	// stty timeout and print it with the ESC rendered as a caret so it can be
+	// matched on screen. Raw mode is needed because the reply carries no
+	// newline to release a canonical read.
+	const script = `stty raw -echo min 0 time 30; printf '\033[6n'; ` +
+		`reply=$(dd bs=32 count=1 2>/dev/null | tr -d '\033'); ` +
+		`stty sane; printf 'REPLY[%s]\r\n' "$reply"`
+	term := tuitest.StartT(t, []string{"sh", "-c", script}, tuitest.WithSize(40, 10))
+	if err := term.WaitForMatch(regexp.MustCompile(`REPLY\[\[\d+;\d+R\]`), tuitest.ScopeScreen, 10*time.Second); err != nil {
+		t.Fatalf("cursor position query went unanswered: %v\n%s", err, term.Snapshot())
+	}
+}

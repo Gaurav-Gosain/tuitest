@@ -56,6 +56,9 @@ A program that never goes quiet, which is every TUI that animates, still gets
 its screen reported. The settle wait times out and the exit code says so, but
 the capture is the screen as it was, because that is the thing you asked for.
 
+A program that drew nothing at all exits 5 with a note on stderr, since a blank
+capture is almost never the answer the caller wanted.
+
 Put -- before the program when the program takes flags of its own, so they are
 not parsed as tuitest's.`,
 		Example: `  # look at what a program draws
@@ -100,6 +103,14 @@ not parsed as tuitest's.`,
 				typeIn: unescape(typeIn), styled: styled,
 			})
 			code := classify(err)
+			// A capture that succeeded and is empty is reported as such. The
+			// documented case where a program that never settles still gets
+			// its screen printed is untouched: that path already carries an
+			// error, and the error keeps its own more specific exit code.
+			blank := err == nil && strings.TrimSpace(res.screen) == ""
+			if blank {
+				code = ExitBlank
+			}
 
 			if jsonOut {
 				out := snapResult{
@@ -123,6 +134,13 @@ not parsed as tuitest's.`,
 				// the harness error already carries it, so report the error
 				// alone rather than printing the screen twice.
 				return fail(err)
+			}
+			if blank {
+				env.errorf("the program drew nothing: the screen is empty after %s", time.Since(start).Round(time.Millisecond))
+				if !res.exited {
+					env.errorf("it was still running, so it may need longer than --timeout %s, or a --wait for the text it settles on", timeout)
+				}
+				return silent(code)
 			}
 			fmt.Fprintln(env.Stdout, res.screen)
 			return nil

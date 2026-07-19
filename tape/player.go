@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest"
+	"github.com/Gaurav-Gosain/tuitest/internal/textdist"
 )
 
 // Player drives a tuitest.Terminal from a parsed tape. It owns nothing the Go
@@ -338,19 +339,37 @@ func explainNoMatch(pattern, haystack, screen string) string {
 	return b.String()
 }
 
-// closestLine picks the line of hay sharing the longest common prefix with
-// want, breaking ties toward the line closest in length. It returns false when
-// no line shares even one character, in which case pointing at a "closest"
-// line would be misleading noise rather than help.
+// closestLine picks the line of hay most similar to want overall, breaking
+// ties toward the line closest in length. It returns false when no line
+// resembles want at all, in which case pointing at a "closest" line would be
+// misleading noise rather than help.
+//
+// Similarity is edit distance over the longer of the two strings rather than
+// the length of the shared prefix. Scoring on the prefix alone rewards being
+// short: against /a headless testing framework for TUIs/ a four-character line
+// "a VT" outscored lines that differed by a word in the middle but were
+// otherwise the whole sentence, which is the opposite of the line a reader
+// needs to see.
 func closestLine(hay, want string) (string, bool) {
-	best, bestScore := "", 0
+	best, bestScore := "", 0.0
 	for _, line := range strings.Split(hay, "\n") {
-		score := commonPrefixLen(line, want)
+		score := similarity(line, want)
 		if score > bestScore || (score == bestScore && score > 0 && absDiff(len(line), len(want)) < absDiff(len(best), len(want))) {
 			best, bestScore = line, score
 		}
 	}
 	return best, bestScore > 0
+}
+
+// similarity scores two strings from 0 (nothing in common) to 1 (identical),
+// as the share of the longer string left unchanged by the cheapest edit path.
+func similarity(a, b string) float64 {
+	longest := max(len([]rune(a)), len([]rune(b)))
+	if longest == 0 {
+		return 0
+	}
+	d := textdist.Distance(a, b)
+	return float64(longest-d) / float64(longest)
 }
 
 func commonPrefixLen(a, b string) int {

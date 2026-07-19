@@ -45,6 +45,13 @@ const (
 	ExitHarness = 3
 	// ExitTimeout means a wait exceeded its deadline.
 	ExitTimeout = 4
+	// ExitBlank means the capture succeeded but the program drew nothing. For
+	// a tool whose job is reporting what a program put on screen, an empty
+	// screen is a result the caller needs told rather than a silent success:
+	// it usually means the program never started drawing, not that it drew
+	// emptiness on purpose. It is kept apart from ExitAssert because snap
+	// asserts nothing, and apart from ExitHarness because the harness worked.
+	ExitBlank = 5
 )
 
 // Build information, overridden at link time with
