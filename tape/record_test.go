@@ -241,3 +241,38 @@ func TestRecorderKeepsTerminalReplies(t *testing.T) {
 			got, want.String(), strings.TrimRight(Sprint(cmds), "\n"))
 	}
 }
+
+// TestRecorderResolvesHeldEscapeAtSettle covers the seam the read-boundary fix
+// introduced. The decoder can no longer decide a lone ESC when it arrives,
+// because at a read boundary it is equally the Esc key and the first byte of an
+// arrow key, so it holds. A settle point is where that ambiguity is genuinely
+// decidable, and the Esc must appear there rather than being deferred to the
+// end of the recording, where it would land out of order.
+func TestRecorderResolvesHeldEscapeAtSettle(t *testing.T) {
+	r := NewRecorder()
+	r.Input([]byte("\x1b"))
+	r.Settle("menu", "menu closed", 0)
+	r.Input([]byte("x"))
+
+	got := recorded(r)
+	want := "Key Esc\nWait /menu\\s+closed/\nType x"
+	if got != want {
+		t.Errorf("held Esc did not settle in order:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestRecorderKeepsArrowKeySplitByARead is the recording-level view of the same
+// fix: the kernel may end a read anywhere, including between the ESC and the
+// rest of an arrow key, and the tape must not turn that into an Esc keypress
+// followed by literal text.
+func TestRecorderKeepsArrowKeySplitByARead(t *testing.T) {
+	r := NewRecorder()
+	r.Input([]byte("\x1b"))
+	r.Input([]byte("[A"))
+
+	got := recorded(r)
+	want := "Key Up"
+	if got != want {
+		t.Errorf("arrow key split across reads was corrupted:\n got: %q\nwant: %q", got, want)
+	}
+}

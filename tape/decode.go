@@ -247,8 +247,20 @@ func (d *inputDecoder) close() {
 // chunk: a terminal delivers one read per keystroke, so flushing per chunk would
 // turn a typed word into one Type command per character.
 func (d *inputDecoder) flush() {
+	d.resolvePendingEsc()
 	d.flushText()
 	d.flushKeys()
+}
+
+// resolvePendingEsc settles a held lone ESC as the Esc key. feed cannot make
+// that call, because at a read boundary the byte is equally the Esc key and the
+// start of an arrow key; a flush point can, because the burst is over there and
+// no bytes are coming to complete a longer sequence.
+func (d *inputDecoder) resolvePendingEsc() {
+	if len(d.pending) == 1 && d.pending[0] == 0x1b {
+		d.pending = nil
+		d.emitKey("Esc")
+	}
 }
 
 // take returns the commands completed so far and clears them, leaving any

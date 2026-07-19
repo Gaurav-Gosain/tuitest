@@ -45,9 +45,16 @@ func (p legacyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 		return 0, nil, NoMatch
 	}
 	if len(buf) == 1 {
-		// A lone ESC is the Esc key. Treating it as an incomplete
-		// sequence would make Esc impossible to record.
-		return 1, keyCmd("Esc"), Full
+		// A lone ESC at the end of the buffer says nothing about what it
+		// is. The kernel may end a read anywhere, including between the
+		// ESC and the rest of an arrow key, so deciding here would turn a
+		// split arrow key into the Esc key followed by literal "[A".
+		//
+		// It is reported incomplete instead, and the decoder resolves it
+		// as the Esc key at the next flush point, where the burst is known
+		// to be over and no bytes are coming to complete a longer
+		// sequence. That is also what a real terminal does with a timeout.
+		return 0, nil, Partial
 	}
 
 	switch buf[1] {

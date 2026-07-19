@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,10 @@ const (
 	KindWaitOutput
 	// KindFocus sends a focus-in or focus-out report (mode 1004).
 	KindFocus
+
+	// kindCount is the number of command kinds, so the tables derived from
+	// them can be built by iteration rather than written out a second time.
+	kindCount
 )
 
 // Verb returns the canonical spelling of the command verb, the one Print emits.
@@ -519,32 +524,56 @@ func parseLine(raw string) (Command, *ParseError) {
 }
 
 // verbs lists every spelling parseLine accepts, for the did-you-mean hint. It
-// includes "Stable", which is only valid as the argument of Wait, because
-// "Stable" alone on a line is a plausible thing to write by mistake.
-func verbs() []string {
-	return []string{
-		"Set", "Spawn", "Type", "Key", "Wait", "WaitStable", "WaitOutput",
-		"WaitPrompt", "WaitCommand", "Expect", "ExpectExit", "Snapshot",
-		"Resize", "Mouse", "Paste", "Raw", "Focus", "Hide", "Show", "Sleep",
+// is derived from Kind.Verb() rather than written out again, so a command
+// cannot be added to the language and then be missing from the suggestions.
+var verbs = func() []string {
+	out := make([]string, 0, kindCount)
+	for k := Kind(0); k < kindCount; k++ {
+		if v := k.Verb(); v != "" {
+			out = append(out, v)
+		}
 	}
-}
+	return out
+}()
 
-// suggestVerb finds the verb closest to an unrecognised one. Tape verbs are
-// capitalised, so the comparison is case-insensitive: "spawn" and "Spwan"
-// should both point at "Spawn".
-func suggestVerb(name string) (string, bool) {
-	lower := strings.ToLower(name)
-	lowered := make([]string, len(verbs()))
-	for i, v := range verbs() {
-		lowered[i] = strings.ToLower(v)
+// verbAliases maps a token that is not a command to the command a reader who
+// wrote it probably wanted. "Stable" is only meaningful as the argument of
+// Wait, and writing it alone on a line is a plausible mistake, so it earns a
+// hint rather than a bare "unknown command".
+var verbAliases = map[string]string{"Stable": "WaitStable"}
+
+// suggestCandidates is what a misspelling is measured against: the real verbs
+// plus the aliases, all lowercased, since tape verbs are capitalised and
+// "spawn" and "Spwan" should both find "Spawn".
+var suggestCandidates = func() []string {
+	out := make([]string, 0, len(verbs)+len(verbAliases))
+	for _, v := range verbs {
+		out = append(out, strings.ToLower(v))
 	}
-	best, ok := textdist.Closest(lower, lowered)
+	for a := range verbAliases {
+		out = append(out, strings.ToLower(a))
+	}
+	sort.Strings(out)
+	return out
+}()
+
+// suggestVerb finds the command closest to an unrecognised token, resolving
+// aliases so the hint names something the reader can actually write. It reports
+// no suggestion when the closest match is the token itself, since telling a
+// reader to write what they already wrote explains nothing.
+func suggestVerb(name string) (string, bool) {
+	best, ok := textdist.Closest(strings.ToLower(name), suggestCandidates)
 	if !ok {
 		return "", false
 	}
-	for _, v := range verbs() {
+	for _, v := range verbs {
 		if strings.EqualFold(v, best) {
-			return v, true
+			return v, v != name
+		}
+	}
+	for alias, target := range verbAliases {
+		if strings.EqualFold(alias, best) {
+			return target, true
 		}
 	}
 	return "", false
