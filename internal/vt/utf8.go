@@ -109,10 +109,34 @@ func (e *Emulator) handleGrapheme(content string, width int) {
 		e.lastChar, _ = utf8.DecodeRuneInString(content)
 	}
 
+	// A wide cell may not straddle the right margin. Without this the wide
+	// rune is written at the last column, where the buffer both refuses to
+	// place it and blanks the wide rune to its left, so a CJK or emoji line
+	// silently loses its last two characters.
+	scrWidth := e.scr.Width()
+	if x+cell.Width > scrWidth {
+		if !awm {
+			// Autowrap off: there is nowhere for the character to go, and the
+			// cursor stays pinned at the margin.
+			return
+		}
+		e.index()
+		_, y = e.scr.CursorPosition()
+		x = 0
+	}
+
+	if e.isModeSet(ansi.ModeInsertReplace) {
+		// Insert mode [ansi.IRM]: the rest of the line shifts right by the
+		// width of the new cell rather than being overwritten. Editors and
+		// line editors drive single-character insertions through this instead
+		// of redrawing the line.
+		e.scr.insertCellsAt(x, y, cell.Width)
+	}
+
 	e.scr.SetCell(x, y, &cell)
 
 	// Handle phantom state at the end of the line
-	e.atPhantom = awm && x >= e.scr.Width()-1
+	e.atPhantom = awm && x+cell.Width >= scrWidth
 	if !e.atPhantom {
 		x += cell.Width
 	}

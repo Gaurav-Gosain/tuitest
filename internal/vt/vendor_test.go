@@ -63,6 +63,7 @@ func TestVendoredCopyMatchesUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	diverged := divergenceRecord(t)
 
 	checked := 0
 	for _, path := range local {
@@ -80,13 +81,46 @@ func TestVendoredCopyMatchesUpstream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(want, got) {
+		same := bytes.Equal(want, got)
+		switch {
+		case diverged[base] && same:
+			t.Errorf("%s is listed in DIVERGENCE but matches upstream %s; the fix has landed in tuios, so drop the line",
+				base, rec["commit"][:12])
+		case !diverged[base] && !same:
 			t.Errorf("%s differs from upstream %s; fix it in tuios and re-run scripts/vendor-vt.sh",
 				base, rec["commit"][:12])
 		}
+		delete(diverged, base)
 		checked++
+	}
+	for base := range diverged {
+		t.Errorf("DIVERGENCE lists %s, which is not a vendored file here", base)
 	}
 	if checked == 0 {
 		t.Error("no vendored files were checked; the glob or the record is wrong")
 	}
+}
+
+// divergenceRecord parses internal/vt/DIVERGENCE, the list of vendored files
+// that are knowingly ahead of upstream. It is deliberately a separate file from
+// UPSTREAM: the provenance of the copy and the debt owed back to tuios are two
+// different facts, and a sync clears one without clearing the other.
+func divergenceRecord(t *testing.T) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile("DIVERGENCE")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]bool{}
+		}
+		t.Fatalf("reading the divergence record: %v", err)
+	}
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out[line] = true
+	}
+	return out
 }
