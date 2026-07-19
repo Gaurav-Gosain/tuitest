@@ -86,6 +86,14 @@ func cellAttrs(c Cell) string {
 	if c.Bold {
 		toks = append(toks, "b")
 	}
+	if c.Faint {
+		toks = append(toks, "f")
+	}
+	if c.Conceal {
+		// Without this a concealed run and a plain run encode identically, so a
+		// golden could not tell "hidden" from "shown".
+		toks = append(toks, "c")
+	}
 	if c.Italic {
 		toks = append(toks, "i")
 	}
