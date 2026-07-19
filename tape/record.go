@@ -155,10 +155,11 @@ func (r *Recorder) flushInput() {
 	r.cmds = append(r.cmds, r.dec.take()...)
 }
 
-// Dropped reports how many input sequences had no tape representation, such as
-// mouse reports. A non-zero count means the recording is not a complete replay
-// of the session and the caller should say so.
-func (r *Recorder) Dropped() int { return r.dec.dropped }
+// SetModes tells the recorder the terminal modes the program under test has
+// negotiated, so input is decoded the way the program will interpret it. The
+// same bytes are a different key under different modes, which is why this
+// cannot be inferred from the input stream alone.
+func (r *Recorder) SetModes(m Modes) { r.dec.setModes(m) }
 
 // anchor picks the line of after to wait on: the last line that is genuinely
 // new, long enough to be distinctive, and that does not already match before.

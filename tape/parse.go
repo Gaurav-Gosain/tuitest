@@ -136,6 +136,18 @@ type Command struct {
 
 	// Key
 	Keys []string
+	// KeyAttrs carries what the richer keyboard protocols report beyond the
+	// chord itself: the event type, the shifted and base layouts of the
+	// physical key, and the text the key would insert. A Key line with
+	// attributes names exactly one key, so an attribute is never ambiguous
+	// about which key it qualifies.
+	KeyAttrs KeyAttrs
+
+	// Modes records the terminal state in force when this command was
+	// decoded. The same bytes mean different keys under different negotiated
+	// modes, so re-encoding a recorded command needs the context it was
+	// recorded under rather than whatever is current.
+	Modes Modes
 
 	// Wait / Expect
 	Regex      *regexp.Regexp
