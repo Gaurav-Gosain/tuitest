@@ -37,6 +37,7 @@ type config struct {
 	term       string
 	trueColor  bool
 	log        io.Writer
+	outMirror  io.Writer
 	semantic   bool
 	stabilize  time.Duration
 }
@@ -100,6 +101,15 @@ func WithStabilizeInterval(d time.Duration) Option {
 	return func(c *config) { c.stabilize = d }
 }
 
+// WithOutputMirror copies the child's output to w as it arrives. Unlike
+// WithLog, which mirrors both directions for debugging, this carries only what
+// the program wrote, so w can be a real terminal the program is rendered onto
+// while the harness still drives it headlessly. Used by tuitest record and
+// tuitest replay.
+func WithOutputMirror(w io.Writer) Option {
+	return func(c *config) { c.outMirror = w }
+}
+
 // Terminal is the harness handle for one spawned program.
 type Terminal struct {
 	cfg  config
@@ -108,14 +118,17 @@ type Terminal struct {
 
 	mu        sync.Mutex
 	cond      *sync.Cond
-	lastWrite time.Time
-	closed    bool // stream ended (child EOF)
+	lastWrite time.Time // last byte received from the child
+	lastInput time.Time // last byte sent to the child
+	outBytes  int64     // total bytes read from the child
+	closed    bool      // stream ended (child EOF)
 	exited    bool
 	exitCode  int
 
-	log     io.Writer
-	logMu   sync.Mutex
-	tailBuf []byte // ring of recent I/O for error dumps
+	log       io.Writer
+	logMu     sync.Mutex
+	outMirror io.Writer
+	tailBuf   []byte // ring of recent I/O for error dumps
 }
 
 const tailCap = 4 * 1024
@@ -131,6 +144,7 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 		cfg:       cfg,
 		emu:       emu.New(cfg.cols, cfg.rows),
 		log:       cfg.log,
+		outMirror: cfg.outMirror,
 		exitCode:  -1,
 		lastWrite: time.Now(), // measure the first quiet window from spawn
 	}
@@ -179,10 +193,16 @@ func (t *Terminal) onData(p []byte) {
 	t.mu.Lock()
 	_, _ = t.emu.Write(p)
 	t.lastWrite = time.Now()
+	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
 	t.mu.Unlock()
 	t.mirror(p)
+	// The pump is a single goroutine, so mirroring outside the lock still
+	// delivers chunks to w in the order the child produced them.
+	if t.outMirror != nil {
+		_, _ = t.outMirror.Write(p)
+	}
 }
 
 func (t *Terminal) onClose(code int) {
@@ -234,7 +254,7 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 	}
 }
 
-// Snapshot returns an immutable view of the current screen.
+// Screen returns an immutable view of the current screen.
 func (t *Terminal) Screen() Screen {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -243,41 +263,93 @@ func (t *Terminal) Screen() Screen {
 
 // Type sends literal text with no key-name interpretation (tmux send-keys -l).
 func (t *Terminal) Type(s string) error {
-	return t.proc.Write([]byte(s))
+	return t.write([]byte(s))
 }
 
-// write mirrors input to the debug log then sends it to the child.
+// write mirrors input to the debug log, records that input was sent (which is
+// what keeps WaitStable from reporting the pre-input screen as stable), then
+// sends it to the child.
 func (t *Terminal) write(b []byte) error {
 	t.mirror(b)
+	t.markInput()
 	return t.proc.Write(b)
 }
 
+// markInput timestamps the moment input was handed to the child.
+func (t *Terminal) markInput() {
+	t.mu.Lock()
+	t.lastInput = time.Now()
+	t.mu.Unlock()
+}
+
 // Resize changes the PTY window size and the emulator grid; the child receives
-// SIGWINCH.
+// SIGWINCH. Like sending keys, a resize counts as input for WaitStable, since
+// the redraw it provokes has not arrived yet.
 func (t *Terminal) Resize(cols, rows int) error {
 	t.mu.Lock()
 	t.emu.Resize(cols, rows)
+	t.lastInput = time.Now()
 	t.mu.Unlock()
 	return t.proc.Resize(cols, rows)
 }
 
+// Progress reports how many bytes the child has written so far and when the
+// most recent write landed. A caller that sends input and then sees neither
+// counter move has evidence the program stopped responding.
+func (t *Terminal) Progress() (bytes int64, last time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.outBytes, t.lastWrite
+}
+
 // ExitCode reports the child's exit code and whether it has exited.
+//
+// The process records its status before closing the channel Done reports on,
+// whereas this terminal's own copy is filled in by the OnClose callback that
+// runs after it. Consulting the process first closes that window, so a caller
+// that reads the exit code the instant Done fires sees the real code rather
+// than the not-yet-exited placeholder.
 func (t *Terminal) ExitCode() (int, bool) {
+	if t.proc != nil {
+		if code, exited := t.proc.ExitCode(); exited {
+			return code, true
+		}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.exitCode, t.exited
 }
 
-// Wait blocks until the child exits or timeout elapses, returning the exit code.
-func (t *Terminal) Wait(timeout time.Duration) (int, error) {
-	select {
-	case <-t.proc.Done():
-		code, _ := t.ExitCode()
-		return code, nil
-	case <-time.After(timeout):
-		return -1, &TimeoutError{Op: "Wait", Want: "child exit", Elapsed: timeout, Screen: t.Snapshot()}
+// WaitExit blocks until the child exits or timeout elapses, returning the exit
+// code. On timeout it returns -1 and a *TimeoutError, which unwraps to
+// ErrTimeout like every other wait.
+func (t *Terminal) WaitExit(timeout time.Duration) (int, error) {
+	// Wait on the terminal's own view of the exit rather than on the process
+	// handle. The pump closes the process's done channel before it delivers the
+	// exit code here, so waking on that channel could observe the code before
+	// this Terminal had recorded it and report -1 for a clean exit.
+	err := t.waitLoop("WaitExit", "the child to exit", timeout, true, func() bool {
+		return t.exited
+	})
+	if err != nil {
+		return -1, err
 	}
+	code, _ := t.ExitCode()
+	return code, nil
 }
+
+// Wait is the former name of WaitExit, kept so existing tests keep compiling.
+//
+// Deprecated: use WaitExit. "Wait" read as a sibling of the WaitFor family,
+// which wait on screen state, when in fact it waits for process exit.
+func (t *Terminal) Wait(timeout time.Duration) (int, error) {
+	return t.WaitExit(timeout)
+}
+
+// Done returns a channel closed once the child has exited and been reaped. It
+// lets a caller select on program exit alongside its own events, which Wait
+// cannot express because it blocks.
+func (t *Terminal) Done() <-chan struct{} { return t.proc.Done() }
 
 // Close tears down the child process group and PTY. It is idempotent.
 func (t *Terminal) Close() error {

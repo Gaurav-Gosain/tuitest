@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/charmbracelet/x/xpty"
 )
@@ -34,16 +35,26 @@ type Handler struct {
 	OnClose func(code int)
 }
 
+// Status describes how a child finished. Code is the exit status, or -1 when
+// the child died from a signal or the status could not be read. Signaled and
+// Signal separate a real crash (SIGSEGV, SIGABRT, SIGBUS) from an ordinary
+// non-zero exit, which ExitCode alone flattens to -1 and loses.
+type Status struct {
+	Code     int
+	Signaled bool
+	Signal   syscall.Signal
+}
+
 // Process is a spawned child attached to a PTY.
 type Process struct {
 	pty xpty.Pty
 	cmd *exec.Cmd
 
-	mu       sync.Mutex
-	exited   bool
-	exitCode int
+	mu     sync.Mutex
+	exited bool
+	status Status
 
-	done      chan struct{} // closed once the child is reaped
+	done      chan struct{} // closed once the child is reaped and OnClose has run
 	reapOnce  sync.Once
 	closeOnce sync.Once
 }
@@ -84,10 +95,10 @@ func Start(cfg Config, h Handler) (*Process, error) {
 	}
 
 	p := &Process{
-		pty:      pty,
-		cmd:      cmd,
-		exitCode: -1,
-		done:     make(chan struct{}),
+		pty:    pty,
+		cmd:    cmd,
+		status: Status{Code: -1},
+		done:   make(chan struct{}),
 	}
 	go p.pump(h)
 	return p, nil
@@ -104,30 +115,34 @@ func (p *Process) pump(h Handler) {
 			break
 		}
 	}
-	code := p.reap()
+	st := p.reap()
 	if h.OnClose != nil {
-		h.OnClose(code)
+		h.OnClose(st.Code)
 	}
+	// Close done only after the handler has recorded the exit. A waiter woken
+	// by Done must not be able to observe a receiver that has not yet been told
+	// the child is gone.
+	close(p.done)
 }
 
-// reap waits for the child exactly once and records its exit code.
-func (p *Process) reap() int {
+// reap waits for the child exactly once and records how it finished.
+func (p *Process) reap() Status {
 	p.reapOnce.Do(func() {
 		_ = p.cmd.Wait()
-		code := -1
+		st := Status{Code: -1}
 		if p.cmd.ProcessState != nil {
-			code = p.cmd.ProcessState.ExitCode()
+			st.Code = p.cmd.ProcessState.ExitCode()
+			st.Signaled, st.Signal = waitSignal(p.cmd.ProcessState)
 		}
 		p.mu.Lock()
 		p.exited = true
-		p.exitCode = code
+		p.status = st
 		p.mu.Unlock()
-		close(p.done)
 	})
 	p.mu.Lock()
-	code := p.exitCode
+	st := p.status
 	p.mu.Unlock()
-	return code
+	return st
 }
 
 // Write sends input bytes to the child.
@@ -145,10 +160,27 @@ func (p *Process) Resize(cols, rows int) error {
 func (p *Process) ExitCode() (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.exitCode, p.exited
+	return p.status.Code, p.exited
 }
 
-// Done returns a channel closed once the child has been reaped.
+// ExitStatus reports how the child finished, including signal death, and
+// whether it has exited at all.
+func (p *Process) ExitStatus() (Status, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.status, p.exited
+}
+
+// Pid returns the child's process id, or 0 if it never started.
+func (p *Process) Pid() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
+// Done returns a channel closed once the child has been reaped and the
+// Handler's OnClose callback has returned.
 func (p *Process) Done() <-chan struct{} { return p.done }
 
 // Close tears down the whole process group and closes the PTY. It is
@@ -171,4 +203,23 @@ func (p *Process) Close() error {
 		_ = p.pty.Close()
 	})
 	return nil
+}
+
+// Probe reports whether a pseudo-terminal can be allocated at all, by opening
+// one and immediately closing it. It spawns no child, so it is safe to call
+// from diagnostics without risking a stray process. A non-nil error is the
+// reason allocation failed, which on a container without /dev/pts is exactly
+// what a user needs to see.
+func Probe(cols, rows int) error {
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	pty, err := xpty.NewPty(cols, rows)
+	if err != nil {
+		return err
+	}
+	return pty.Close()
 }

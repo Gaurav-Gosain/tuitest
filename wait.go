@@ -1,10 +1,29 @@
 package tuitest
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+)
+
+// Sentinel errors for the three ways a wait can fail. Every wait returns an
+// error that wraps one of these, so a caller can branch on the kind of failure
+// without type-asserting the concrete error:
+//
+//	if err := term.WaitForText("ready", time.Second); errors.Is(err, tuitest.ErrTimeout) {
+//		// the program is merely slow
+//	}
+var (
+	// ErrTimeout is wrapped by every wait that runs out of time.
+	ErrTimeout = errors.New("tuitest: timed out")
+	// ErrChildExited is wrapped when the program under test exits before a
+	// wait's condition is met.
+	ErrChildExited = errors.New("tuitest: child exited before the condition was met")
+	// ErrSemanticMarkers is wrapped by the OSC 133 waits when the terminal was
+	// started without WithSemanticMarkers.
+	ErrSemanticMarkers = errors.New("tuitest: semantic markers are not enabled (use WithSemanticMarkers)")
 )
 
 // Scope selects what part of the screen a match runs against.
@@ -19,14 +38,23 @@ const (
 
 // TimeoutError is returned by every wait that times out. Its message includes a
 // full screen dump and the tail of the mirrored I/O log, so a failing CI run
-// shows exactly what was on screen instead of a bare "timeout".
+// shows exactly what was on screen instead of a bare "timeout". It unwraps to
+// ErrTimeout.
 type TimeoutError struct {
-	Op      string
-	Want    string
+	// Op is the wait that failed, such as "WaitForText".
+	Op string
+	// Want describes the condition in words, such as `text "ready"`.
+	Want string
+	// Elapsed is how long the wait actually took.
 	Elapsed time.Duration
-	Screen  string
+	// Screen is the plain-text screen at the moment of the failure.
+	Screen string
+	// TailLog is the tail of the mirrored PTY I/O.
 	TailLog string
 }
+
+// Unwrap makes errors.Is(err, ErrTimeout) true for every wait timeout.
+func (e *TimeoutError) Unwrap() error { return ErrTimeout }
 
 func (e *TimeoutError) Error() string {
 	var b strings.Builder
@@ -42,14 +70,23 @@ func (e *TimeoutError) Error() string {
 	return b.String()
 }
 
-// ClosedError is returned when the child exits before a wait's condition is met.
+// ClosedError is returned when the child exits before a wait's condition is
+// met. It unwraps to ErrChildExited.
 type ClosedError struct {
-	Op       string
-	Want     string
+	// Op is the wait that failed, such as "WaitForText".
+	Op string
+	// Want describes the condition in words.
+	Want string
+	// ExitCode is the child's exit code, or -1 if it could not be determined.
 	ExitCode int
-	Screen   string
-	TailLog  string
+	// Screen is the plain-text screen at the moment of the failure.
+	Screen string
+	// TailLog is the tail of the mirrored PTY I/O.
+	TailLog string
 }
+
+// Unwrap makes errors.Is(err, ErrChildExited) true for every early exit.
+func (e *ClosedError) Unwrap() error { return ErrChildExited }
 
 func (e *ClosedError) Error() string {
 	var b strings.Builder
@@ -140,9 +177,22 @@ func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Dur
 	})
 }
 
-// WaitStable blocks until no output has arrived for the quiet window (the value
-// from WithStabilizeInterval), or timeout. A child that has exited counts as
-// stable. Use this after heavy output instead of a fixed Sleep.
+// WaitStable blocks until the terminal has been quiet for the stabilize
+// interval (see WithStabilizeInterval), or until timeout. A child that has
+// exited counts as stable.
+//
+// The quiet window is measured from the later of the last output byte and the
+// last input tuitest sent. That matters: measured from output alone, calling
+// WaitStable immediately after SendKeys would return against the pre-keystroke
+// screen whenever the program had already been idle for the interval. Waiting
+// out the window from the keystroke instead gives the program that long to
+// start reacting, and any byte it produces restarts the window.
+//
+// It is still a heuristic. A program that takes longer than the stabilize
+// interval to produce its first byte will be reported stable too early, and no
+// quiescence rule can distinguish that from a program with nothing to say.
+// Prefer WaitForText, WaitForMatch or WaitFor whenever the expected end state
+// is known, and reach for WaitStable only after heavy output where it is not.
 func (t *Terminal) WaitStable(timeout time.Duration) error {
 	quiet := t.cfg.stabilize
 	if quiet <= 0 {
@@ -152,7 +202,30 @@ func (t *Terminal) WaitStable(timeout time.Duration) error {
 		if t.exited {
 			return true
 		}
-		return time.Since(t.lastWrite) >= quiet
+		since := t.lastWrite
+		if t.lastInput.After(since) {
+			since = t.lastInput
+		}
+		return time.Since(since) >= quiet
+	})
+}
+
+// WaitForOutput blocks until the child writes anything at all after the call
+// begins, or it exits, or timeout elapses.
+//
+// This is the primitive for "wait until the program reacts to what I just
+// sent", which WaitStable does not express: WaitStable asks whether output has
+// been quiet for a window, and after a pause that is already true, so it
+// returns immediately without the program having done anything. Use WaitStable
+// to wait for a burst of output to finish, and WaitForOutput to wait for a
+// reaction to begin. A child that has exited counts as settled, since no
+// further output can arrive.
+func (t *Terminal) WaitForOutput(timeout time.Duration) error {
+	t.mu.Lock()
+	base := t.outBytes
+	t.mu.Unlock()
+	return t.waitLoop("WaitForOutput", "the program to write something", timeout, true, func() bool {
+		return t.exited || t.outBytes > base
 	})
 }
 
@@ -205,7 +278,10 @@ func (t *Terminal) WaitForCommand(timeout time.Duration) error {
 }
 
 // LastCommandExit returns the exit code of the last finished command (OSC 133 D)
-// and whether one has been seen. Requires WithSemanticMarkers.
+// and whether one has been seen. It reports false both when no command has
+// finished and when the terminal was started without WithSemanticMarkers, so
+// enable that option before relying on it; the WaitForPrompt and WaitForCommand
+// waits return ErrSemanticMarkers in that case and are the better signal.
 func (t *Terminal) LastCommandExit() (int, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -216,5 +292,5 @@ func (t *Terminal) LastCommandExit() (int, bool) {
 }
 
 func errSemanticDisabled(op string) error {
-	return fmt.Errorf("tuitest: %s requires WithSemanticMarkers", op)
+	return fmt.Errorf("%s: %w", op, ErrSemanticMarkers)
 }

@@ -90,12 +90,3 @@ func singleRune(s string) (rune, bool) {
 	r, _ := utf8.DecodeRuneInString(s)
 	return r, true
 }
-
-func validateKeys(tokens []string) error {
-	for _, tok := range tokens {
-		if _, err := ResolveKey(tok); err != nil {
-			return err
-		}
-	}
-	return nil
-}

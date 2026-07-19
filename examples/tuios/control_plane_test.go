@@ -247,7 +247,7 @@ func TestAttachRendersHeadlessState(t *testing.T) {
 	//
 	//    This previously hung: the daemon dropped the session without telling
 	//    its clients, so the process stayed up until it was killed by hand.
-	code, err := term.Wait(20 * time.Second)
+	code, err := term.WaitExit(20 * time.Second)
 	if err != nil {
 		t.Fatalf("attached client did not exit after its session was killed: %v\n--- screen ---\n%s",
 			err, term.Screen().Text())

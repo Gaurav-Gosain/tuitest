@@ -1,6 +1,7 @@
 package tuitest_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,6 +140,14 @@ func TestWaitReturnsClosedError(t *testing.T) {
 	if _, ok := err.(*tuitest.ClosedError); !ok {
 		t.Fatalf("expected *ClosedError, got %T: %v", err, err)
 	}
+	// Callers should be able to branch on the kind of failure without knowing
+	// the concrete type.
+	if !errors.Is(err, tuitest.ErrChildExited) {
+		t.Errorf("errors.Is(err, ErrChildExited) = false for %v", err)
+	}
+	if errors.Is(err, tuitest.ErrTimeout) {
+		t.Errorf("a child-exit failure should not match ErrTimeout: %v", err)
+	}
 }
 
 func TestTimeoutErrorHasScreen(t *testing.T) {
@@ -154,6 +163,9 @@ func TestTimeoutErrorHasScreen(t *testing.T) {
 	}
 	if !contains(te.Screen, "ECHOTUI") {
 		t.Fatalf("timeout error screen dump missing banner:\n%s", te.Screen)
+	}
+	if !errors.Is(err, tuitest.ErrTimeout) {
+		t.Errorf("errors.Is(err, ErrTimeout) = false for %v", err)
 	}
 }
 
@@ -176,8 +188,15 @@ func TestResize(t *testing.T) {
 func TestSemanticDisabledError(t *testing.T) {
 	t.Parallel()
 	term := startEcho(t)
-	if err := term.WaitForPrompt(time.Second); err == nil {
+	err := term.WaitForPrompt(time.Second)
+	if err == nil {
 		t.Fatal("WaitForPrompt without WithSemanticMarkers should error")
+	}
+	if !errors.Is(err, tuitest.ErrSemanticMarkers) {
+		t.Errorf("errors.Is(err, ErrSemanticMarkers) = false for %v", err)
+	}
+	if _, ok := term.LastCommandExit(); ok {
+		t.Error("LastCommandExit should report false without WithSemanticMarkers")
 	}
 }
 

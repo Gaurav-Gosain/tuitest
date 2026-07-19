@@ -6,10 +6,15 @@ import "fmt"
 type MouseButton int
 
 const (
+	// MouseLeft is the primary button.
 	MouseLeft MouseButton = iota
+	// MouseMiddle is the middle button or wheel click.
 	MouseMiddle
+	// MouseRight is the secondary button.
 	MouseRight
+	// MouseWheelUp is one wheel notch away from the user.
 	MouseWheelUp
+	// MouseWheelDown is one wheel notch toward the user.
 	MouseWheelDown
 )
 
@@ -17,8 +22,11 @@ const (
 type MouseAction int
 
 const (
+	// MousePress is a button going down.
 	MousePress MouseAction = iota
+	// MouseRelease is a button coming up.
 	MouseRelease
+	// MouseMove is motion, reported with the held button (if any).
 	MouseMove
 )
 
@@ -26,17 +34,25 @@ const (
 type KeyMods int
 
 const (
+	// ModShift is the shift key.
 	ModShift KeyMods = 1 << iota
+	// ModAlt is the alt or meta key.
 	ModAlt
+	// ModCtrl is the control key.
 	ModCtrl
 )
 
 // MouseEvent is a single mouse event at a zero-based cell coordinate.
 type MouseEvent struct {
+	// Col and Row are zero-based cell coordinates; the wire format's 1-based
+	// coordinates are produced during encoding.
 	Col, Row int
-	Button   MouseButton
-	Action   MouseAction
-	Mods     KeyMods
+	// Button is the button or wheel direction involved.
+	Button MouseButton
+	// Action is what the button did.
+	Action MouseAction
+	// Mods are the modifier keys held at the time.
+	Mods KeyMods
 }
 
 // encodeSGR renders the event as an SGR (1006) mouse sequence. Coordinates in

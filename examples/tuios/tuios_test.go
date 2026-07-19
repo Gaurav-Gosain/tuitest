@@ -189,7 +189,7 @@ func TestWindowLifecycle(t *testing.T) {
 	if err := term.SendKeys("q"); err != nil {
 		t.Fatal(err)
 	}
-	code, err := term.Wait(5 * time.Second)
+	code, err := term.WaitExit(5 * time.Second)
 	if err != nil {
 		t.Fatalf("tuios did not exit after 'q': %v", err)
 	}
