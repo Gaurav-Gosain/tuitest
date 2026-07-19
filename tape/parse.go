@@ -34,6 +34,7 @@ const (
 	KindHide
 	KindShow
 	KindSleep
+	KindResize
 )
 
 // Command is one parsed tape line.
@@ -63,6 +64,9 @@ type Command struct {
 
 	// ExpectExit
 	Code int
+
+	// Resize
+	Cols, Rows int
 
 	// Snapshot
 	Name   string
@@ -188,6 +192,25 @@ func parseLine(raw string, lineNo int) (Command, error) {
 				c.Styled = true
 			}
 		}
+		return c, nil
+
+	case "Resize":
+		if len(rest) != 2 {
+			return c, fmt.Errorf("Resize needs cols and rows")
+		}
+		cols, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return c, fmt.Errorf("Resize cols: %w", err)
+		}
+		rows, err := strconv.Atoi(rest[1])
+		if err != nil {
+			return c, fmt.Errorf("Resize rows: %w", err)
+		}
+		if cols <= 0 || rows <= 0 {
+			return c, fmt.Errorf("Resize needs positive cols and rows")
+		}
+		c.Kind = KindResize
+		c.Cols, c.Rows = cols, rows
 		return c, nil
 
 	case "Hide":
