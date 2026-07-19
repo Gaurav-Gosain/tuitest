@@ -851,3 +851,19 @@ func writeScript(t *testing.T, body string) string {
 	}
 	return path
 }
+
+// The pre-cobra CLI used the flag package, where "-help" and "-version" were
+// ordinary single-dash flags. Cobra registers those two lazily during Execute,
+// so normalization has to ask for them explicitly or every script and README
+// example using the old spelling exits 2.
+func TestSingleDashHelpAndVersionStillWork(t *testing.T) {
+	for _, arg := range []string{"-help", "-version", "--help", "--version"} {
+		t.Run(arg, func(t *testing.T) {
+			var out bytes.Buffer
+			env := &Env{Stdout: &out, Stderr: &out, Getenv: func(string) string { return "" }}
+			if code := Main(env, []string{arg}); code != 0 {
+				t.Fatalf("%s: exit = %d, want 0\n%s", arg, code, out.String())
+			}
+		})
+	}
+}

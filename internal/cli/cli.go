@@ -335,6 +335,17 @@ func expandSingleDash(cmd *cobra.Command, arg string) string {
 		return arg
 	}
 	name, _, _ := strings.Cut(arg[1:], "=")
+
+	// The pre-cobra CLI parsed with the flag package, where "-help" and
+	// "-version" were ordinary flags. Cobra owns both: help is registered during
+	// Execute and version is supplied by fang, so neither is in the flag set
+	// while normalization runs and both would reach pflag as shorthand clusters
+	// ("-version" reads as an unknown shorthand 'e'). Name them directly rather
+	// than depending on that initialization order.
+	if !cmd.HasParent() && (name == "help" || name == "version") {
+		return "-" + arg
+	}
+
 	if cmd.Flags().Lookup(name) == nil && cmd.InheritedFlags().Lookup(name) == nil {
 		return arg
 	}
