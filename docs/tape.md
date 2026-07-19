@@ -89,12 +89,40 @@ of `Mod+Base`:
 - Named: `Enter` (or `Return`), `Tab`, `Esc` (or `Escape`), `Space`,
   `Backspace`, `Delete`, `Insert`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
   `PageUp`, `PageDown`, and `F1` through `F12`.
-- Modifiers: `Ctrl` (or `C`), `Alt` (or `M`), `Shift` (or `S`). `Ctrl+` requires
-  a single character base; `Shift+` only has an effect on a lowercase letter.
+- Modifiers: `Ctrl` (or `C`), `Alt` (or `M`), `Shift` (or `S`), `Super`,
+  `Hyper` and `Meta`. `Shift+` only has an effect on a lowercase letter.
 - Anything else that is exactly one rune is sent as itself, so `Key %` works.
+  A token ending in `+` names `+` itself, so `Key +` and `Key Alt++` both work.
 
 An unknown key name is a parse error with the column of the offending token, not
-a silent no-op at run time.
+a silent no-op at run time. So is a chord with no faithful encoding: `Ctrl++`
+would have to send `0x0b`, which reads back as `Ctrl+k`, so it is rejected under
+the legacy encoding rather than silently changing the key.
+
+### Key attributes
+
+A key reported by the kitty keyboard protocol can carry detail the legacy
+encoding cannot express, written as trailing attributes:
+
+```
+Key a +Release
+Key a +Repeat
+Key a +Shifted A +Base a
+Key a +Text "á"
+```
+
+`+Press`, `+Repeat` and `+Release` are the event type; `+Shifted` and `+Base`
+are the key's alternate layouts; `+Text` is the text the keypress inserts, which
+differs from the key itself for dead keys and input methods.
+
+An attribute is a whitespace-separated token beginning with `+`, which cannot be
+confused with a modifier because a modifier joins its key without spaces
+(`Ctrl+b` is one token). A `Key` line carrying attributes names exactly one key,
+so an attribute is never ambiguous about which keypress it qualifies.
+
+See [input-protocols.md](input-protocols.md) for which encodings these map to,
+the round-trip guarantees, and what happens when a tape is replayed against a
+program that negotiates different keyboard modes than the recording did.
 
 ## Mouse
 

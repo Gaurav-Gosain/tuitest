@@ -133,21 +133,26 @@ func TestDecodedKeysReplayToTheSameBytes(t *testing.T) {
 	}
 }
 
-// TestDecodeDropsUnrepresentableSequences checks that a mouse report is consumed
-// rather than leaking its bytes into a Type command, and that it is counted so
-// the recorder can warn about it.
-func TestDecodeDropsUnrepresentableSequences(t *testing.T) {
-	var d inputDecoder
-	d.feed([]byte("a\x1b[<0;10;5Mb"))
-	d.close()
-	cmds := d.take()
+// TestDecodeKeepsUnrepresentableSequences checks that a sequence with no
+// keyboard meaning neither leaks its bytes into a Type command nor vanishes.
+// It used to be counted as dropped, which made the recording an incomplete
+// replay; it is now captured verbatim so the bytes survive round trip.
+func TestDecodeKeepsUnrepresentableSequences(t *testing.T) {
+	const in = "a\x1b[<0;10;5Mb"
 
-	got := strings.TrimRight(Sprint(cmds), "\n")
-	want := "Type a\nType b"
-	if got != want {
-		t.Errorf("mouse report leaked into the tape:\n got: %q\nwant: %q", got, want)
+	cmds := decodeCommands([]byte(in))
+	for _, c := range cmds {
+		if c.Kind == KindType && strings.Contains(c.Text, "\x1b") {
+			t.Fatalf("escape sequence leaked into a Type command: %q", c.Text)
+		}
 	}
-	if d.dropped != 1 {
-		t.Errorf("dropped = %d, want 1", d.dropped)
+
+	got, err := encodeCommands(cmds)
+	if err != nil {
+		t.Fatalf("re-encode: %v", err)
+	}
+	if string(got) != in {
+		t.Errorf("sequence was not preserved\n got: %q\nwant: %q\ntape:\n%s",
+			got, in, strings.TrimRight(Sprint(cmds), "\n"))
 	}
 }

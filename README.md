@@ -318,6 +318,15 @@ what lets them carry arbitrary bytes including malformed UTF-8 and embedded
 escape sequences. The grammar, the `Set` keys, and the validation limits are in
 [docs/tape.md](docs/tape.md).
 
+A recording never loses input. Every input sequence is decoded by a registered
+protocol (the legacy keys, xterm modifyOtherKeys, the kitty keyboard protocol)
+or, failing that, captured verbatim as a `Raw` command that replays byte for
+byte. So a tape is a faithful replay whether or not a decoder exists for
+everything in it, and terminal replies to capability queries are never mistaken
+for keystrokes. See [docs/input-protocols.md](docs/input-protocols.md) for the
+guarantees, the round-trip property, what happens when replay negotiates
+different keyboard modes than the recording did, and how to add a protocol.
+
 ## Fuzzing a TUI
 
 `tuitest fuzz` drives a program with randomised but structured input and reports
