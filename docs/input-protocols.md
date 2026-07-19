@@ -237,6 +237,26 @@ These fall through to `Raw` and still replay byte for byte.
 | 8-bit meta (high-bit-set bytes) | Indistinguishable from Latin-1 text. |
 | 8-bit C1 introducers | Framed and captured, but not decoded semantically. |
 | Kitty functional codes outside the table | A code in the Private Use Area block that this table does not name is a key from a newer protocol revision. Spelling it as the PUA character it equals would be a lie. |
+| `Alt` plus a control-string introducer | `Alt+Shift+p` sends `ESC P`, which is also DCS; `Alt+Shift+x` sends `ESC X`, which is also SOS. Encoding is faithful, since that is what a terminal sends, but decoding must prefer the control string. |
+
+Two of these deserve the reasoning spelled out, because both are cases where
+the wire form is genuinely ambiguous and the decoder has to choose.
+
+**`CSI R` is both the cursor position report and F3.** A function key in the
+SS3 family reaches the CSI form only with a real modifier, because its
+unmodified spelling is SS3. So `SS3 R` and `CSI 1;5R` are F3 and `Ctrl+F3`,
+while `CSI R`, `CSI 1;R` and `CSI 1;1R` are all position reports — the last one
+for row 1, which is exactly the case a naive "explicit parameter" rule gets
+wrong. The same collision exists on `CSI S`.
+
+**`ESC P` is both `Alt+Shift+p` and DCS.** Here the decoder prefers the control
+string, and the reasoning is the asymmetry this whole design rests on. Choosing
+"key" when the bytes were a device reply corrupts the tape silently. Choosing
+"control string" when the bytes were a keypress costs only readability, because
+the bytes still replay exactly as `Raw`. When the cost of being wrong is
+lopsided, take the side that fails visibly.
+
+Both chords are unambiguous under kitty, which is what the protocol is for.
 
 The last row is also why a literal Private Use Area character is never encoded
 as a kitty key code: the reader would take it for a function key.

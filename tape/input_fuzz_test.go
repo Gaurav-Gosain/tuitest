@@ -227,12 +227,28 @@ func FuzzKeyCommandRoundTrip(f *testing.F) {
 			}
 			cmds := decodeUnder([]byte(seq), m)
 
-			// The token must come back as a key, not as text. A chord
-			// that resolves to printable bytes is the exception:
-			// Shift+a really is just "A" on the wire, so there is
-			// nothing to recover.
+			// The token must come back as a key, not as text. There are
+			// two documented exceptions, both cases where the wire form
+			// is inherently ambiguous and the key is unrecoverable.
+			//
+			// A chord that resolves to printable bytes: Shift+a really
+			// is just "A" on the wire, so there is nothing to recover.
 			if len(cmds) == 1 && cmds[0].Kind == KindType {
 				continue
+			}
+			// A chord whose meta encoding is a control-string
+			// introducer: Alt+Shift+p sends ESC P, which is also DCS,
+			// and Alt+Shift+x sends ESC X, which is also SOS. Sending
+			// those bytes is faithful, since it is exactly what a
+			// terminal sends, but reading them back the decoder must
+			// prefer the control string. Guessing "key" there is the
+			// reported defect: it turns a terminal reply into
+			// keystrokes. Preferring the control string costs only
+			// readability, because the bytes still replay as Raw.
+			if _, _, isSeq := frameEnd([]byte(seq)); isSeq {
+				if len(cmds) == 1 && cmds[0].Kind == KindRaw {
+					continue
+				}
 			}
 			if len(cmds) != 1 || cmds[0].Kind != KindKey {
 				t.Fatalf("token %q encoded as %q decoded to %s, want one Key",

@@ -128,10 +128,11 @@ func (p legacyKeys) decodeCSI(buf []byte, m Modes) (int, []Command, Result) {
 			// when it carries an explicit, non-default modifier, because
 			// its unmodified spelling is SS3. Without this rule CSI R
 			// would decode as F3, when in fact it is the cursor position
-			// report; the same collision exists for CSI S. An omitted or
-			// empty modifier is a default rather than an explicit one, so
-			// CSI 1;R is not F3 either.
-			if len(params) < 2 || params[1] < 1 {
+			// report; the same collision exists for CSI S. The modifier
+			// must be a real one: an omitted, empty or "no modifiers"
+			// parameter is a default, so neither CSI 1;R nor CSI 1;1R is
+			// F3, and the latter is a cursor report for row 1.
+			if len(params) < 2 || params[1] < 2 {
 				return 0, nil, NoMatch
 			}
 			d = ss3

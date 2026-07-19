@@ -166,14 +166,14 @@ func (p kittyKeys) baseKey(params csiParams, final byte) (string, bool) {
 			return d.name, true
 		}
 		// As in the legacy protocol, a function key in the SS3 family
-		// reaches the CSI form only with an explicit, non-default
-		// modifier. Otherwise CSI R would be read as F3 when it is the
-		// cursor position report. The leading parameter must also be a
-		// bare 1: a sub-parameter there describes an alternate key layout,
-		// which a key identified by its final byte does not have, so its
-		// presence means this is not a key report at all.
+		// reaches the CSI form only with a real modifier. Otherwise CSI R
+		// would be read as F3 when it is the cursor position report, and
+		// CSI 1;1R when it is a report for row 1. The leading parameter
+		// must also be a bare 1: a sub-parameter there describes an
+		// alternate key layout, which a key identified by its final byte
+		// does not have, so its presence means this is not a key report.
 		if d, known := keyBySS3[final]; known && d.form == formSS3 &&
-			params.has(1, 0) && params.at(1, 0, 0) >= 1 && len(params.group(0)) == 1 {
+			params.at(1, 0, 1) >= 2 && len(params.group(0)) == 1 {
 			return d.name, true
 		}
 		return "", false

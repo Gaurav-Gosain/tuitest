@@ -344,6 +344,9 @@ func TestCursorPositionReportIsNotF3(t *testing.T) {
 		"\x1b[12;40R", // cursor position report with a position
 		"\x1b[S",      // the same collision on S
 		"\x1b[2;3S",   // and with parameters that are not "1;mod"
+		"\x1b[1;1R",   // an explicit "no modifiers" is a report for row 1
+		"\x1b[1;R",    // as is an empty modifier
+		"\x1b[01R",    // and a zero-padded one
 	}
 	for _, in := range notKeys {
 		for _, c := range decodeCommands([]byte(in)) {
@@ -532,6 +535,53 @@ func TestCtrlWithoutALegacyEncoding(t *testing.T) {
 		got, err := ResolveKey(tok)
 		if err != nil || string(got) != want {
 			t.Errorf("ResolveKey(%q) = %q, %v; want %q", tok, got, err, want)
+		}
+	}
+}
+
+// TestMetaCollidesWithControlStringIntroducers pins a real terminal ambiguity.
+// The meta encoding of Alt puts ESC before the key, so Alt+Shift+p sends ESC P,
+// which is also the DCS introducer, and Alt+Shift+x sends ESC X, which is also
+// SOS. A terminal really does send those bytes, so encoding them is right.
+//
+// Reading them back, the decoder must prefer the control string. Guessing "key"
+// is the reported defect in miniature: it turns a terminal reply into
+// keystrokes, silently. Preferring the control string costs only readability,
+// since the bytes still replay exactly as Raw.
+func TestMetaCollidesWithControlStringIntroducers(t *testing.T) {
+	for _, tok := range []string{"Alt+P", "Alt+X", "Alt+]", "Alt+_"} {
+		seq, err := ResolveKey(tok)
+		if err != nil {
+			t.Fatalf("ResolveKey(%q): %v", tok, err)
+		}
+
+		cmds := decodeCommands([]byte(seq))
+		for _, c := range cmds {
+			if c.Kind == KindKey || c.Kind == KindType {
+				t.Errorf("%q sends %q, which decoded as keyboard input %v; "+
+					"a control-string introducer must win", tok, seq, c.Keys)
+			}
+		}
+
+		// Whatever it decodes to, the bytes must survive.
+		got, err := encodeCommands(cmds)
+		if err != nil {
+			t.Fatalf("%q: re-encode: %v", tok, err)
+		}
+		if string(got) != string(seq) {
+			t.Errorf("%q: bytes %q did not survive, got %q", tok, seq, got)
+		}
+	}
+
+	// Under kitty the same chords are unambiguous and round-trip as keys.
+	kitty := Modes{KittyFlags: 1}
+	for _, tok := range []string{"Alt+P", "Alt+X"} {
+		seq, err := ResolveKeyModes(tok, kitty)
+		if err != nil {
+			t.Fatalf("%q under kitty: %v", tok, err)
+		}
+		if c := decodeOne(t, string(seq), kitty); c.Keys[0] != tok {
+			t.Errorf("%q under kitty decoded as %q", tok, c.Keys[0])
 		}
 	}
 }
