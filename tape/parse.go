@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Gaurav-Gosain/tuitest"
 )
@@ -20,21 +22,80 @@ import (
 type Kind int
 
 const (
+	// KindSet configures the next Spawn (Size, Term, Env, WaitTimeout,
+	// StabilizeInterval).
 	KindSet Kind = iota
+	// KindSpawn starts the program under test.
 	KindSpawn
+	// KindType sends the rest of the line literally.
 	KindType
+	// KindKey sends one or more named keys or chords.
 	KindKey
+	// KindWait blocks until a regex matches the screen.
 	KindWait
+	// KindWaitStable blocks until output has quiesced.
 	KindWaitStable
+	// KindWaitPrompt blocks until a new OSC 133 prompt is drawn.
 	KindWaitPrompt
+	// KindWaitCommand blocks until an OSC 133 command finishes.
 	KindWaitCommand
+	// KindExpect asserts a regex matches the current screen without waiting.
 	KindExpect
+	// KindExpectExit waits for the child to exit and asserts its code.
 	KindExpectExit
+	// KindSnapshot compares the screen against a golden file.
 	KindSnapshot
+	// KindHide makes subsequent snapshots no-ops.
 	KindHide
+	// KindShow undoes KindHide.
 	KindShow
+	// KindSleep sleeps for a fixed duration.
 	KindSleep
 )
+
+// Verb returns the canonical spelling of the command verb, the one Print emits.
+func (k Kind) Verb() string {
+	switch k {
+	case KindSet:
+		return "Set"
+	case KindSpawn:
+		return "Spawn"
+	case KindType:
+		return "Type"
+	case KindKey:
+		return "Key"
+	case KindWait:
+		return "Wait"
+	case KindWaitStable:
+		return "WaitStable"
+	case KindWaitPrompt:
+		return "WaitPrompt"
+	case KindWaitCommand:
+		return "WaitCommand"
+	case KindExpect:
+		return "Expect"
+	case KindExpectExit:
+		return "ExpectExit"
+	case KindSnapshot:
+		return "Snapshot"
+	case KindHide:
+		return "Hide"
+	case KindShow:
+		return "Show"
+	case KindSleep:
+		return "Sleep"
+	default:
+		return ""
+	}
+}
+
+// String implements fmt.Stringer for diagnostics.
+func (k Kind) String() string {
+	if v := k.Verb(); v != "" {
+		return v
+	}
+	return "Kind(" + strconv.Itoa(int(k)) + ")"
+}
 
 // Command is one parsed tape line.
 type Command struct {
@@ -80,7 +141,10 @@ func Parse(r io.Reader) ([]Command, error) {
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
-		raw := sc.Text()
+		// bufio.Scanner strips one trailing CR for CRLF files; strip any that
+		// remain so a tape written with Windows line endings parses (and
+		// re-prints) identically to a Unix one.
+		raw := strings.TrimRight(sc.Text(), "\r")
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -98,9 +162,8 @@ func Parse(r io.Reader) ([]Command, error) {
 }
 
 func parseLine(raw string, lineNo int) (Command, error) {
-	fields := strings.Fields(raw)
-	verb := fields[0]
-	rest := fields[1:]
+	verb, tail := splitVerb(raw)
+	rest := strings.Fields(tail)
 	c := Command{Line: lineNo}
 
 	switch verb {
@@ -123,8 +186,8 @@ func parseLine(raw string, lineNo int) (Command, error) {
 
 	case "Type":
 		c.Kind = KindType
-		// Preserve literal spacing after "Type ".
-		c.Text = strings.TrimPrefix(raw, verbPrefix(raw, "Type"))
+		// Preserve the literal spacing of everything after "Type ".
+		c.Text = tail
 		return c, nil
 
 	case "Key":
@@ -136,28 +199,30 @@ func parseLine(raw string, lineNo int) (Command, error) {
 		return c, validateKeys(rest)
 
 	case "Wait":
-		if len(rest) == 1 && rest[0] == "Stable" {
+		// "Wait Stable" is the spelled-out spelling of WaitStable; the rest of
+		// the line is parsed the same either way.
+		if len(rest) > 0 && rest[0] == "Stable" {
 			c.Kind = KindWaitStable
-			return c, nil
+			return c, parseWaitLike(&c, strings.TrimPrefix(strings.TrimSpace(tail), "Stable"))
 		}
 		c.Kind = KindWait
-		return c, parseWaitLike(&c, rest)
+		return c, parseWaitLike(&c, tail)
 
 	case "WaitStable":
 		c.Kind = KindWaitStable
-		return c, parseWaitLike(&c, rest)
+		return c, parseWaitLike(&c, tail)
 
 	case "WaitPrompt":
 		c.Kind = KindWaitPrompt
-		return c, parseWaitLike(&c, rest)
+		return c, parseWaitLike(&c, tail)
 
 	case "WaitCommand":
 		c.Kind = KindWaitCommand
-		return c, parseWaitLike(&c, rest)
+		return c, parseWaitLike(&c, tail)
 
 	case "Expect":
 		c.Kind = KindExpect
-		if err := parseWaitLike(&c, rest); err != nil {
+		if err := parseWaitLike(&c, tail); err != nil {
 			return c, err
 		}
 		if !c.HasRegex {
@@ -184,9 +249,10 @@ func parseLine(raw string, lineNo int) (Command, error) {
 		c.Kind = KindSnapshot
 		c.Name = rest[0]
 		for _, tok := range rest[1:] {
-			if tok == "+Styled" {
-				c.Styled = true
+			if tok != "+Styled" {
+				return c, fmt.Errorf("unexpected token %q (only +Styled is allowed)", tok)
 			}
+			c.Styled = true
 		}
 		return c, nil
 
@@ -202,7 +268,7 @@ func parseLine(raw string, lineNo int) (Command, error) {
 		if len(rest) != 1 {
 			return c, fmt.Errorf("Sleep needs a duration")
 		}
-		d, err := time.ParseDuration(rest[0])
+		d, err := parsePositiveDuration(rest[0])
 		if err != nil {
 			return c, fmt.Errorf("Sleep duration: %w", err)
 		}
@@ -215,38 +281,48 @@ func parseLine(raw string, lineNo int) (Command, error) {
 	}
 }
 
-// verbPrefix returns the leading whitespace + verb + one space, so the rest of a
-// Type line keeps its literal internal spacing.
-func verbPrefix(raw, verb string) string {
-	idx := strings.Index(raw, verb)
-	return raw[:idx+len(verb)+1]
+// splitVerb splits a line into its verb and the raw remainder. Exactly one
+// whitespace rune is consumed as the separator, so the remainder of a Type line
+// keeps its literal internal spacing. A line that is only a verb yields an empty
+// remainder rather than panicking on a short slice.
+func splitVerb(raw string) (verb, tail string) {
+	s := strings.TrimLeftFunc(raw, unicode.IsSpace)
+	i := strings.IndexFunc(s, unicode.IsSpace)
+	if i < 0 {
+		return s, ""
+	}
+	_, size := utf8.DecodeRuneInString(s[i:])
+	return s[:i], s[i+size:]
 }
 
-// parseWaitLike parses the optional /regex/, +Scope, and @timeout tokens shared
-// by Wait, Expect, and the semantic waits.
-func parseWaitLike(c *Command, tokens []string) error {
-	var regexParts []string
-	inRegex := false
-	for _, tok := range tokens {
+// parseWaitLike parses the optional /regex/, +Scope, and @timeout arguments
+// shared by Wait, Expect, and the semantic waits. The regex runs from the first
+// '/' on the line to the last one, so a pattern may contain spaces and slashes;
+// everything outside that span is whitespace-separated option tokens.
+func parseWaitLike(c *Command, tail string) error {
+	opts := tail
+	if i := strings.Index(tail, "/"); i >= 0 {
+		j := strings.LastIndex(tail, "/")
+		if j == i {
+			return fmt.Errorf("unterminated /regex/ (no closing slash)")
+		}
+		body := tail[i+1 : j]
+		re, err := regexp.Compile(body)
+		if err != nil {
+			return fmt.Errorf("regex %q: %w", body, err)
+		}
+		c.Regex = re
+		c.HasRegex = true
+		opts = tail[:i] + " " + tail[j+1:]
+	}
+	for _, tok := range strings.Fields(opts) {
 		switch {
-		case inRegex:
-			regexParts = append(regexParts, tok)
-			if strings.HasSuffix(tok, "/") {
-				inRegex = false
-			}
-		case strings.HasPrefix(tok, "/"):
-			regexParts = append(regexParts, tok)
-			if len(tok) > 1 && strings.HasSuffix(tok, "/") {
-				inRegex = false
-			} else {
-				inRegex = true
-			}
 		case tok == "+Screen":
 			c.Scope = tuitest.ScopeScreen
 		case tok == "+Line":
 			c.Scope = tuitest.ScopeLastLine
 		case strings.HasPrefix(tok, "@"):
-			d, err := time.ParseDuration(strings.TrimPrefix(tok, "@"))
+			d, err := parsePositiveDuration(strings.TrimPrefix(tok, "@"))
 			if err != nil {
 				return fmt.Errorf("timeout %q: %w", tok, err)
 			}
@@ -256,17 +332,21 @@ func parseWaitLike(c *Command, tokens []string) error {
 			return fmt.Errorf("unexpected token %q", tok)
 		}
 	}
-	if len(regexParts) > 0 {
-		joined := strings.Join(regexParts, " ")
-		body := strings.TrimSuffix(strings.TrimPrefix(joined, "/"), "/")
-		re, err := regexp.Compile(body)
-		if err != nil {
-			return fmt.Errorf("regex %q: %w", body, err)
-		}
-		c.Regex = re
-		c.HasRegex = true
-	}
 	return nil
+}
+
+// parsePositiveDuration parses a duration and rejects the non-positive ones. A
+// zero or negative timeout, sleep, or quiet window is always a mistake in a
+// tape, and a negative one would otherwise reach the harness as "no timeout".
+func parsePositiveDuration(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%q must be positive", s)
+	}
+	return d, nil
 }
 
 func validateSet(c Command) error {
@@ -275,11 +355,11 @@ func validateSet(c Command) error {
 		if len(c.SetArgs) != 2 {
 			return fmt.Errorf("Set Size needs cols and rows")
 		}
-		if _, err := strconv.Atoi(c.SetArgs[0]); err != nil {
-			return fmt.Errorf("Set Size cols: %w", err)
+		if _, err := parseDimension("cols", c.SetArgs[0]); err != nil {
+			return err
 		}
-		if _, err := strconv.Atoi(c.SetArgs[1]); err != nil {
-			return fmt.Errorf("Set Size rows: %w", err)
+		if _, err := parseDimension("rows", c.SetArgs[1]); err != nil {
+			return err
 		}
 	case "Term":
 		if len(c.SetArgs) != 1 {
@@ -293,11 +373,27 @@ func validateSet(c Command) error {
 		if len(c.SetArgs) != 1 {
 			return fmt.Errorf("Set %s needs a duration", c.SetKey)
 		}
-		if _, err := time.ParseDuration(c.SetArgs[0]); err != nil {
+		if _, err := parsePositiveDuration(c.SetArgs[0]); err != nil {
 			return fmt.Errorf("Set %s: %w", c.SetKey, err)
 		}
 	default:
 		return fmt.Errorf("unknown Set key %q", c.SetKey)
 	}
 	return nil
+}
+
+// MaxDimension bounds Set Size. A tape is untrusted input to the CLI, and the
+// grid it names is allocated up front, so an absurd size has to be rejected at
+// parse time rather than turned into a multi-gigabyte allocation.
+const MaxDimension = 10000
+
+func parseDimension(what, s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("Set Size %s: %w", what, err)
+	}
+	if n < 1 || n > MaxDimension {
+		return 0, fmt.Errorf("Set Size %s: %d out of range 1..%d", what, n, MaxDimension)
+	}
+	return n, nil
 }
