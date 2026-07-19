@@ -1,0 +1,11 @@
+# Files that deliberately differ from the upstream commit in UPSTREAM, one per
+# line. Every entry is a fix made here first because the differential testing
+# that found it lives in tuitest; see VENDOR.md for what each change is and
+# scripts/vtref/README.md for how they were found. Port them to tuios, re-sync,
+# and delete the line. The drift check requires a listed file to actually
+# differ, so a stale entry fails the build rather than rotting quietly.
+cc.go
+csi_mode.go
+handlers.go
+screen.go
+utf8.go
