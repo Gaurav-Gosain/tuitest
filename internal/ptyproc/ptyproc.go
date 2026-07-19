@@ -57,6 +57,7 @@ type Process struct {
 	done      chan struct{} // closed once the child is reaped and OnClose has run
 	reapOnce  sync.Once
 	closeOnce sync.Once
+	closeErr  error // teardown result, published by closeOnce
 }
 
 // Start spawns the configured child in a new PTY and starts pumping output.
@@ -183,8 +184,13 @@ func (p *Process) Pid() int {
 // Handler's OnClose callback has returned.
 func (p *Process) Done() <-chan struct{} { return p.done }
 
-// Close tears down the whole process group and closes the PTY. It is
-// idempotent and safe to call from a cleanup hook even after the child exited.
+// Close tears down the whole process tree and closes the PTY. It is idempotent
+// and safe to call from a cleanup hook even after the child exited.
+//
+// It returns a non-nil error when something the child spawned was still running
+// after SIGKILL. That is a leak the caller needs to know about: a test that
+// ignores it hands the next test a machine with stray processes on it, which is
+// how a suite ends up flooding a workstation.
 func (p *Process) Close() error {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
@@ -195,14 +201,19 @@ func (p *Process) Close() error {
 		}
 		p.mu.Unlock()
 
+		// Only signal while the child is unreaped. Once it has been waited for,
+		// the kernel may have recycled its pid, and signalling a recycled pid
+		// would tear down an unrelated process group. Descendants of an
+		// already-exited child are therefore left alone; they are orphans the
+		// harness can no longer identify safely.
 		if !exited && pid > 0 {
-			terminateGroup(pid, p.done)
+			p.closeErr = terminateGroup(pid, p.done)
 		}
-		// Close the PTY only after the process group is gone, so the pump
+		// Close the PTY only after the process tree is gone, so the pump
 		// goroutine is not left spinning on a half-open descriptor.
 		_ = p.pty.Close()
 	})
-	return nil
+	return p.closeErr
 }
 
 // Probe reports whether a pseudo-terminal can be allocated at all, by opening

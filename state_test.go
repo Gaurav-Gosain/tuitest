@@ -17,17 +17,23 @@ import (
 var (
 	buggyOnce sync.Once
 	buggyPath string
-	buggyErr  error
+	// buggyDir is the temp directory holding the built fixture. TestMain
+	// removes it after the run; without that the directory was never deleted by
+	// anything and every invocation of this package leaked a copy of the
+	// binary, which is how a /tmp fills up.
+	buggyDir string
+	buggyErr error
 )
 
 func buggyBinary(t *testing.T) string {
 	t.Helper()
 	buggyOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "tuitest-state-fixture-")
+		dir, err := os.MkdirTemp("", stateFixturePrefix)
 		if err != nil {
 			buggyErr = err
 			return
 		}
+		buggyDir = dir
 		buggyPath = filepath.Join(dir, "buggytui")
 		build := exec.Command("go", "build", "-o", buggyPath, "./testdata/buggytui")
 		build.Stderr = os.Stderr
