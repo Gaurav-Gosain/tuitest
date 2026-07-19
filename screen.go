@@ -66,11 +66,16 @@ type Cell struct {
 	// Fg and Bg are the foreground and background colors.
 	Fg, Bg        Color
 	Bold          bool
+	Faint         bool
 	Italic        bool
 	Underline     bool
 	Reverse       bool
 	Strikethrough bool
 	Blink         bool
+	// Conceal reports SGR 8 (hidden). A real terminal draws a concealed cell as
+	// a blank, so Line and Text render these cells as spaces; the rune is still
+	// available here for a caller that needs to know what was concealed.
+	Conceal bool
 }
 
 func toColor(c color.Color) Color {
@@ -104,6 +109,8 @@ func toCell(c *uv.Cell) Cell {
 	out.Fg = toColor(st.Fg)
 	out.Bg = toColor(st.Bg)
 	out.Bold = st.Attrs&uv.AttrBold != 0
+	out.Faint = st.Attrs&uv.AttrFaint != 0
+	out.Conceal = st.Attrs&uv.AttrConceal != 0
 	out.Italic = st.Attrs&uv.AttrItalic != 0
 	out.Reverse = st.Attrs&uv.AttrReverse != 0
 	out.Strikethrough = st.Attrs&uv.AttrStrikethrough != 0
@@ -145,6 +152,14 @@ func (s *screenSnapshot) Line(row int) string {
 		c := s.cells[row][col]
 		if c.Width == 0 {
 			// Continuation column of a wide rune; already emitted.
+			continue
+		}
+		if c.Conceal {
+			// SGR 8: a real terminal paints the cell blank, so reporting the
+			// rune here would let a wait match text no user can see. One space
+			// per non-continuation cell keeps a concealed line exactly as long
+			// as the same line unconcealed.
+			b.WriteByte(' ')
 			continue
 		}
 		b.WriteRune(c.Rune)

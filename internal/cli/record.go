@@ -162,10 +162,10 @@ examples:
 				return ExitHarness
 			}
 		}
-		if n := rec.Dropped(); n > 0 {
-			fmt.Fprintf(env.Stderr,
-				"tuitest: warning: dropped %d input sequence(s) with no tape equivalent (mouse or paste); the tape is not a complete replay\n", n)
-		}
+		// There is deliberately no "dropped sequences" warning here any
+		// more. Input that no protocol decodes is captured verbatim as a
+		// Raw command rather than discarded, so a recording is always a
+		// complete replay and the warning could only ever have said zero.
 		return ExitOK
 	}
 	return c

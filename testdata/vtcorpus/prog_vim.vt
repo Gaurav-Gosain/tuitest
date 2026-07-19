@@ -1,0 +1,20 @@
+[?1049h[22;0;0t[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H"/etc/services" [readonly] 11533L, 299955B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]10;?]11;?[1;1H# Full data: /usr/share/iana-etc/port-numbers.iana[2;1H[K[3;1Htcpmux              1/tcp[3;26H[K[4;1Htcpmux[14C1/udp
+rje[17C5/tcp
+rje[17C5/udp
+echo[16C7/tcp
+echo[16C7/udp
+discard[13C9/tcp
+discard[13C9/udp
+discard[13C9/sctp
+discard[13C9/dccp
+systat[13C11/tcp
+systat[13C11/udp
+daytime[12C13/tcp
+daytime[12C13/udp
+qotd[15C17/tcp
+qotd[15C17/udp
+chargen[12C19/tcp
+chargen[12C19/udp
+ftp-data[11C20/tcp
+ftp-data[11C20/udp
+ftp-data[11C20/sctp[24;63H1,1[11CTop[?25h[1;1H[?4m

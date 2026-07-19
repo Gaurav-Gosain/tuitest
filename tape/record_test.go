@@ -184,3 +184,95 @@ func TestRecorderHeader(t *testing.T) {
 		t.Errorf("header:\n got: %q\nwant: %q", got, want)
 	}
 }
+
+// TestRecorderKeepsTerminalReplies is the reported defect at the surface it was
+// reported on. Recording a session against tuios produced a tape whose first
+// three commands were a kitty graphics capability reply misread as keystrokes,
+// and a warning that nine sequences had been dropped outright.
+//
+// The recorder must keep every sequence, and must not turn a reply into keys.
+func TestRecorderKeepsTerminalReplies(t *testing.T) {
+	// A capability reply, a device attributes reply, a mouse report and a
+	// bracketed paste, interleaved with real typing.
+	chunks := [][]byte{
+		[]byte("\x1b_Gi=1;OK\x1b\\"),
+		[]byte("ls"),
+		[]byte("\x1b[?62;1;6c"),
+		[]byte("\x1b[<0;10;20M"),
+		[]byte("\r"),
+	}
+
+	r := NewRecorder()
+	for _, c := range chunks {
+		r.Input(c)
+	}
+	r.flushInput()
+	cmds := r.Commands()
+
+	// Nothing that is not keyboard input may appear as keyboard input.
+	var typed strings.Builder
+	for _, c := range cmds {
+		switch c.Kind {
+		case KindType:
+			typed.WriteString(c.Text)
+		case KindKey:
+			for _, k := range c.Keys {
+				if strings.HasPrefix(k, "Alt+") {
+					t.Errorf("a terminal reply was recorded as %q", k)
+				}
+			}
+		}
+	}
+	if typed.String() != "ls" {
+		t.Errorf("typed text = %q, want %q", typed.String(), "ls")
+	}
+
+	// And the session as a whole replays byte for byte.
+	var want strings.Builder
+	for _, c := range chunks {
+		want.Write(c)
+	}
+	got, err := encodeCommands(cmds)
+	if err != nil {
+		t.Fatalf("re-encode: %v", err)
+	}
+	if string(got) != want.String() {
+		t.Errorf("recording is not a faithful replay\n got: %q\nwant: %q\ntape:\n%s",
+			got, want.String(), strings.TrimRight(Sprint(cmds), "\n"))
+	}
+}
+
+// TestRecorderResolvesHeldEscapeAtSettle covers the seam the read-boundary fix
+// introduced. The decoder can no longer decide a lone ESC when it arrives,
+// because at a read boundary it is equally the Esc key and the first byte of an
+// arrow key, so it holds. A settle point is where that ambiguity is genuinely
+// decidable, and the Esc must appear there rather than being deferred to the
+// end of the recording, where it would land out of order.
+func TestRecorderResolvesHeldEscapeAtSettle(t *testing.T) {
+	r := NewRecorder()
+	r.Input([]byte("\x1b"))
+	r.Settle("menu", "menu closed", 0)
+	r.Input([]byte("x"))
+
+	got := recorded(r)
+	want := "Key Esc\nWait /menu\\s+closed/\nType x"
+	if got != want {
+		t.Errorf("held Esc did not settle in order:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestRecorderKeepsArrowKeySplitByARead is the recording-level view of the same
+// fix: the kernel may end a read anywhere, including between the ESC and the
+// rest of an arrow key, and the tape must not turn that into an Esc keypress
+// followed by literal text.
+func TestRecorderKeepsArrowKeySplitByARead(t *testing.T) {
+	r := NewRecorder()
+	r.Input([]byte("\x1b"))
+	r.Input([]byte("[A"))
+
+	got := recorded(r)
+	want := "Key Up"
+	if got != want {
+		t.Errorf("arrow key split across reads was corrupted:\n got: %q\nwant: %q", got, want)
+	}
+}

@@ -58,20 +58,32 @@ func TestColorSpec(t *testing.T) {
 
 func TestMouseEncodeSGR(t *testing.T) {
 	ev := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MousePress}
-	if got := ev.encodeSGR(); got != "\x1b[<0;5;10M" {
-		t.Errorf("press = %q", got)
+	if got, ok := ev.EncodeSGR(); !ok || got != "\x1b[<0;5;10M" {
+		t.Errorf("press = %q, %v", got, ok)
 	}
 	rel := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MouseRelease}
-	if got := rel.encodeSGR(); got != "\x1b[<0;5;10m" {
-		t.Errorf("release = %q", got)
+	if got, ok := rel.EncodeSGR(); !ok || got != "\x1b[<0;5;10m" {
+		t.Errorf("release = %q, %v", got, ok)
 	}
 	wheel := MouseEvent{Col: 0, Row: 0, Button: MouseWheelUp, Action: MousePress, Mods: ModCtrl}
-	if got := wheel.encodeSGR(); got != "\x1b[<80;1;1M" {
-		t.Errorf("wheel+ctrl = %q, want \\x1b[<80;1;1M", got)
+	if got, ok := wheel.EncodeSGR(); !ok || got != "\x1b[<80;1;1M" {
+		t.Errorf("wheel+ctrl = %q, %v, want \\x1b[<80;1;1M", got, ok)
+	}
+	drag := MouseEvent{Col: 4, Row: 9, Button: MouseLeft, Action: MouseDrag}
+	if got, ok := drag.EncodeSGR(); !ok || got != "\x1b[<32;5;10M" {
+		t.Errorf("drag = %q, %v, want \\x1b[<32;5;10M", got, ok)
+	}
+	move := MouseEvent{Col: 4, Row: 9, Button: MouseNone, Action: MouseMove}
+	if got, ok := move.EncodeSGR(); !ok || got != "\x1b[<35;5;10M" {
+		t.Errorf("move = %q, %v, want \\x1b[<35;5;10M", got, ok)
 	}
 }
 
 func TestBuildEnvHermetic(t *testing.T) {
+	// Set the variable the hermetic environment must not carry. Asserting the
+	// absence of something nothing ever set passes whether or not the hermetic
+	// default works, which is how a broken build could keep this test green.
+	t.Setenv("TUIOS_SESSION", "leaked-from-the-parent")
 	c := defaultConfig()
 	c.term = "dumb"
 	c.trueColor = true
@@ -135,6 +147,62 @@ func TestStyledEncode(t *testing.T) {
 	want := "Hi!\n    0-2 b\nok"
 	if got != want {
 		t.Errorf("styledEncode =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// Concealed text (SGR 8) is drawn blank by a real terminal, so the plain
+// screen must not report it. Reporting it lets WaitForText match a string no
+// user can see, which is an assertion passing on a screen that does not exist.
+// Verified to fail: dropping the Conceal branch from Line makes this report
+// "secret" instead of blanks.
+func TestConcealedCellsAreBlankInPlainText(t *testing.T) {
+	snap := &screenSnapshot{
+		cols: 6, rows: 1,
+		cells: [][]Cell{{
+			{Rune: 'o', Width: 1},
+			{Rune: 'k', Width: 1},
+			{Rune: 's', Width: 1, Conceal: true},
+			{Rune: 'e', Width: 1, Conceal: true},
+			{Rune: 'c', Width: 1, Conceal: true},
+			{Rune: '!', Width: 1},
+		}},
+	}
+	got := snap.Text()
+	want := "ok   !"
+	if got != want {
+		t.Errorf("Text() = %q, want %q (concealed cells must render blank)", got, want)
+	}
+}
+
+// Faint and conceal must reach the styled encoding, or a golden cannot tell a
+// hidden or dimmed run from a normal one and blesses the difference away.
+// Verified to fail: removing the Faint and Conceal tokens from cellAttrs makes
+// both encodings collapse to the plain "abc".
+func TestStyledEncodeDistinguishesFaintAndConceal(t *testing.T) {
+	row := func(mut func(*Cell)) [][]Cell {
+		cells := []Cell{
+			{Rune: 'a', Width: 1}, {Rune: 'b', Width: 1}, {Rune: 'c', Width: 1},
+		}
+		for i := range cells {
+			mut(&cells[i])
+		}
+		return [][]Cell{cells}
+	}
+	plain := styledEncode(&screenSnapshot{cols: 3, rows: 1, cells: row(func(*Cell) {})})
+	faint := styledEncode(&screenSnapshot{cols: 3, rows: 1, cells: row(func(c *Cell) { c.Faint = true })})
+	conceal := styledEncode(&screenSnapshot{cols: 3, rows: 1, cells: row(func(c *Cell) { c.Conceal = true })})
+
+	if faint == plain {
+		t.Errorf("faint encodes identically to plain (%q)", plain)
+	}
+	if conceal == plain {
+		t.Errorf("conceal encodes identically to plain (%q)", plain)
+	}
+	if !strings.Contains(faint, "0-2 f") {
+		t.Errorf("faint run missing from %q", faint)
+	}
+	if !strings.Contains(conceal, "0-2 c") {
+		t.Errorf("conceal run missing from %q", conceal)
 	}
 }
 

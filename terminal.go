@@ -176,7 +176,14 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 	if err != nil {
 		tb.Fatalf("tuitest: spawn %v: %v", argv, err)
 	}
-	tb.Cleanup(func() { _ = term.Close() })
+	tb.Cleanup(func() {
+		// A teardown that could not kill everything the program spawned fails
+		// the test. Swallowing it here is how a suite leaks processes quietly
+		// until the machine it runs on is full of them.
+		if err := term.Close(); err != nil {
+			tb.Errorf("tuitest: %v", err)
+		}
+	})
 	return term
 }
 

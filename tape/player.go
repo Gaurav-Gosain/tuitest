@@ -132,7 +132,7 @@ func (p *Player) Exec(c Command) error {
 	case KindType:
 		return p.needTerm(func() error { return p.tt.Type(c.Text) })
 	case KindKey:
-		return p.needTerm(func() error { return p.sendKeys(c.Keys) })
+		return p.needTerm(func() error { return p.sendKey(c) })
 	case KindWait:
 		return p.needTerm(func() error {
 			if !c.HasRegex {
@@ -166,6 +166,14 @@ func (p *Player) Exec(c Command) error {
 		return p.needTerm(func() error { return p.tt.Paste(c.Text) })
 	case KindRaw:
 		return p.needTerm(func() error { return p.tt.Type(c.Text) })
+	case KindFocus:
+		return p.needTerm(func() error {
+			b, ok := wireBytes(c, Modes{})
+			if !ok {
+				return fmt.Errorf("focus command has no wire encoding")
+			}
+			return p.tt.Type(string(b))
+		})
 	case KindHide:
 		p.hidden = true
 		return nil
@@ -265,16 +273,17 @@ func (p *Player) spawn(c Command) error {
 	return nil
 }
 
-func (p *Player) sendKeys(tokens []string) error {
-	items := make([]any, 0, len(tokens))
-	for _, tok := range tokens {
-		k, err := ResolveKey(tok)
-		if err != nil {
-			return err
-		}
-		items = append(items, k)
+// sendKey renders a Key command through the protocol registry and writes the
+// bytes. Going through the registry rather than resolving each token
+// individually is what lets a Key line carry attributes such as +Release: those
+// belong to the whole keypress, and only a protocol that understands them can
+// encode them.
+func (p *Player) sendKey(c Command) error {
+	b, err := encodeCommand(c, Protocols())
+	if err != nil {
+		return err
 	}
-	return p.tt.SendKeys(items...)
+	return p.tt.SendKeys(tuitest.Key(b))
 }
 
 func (p *Player) timeout(c Command) time.Duration {

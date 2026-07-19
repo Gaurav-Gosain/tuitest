@@ -36,6 +36,36 @@ terminal (or worse, the other way round). Nothing in the compiler notices.
   automatically. An emulator change can move goldens, and that has to be
   reviewed rather than merged blind.
 
+## Outstanding fixes to port upstream
+
+The rule above says fixes go to tuios first. These went in here first, because
+they were found by differential testing that lives in tuitest (see
+`scripts/vtref/`), and they all exist in tuios's `internal/vt` at commit
+59ce093 as well. **Port each of them to tuios and then re-sync**; until that
+happens the next sync will report them as drift and reintroduce the bugs.
+
+- `handlers.go`: SO and SI were registered inside the loop over C1 controls
+  (0x80-0x9F), so the handlers for these two C0 controls (0x0E, 0x0F) were
+  never installed and locking-shift line drawing printed raw ASCII.
+- `utf8.go`: a wide rune printed with fewer than two columns left was written
+  at the last column, where the buffer refused it and blanked the wide rune to
+  its left, losing two characters off the end of every CJK or emoji line.
+- `utf8.go`: insert mode (IRM) was tracked as a mode but never consulted when
+  printing, so insertions overwrote instead of shifting the line right.
+- `handlers.go`: ED 1 erased the whole cursor row instead of stopping at the
+  cursor; ED 3 cleared the visible screen when it should only drop scrollback.
+- `handlers.go`: DECSED and DECSEL (`CSI ? Ps J` / `CSI ? Ps K`) were
+  unregistered and so silently did nothing.
+- `handlers.go`: `CSI u` (SCORC) was missing although `CSI s` (SCOSC) saved.
+- `handlers.go`, `cc.go`: `ESC E` (NEL), `ESC N` (SS2), `ESC O` (SS3) and
+  `ESC # 8` (DECALN) had no handlers.
+- `handlers.go`: `CSI j` (HPB) and `CSI k` (VPB) had no handlers.
+- `csi_mode.go`: private mode 47, the original alternate screen and still
+  smcup in older terminfo entries, was unhandled.
+
+Known divergences left alone deliberately are listed in
+`scripts/vtref/README.md`.
+
 ## Syncing
 
 ```

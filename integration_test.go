@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +15,19 @@ import (
 
 var echoBin string
 
+const (
+	echoFixturePrefix  = "tuitest-fixture-"
+	stateFixturePrefix = "tuitest-state-fixture-"
+)
+
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "tuitest-fixture-")
+	// A run killed by a timeout or a panic never reaches the cleanup below, so
+	// sweep what earlier runs left behind first. Only directories older than an
+	// hour go, so a concurrent run of this package keeps its own fixture.
+	sweepStaleFixtures(echoFixturePrefix, time.Hour)
+	sweepStaleFixtures(stateFixturePrefix, time.Hour)
+
+	dir, err := os.MkdirTemp("", echoFixturePrefix)
 	if err != nil {
 		panic(err)
 	}
@@ -27,7 +39,31 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	// The buggytui fixture is built lazily by the tests that need it, so its
+	// directory is only set when one of them ran.
+	if buggyDir != "" {
+		_ = os.RemoveAll(buggyDir)
+	}
 	os.Exit(code)
+}
+
+// sweepStaleFixtures removes temp directories with the given prefix that are
+// older than maxAge, bounding what a crashed run can leave behind.
+func sweepStaleFixtures(prefix string, maxAge time.Duration) {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < maxAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
+	}
 }
 
 func startEcho(t *testing.T, opts ...tuitest.Option) *tuitest.Terminal {
@@ -163,6 +199,14 @@ func TestTimeoutErrorHasScreen(t *testing.T) {
 	}
 	if !contains(te.Screen, "ECHOTUI") {
 		t.Fatalf("timeout error screen dump missing banner:\n%s", te.Screen)
+	}
+	// The mirrored I/O tail is the other half of what makes a timeout report
+	// actionable, and nothing else asserted that it is ever populated.
+	if !contains(te.TailLog, "ECHOTUI") {
+		t.Errorf("timeout error is missing the mirrored I/O tail:\n%q", te.TailLog)
+	}
+	if !contains(err.Error(), "last I/O") {
+		t.Errorf("timeout message does not include the I/O section:\n%s", err)
 	}
 	if !errors.Is(err, tuitest.ErrTimeout) {
 		t.Errorf("errors.Is(err, ErrTimeout) = false for %v", err)

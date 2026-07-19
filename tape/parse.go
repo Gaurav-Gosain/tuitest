@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,12 @@ const (
 	// KindWaitOutput blocks until the child writes anything, bounded by its
 	// timeout. Unlike WaitStable it cannot pass without the child reacting.
 	KindWaitOutput
+	// KindFocus sends a focus-in or focus-out report (mode 1004).
+	KindFocus
+
+	// kindCount is the number of command kinds, so the tables derived from
+	// them can be built by iteration rather than written out a second time.
+	kindCount
 )
 
 // Verb returns the canonical spelling of the command verb, the one Print emits.
@@ -106,6 +113,8 @@ func (k Kind) Verb() string {
 		return "Raw"
 	case KindWaitOutput:
 		return "WaitOutput"
+	case KindFocus:
+		return "Focus"
 	default:
 		return ""
 	}
@@ -136,6 +145,18 @@ type Command struct {
 
 	// Key
 	Keys []string
+	// KeyAttrs carries what the richer keyboard protocols report beyond the
+	// chord itself: the event type, the shifted and base layouts of the
+	// physical key, and the text the key would insert. A Key line with
+	// attributes names exactly one key, so an attribute is never ambiguous
+	// about which key it qualifies.
+	KeyAttrs KeyAttrs
+
+	// Modes records the terminal state in force when this command was
+	// decoded. The same bytes mean different keys under different negotiated
+	// modes, so re-encoding a recorded command needs the context it was
+	// recorded under rather than whatever is current.
+	Modes Modes
 
 	// Wait / Expect
 	Regex      *regexp.Regexp
@@ -159,6 +180,9 @@ type Command struct {
 
 	// Mouse
 	Mouse tuitest.MouseEvent
+
+	// Focus
+	FocusIn bool
 
 	// Paste / Raw carry their payload in Text.
 }
@@ -339,8 +363,12 @@ func parseLine(raw string) (Command, *ParseError) {
 			return c, perr(verb.col, "Key needs at least one key name")
 		}
 		c.Kind = KindKey
-		c.Keys = texts(rest)
-		return c, validateKeys(rest)
+		keys, attrs, err := parseKeyLine(rest)
+		if err != nil {
+			return c, err
+		}
+		c.Keys, c.KeyAttrs = texts(keys), attrs
+		return c, validateKeys(keys)
 
 	case "Wait":
 		// "Wait Stable" is the spelled-out spelling of WaitStable; the rest of
@@ -443,7 +471,28 @@ func parseLine(raw string) (Command, *ParseError) {
 		if pe != nil {
 			return c, pe
 		}
+		// A paste payload containing a bracketed-paste marker would end the
+		// paste early on the wire, leaving the rest to be read as typed input.
+		// That is the paste-injection problem bracketed paste exists to
+		// prevent, so it is rejected here rather than sent.
+		if c.Kind == KindPaste && !PasteTextIsSafe(text) {
+			return c, perr(verb.col, "Paste text contains a bracketed-paste marker, which would end the paste early; use Raw to send those bytes deliberately")
+		}
 		c.Text = text
+		return c, nil
+
+	case "Focus":
+		if len(rest) != 1 {
+			return c, perr(verb.col, "Focus needs a direction (In or Out)")
+		}
+		switch rest[0].text {
+		case "In":
+			c.Kind, c.FocusIn = KindFocus, true
+		case "Out":
+			c.Kind, c.FocusIn = KindFocus, false
+		default:
+			return c, perr(rest[0].col, "unknown focus direction %q (want In or Out)", rest[0].text)
+		}
 		return c, nil
 
 	case "Hide":
@@ -475,32 +524,56 @@ func parseLine(raw string) (Command, *ParseError) {
 }
 
 // verbs lists every spelling parseLine accepts, for the did-you-mean hint. It
-// includes "Stable", which is only valid as the argument of Wait, because
-// "Stable" alone on a line is a plausible thing to write by mistake.
-func verbs() []string {
-	return []string{
-		"Set", "Spawn", "Type", "Key", "Wait", "WaitStable", "WaitOutput",
-		"WaitPrompt", "WaitCommand", "Expect", "ExpectExit", "Snapshot",
-		"Resize", "Mouse", "Paste", "Raw", "Hide", "Show", "Sleep",
+// is derived from Kind.Verb() rather than written out again, so a command
+// cannot be added to the language and then be missing from the suggestions.
+var verbs = func() []string {
+	out := make([]string, 0, kindCount)
+	for k := Kind(0); k < kindCount; k++ {
+		if v := k.Verb(); v != "" {
+			out = append(out, v)
+		}
 	}
-}
+	return out
+}()
 
-// suggestVerb finds the verb closest to an unrecognised one. Tape verbs are
-// capitalised, so the comparison is case-insensitive: "spawn" and "Spwan"
-// should both point at "Spawn".
-func suggestVerb(name string) (string, bool) {
-	lower := strings.ToLower(name)
-	lowered := make([]string, len(verbs()))
-	for i, v := range verbs() {
-		lowered[i] = strings.ToLower(v)
+// verbAliases maps a token that is not a command to the command a reader who
+// wrote it probably wanted. "Stable" is only meaningful as the argument of
+// Wait, and writing it alone on a line is a plausible mistake, so it earns a
+// hint rather than a bare "unknown command".
+var verbAliases = map[string]string{"Stable": "WaitStable"}
+
+// suggestCandidates is what a misspelling is measured against: the real verbs
+// plus the aliases, all lowercased, since tape verbs are capitalised and
+// "spawn" and "Spwan" should both find "Spawn".
+var suggestCandidates = func() []string {
+	out := make([]string, 0, len(verbs)+len(verbAliases))
+	for _, v := range verbs {
+		out = append(out, strings.ToLower(v))
 	}
-	best, ok := textdist.Closest(lower, lowered)
+	for a := range verbAliases {
+		out = append(out, strings.ToLower(a))
+	}
+	sort.Strings(out)
+	return out
+}()
+
+// suggestVerb finds the command closest to an unrecognised token, resolving
+// aliases so the hint names something the reader can actually write. It reports
+// no suggestion when the closest match is the token itself, since telling a
+// reader to write what they already wrote explains nothing.
+func suggestVerb(name string) (string, bool) {
+	best, ok := textdist.Closest(strings.ToLower(name), suggestCandidates)
 	if !ok {
 		return "", false
 	}
-	for _, v := range verbs() {
+	for _, v := range verbs {
 		if strings.EqualFold(v, best) {
-			return v, true
+			return v, v != name
+		}
+	}
+	for alias, target := range verbAliases {
+		if strings.EqualFold(alias, best) {
+			return target, true
 		}
 	}
 	return "", false
@@ -549,17 +622,32 @@ func parseQuoted(verb token, tail string, tailCol int) (string, *ParseError) {
 func Quote(s string) string { return strconv.Quote(s) }
 
 var mouseButtons = map[string]tuitest.MouseButton{
-	"Left":      tuitest.MouseLeft,
-	"Middle":    tuitest.MouseMiddle,
-	"Right":     tuitest.MouseRight,
-	"WheelUp":   tuitest.MouseWheelUp,
-	"WheelDown": tuitest.MouseWheelDown,
+	"Left":       tuitest.MouseLeft,
+	"Middle":     tuitest.MouseMiddle,
+	"Right":      tuitest.MouseRight,
+	"WheelUp":    tuitest.MouseWheelUp,
+	"WheelDown":  tuitest.MouseWheelDown,
+	"WheelLeft":  tuitest.MouseWheelLeft,
+	"WheelRight": tuitest.MouseWheelRight,
+	"Back":       tuitest.MouseBackward,
+	"Forward":    tuitest.MouseForward,
+	"None":       tuitest.MouseNone,
 }
 
 var mouseActions = map[string]tuitest.MouseAction{
 	"Press":   tuitest.MousePress,
 	"Release": tuitest.MouseRelease,
 	"Move":    tuitest.MouseMove,
+	"Drag":    tuitest.MouseDrag,
+}
+
+// mouseEncodings names the wire format a Mouse line replays in. SGR is the
+// default and is left unwritten, so an ordinary tape reads exactly as it did
+// before legacy encodings were supported.
+var mouseEncodings = map[string]tuitest.MouseEncoding{
+	"+X10":   tuitest.MouseX10,
+	"+Urxvt": tuitest.MouseURXVT,
+	"+SGR":   tuitest.MouseSGR,
 }
 
 // parseMouse reads "Mouse <Action> <Button> <col> <row> [+Ctrl +Alt +Shift]".
@@ -570,11 +658,11 @@ func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
 	}
 	action, ok := mouseActions[tokens[0].text]
 	if !ok {
-		return ev, perr(tokens[0].col, "unknown mouse action %q (want Press, Release, or Move)", tokens[0].text)
+		return ev, perr(tokens[0].col, "unknown mouse action %q (want Press, Release, Move, or Drag)", tokens[0].text)
 	}
 	button, ok := mouseButtons[tokens[1].text]
 	if !ok {
-		return ev, perr(tokens[1].col, "unknown mouse button %q (want Left, Middle, Right, WheelUp, or WheelDown)", tokens[1].text)
+		return ev, perr(tokens[1].col, "unknown mouse button %q (want Left, Middle, Right, None, WheelUp, WheelDown, WheelLeft, WheelRight, Back, or Forward)", tokens[1].text)
 	}
 	pos := [2]int{}
 	for i, what := range []string{"col", "row"} {
@@ -598,9 +686,21 @@ func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
 			ev.Mods |= tuitest.ModAlt
 		case "+Shift":
 			ev.Mods |= tuitest.ModShift
+		case "+Pixel":
+			ev.Pixel = true
 		default:
-			return ev, perr(tok.col, "unexpected token %q (want +Ctrl, +Alt, or +Shift)", tok.text)
+			enc, ok := mouseEncodings[tok.text]
+			if !ok {
+				return ev, perr(tok.col, "unexpected token %q (want +Ctrl, +Alt, +Shift, +Pixel, +X10, +Urxvt, or +SGR)", tok.text)
+			}
+			ev.Enc = enc
 		}
+	}
+	// A legacy encoding cannot say which button was released, so a tape that
+	// asks it to would replay as a report naming no button at all. Refusing is
+	// better than silently sending something the program reads differently.
+	if _, ok := ev.Encode(); !ok {
+		return ev, perr(verb.col, "Mouse %s %s has no representation in its wire encoding", tokens[0].text, tokens[1].text)
 	}
 	return ev, nil
 }

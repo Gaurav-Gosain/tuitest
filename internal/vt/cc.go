@@ -34,6 +34,15 @@ func (e *Emulator) index() {
 	e.atPhantom = false
 }
 
+// nextLine moves the cursor to the first column of the next line, scrolling if
+// the cursor is on the bottom margin. This performs the same function as
+// [ansi.NEL], which is an index followed by a carriage return regardless of
+// [ansi.LNM].
+func (e *Emulator) nextLine() {
+	e.index()
+	e.carriageReturn()
+}
+
 // horizontalTabSet sets a horizontal tab stop at the current cursor position.
 func (e *Emulator) horizontalTabSet() {
 	x, _ := e.scr.CursorPosition()

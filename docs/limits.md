@@ -106,16 +106,16 @@ and `tuitest doctor` reports it as supported, but the public interface exposes
 only the visible grid. A test that needs to assert on scrolled-off content has
 to capture it as it passes.
 
-**`SendMouse` only speaks SGR (mode 1006).** The older X10 and UTF-8 mouse
-encodings are not emitted, so a program that enables only those will not see the
-events.
+**`SendMouse` emits SGR (mode 1006).** A `Mouse` line recorded from an X10 or
+urxvt report carries the encoding it was recorded with and replays in that
+encoding, but a `Mouse` line written by hand is sent as SGR, so a program that
+enables only the older encodings will not see it.
 
-**`tuitest record` captures keys, resizes and timing, not mouse input.** The
-grammar has a `Mouse` verb and the player sends mouse events, but the recorder
-does not decode incoming mouse reports back into it. Those reports reach the
-program under test and are then counted and dropped from the tape, and recording
-warns when it happens, since the result is not a complete replay of what you
-did.
+**Mouse mode 1005 is decoded as X10.** The UTF-8 mouse encoding is
+indistinguishable from X10 without knowing the mode, so its reports are read as
+X10 and the coordinates written on the `Mouse` line are wrong above column 95.
+The bytes are still captured and replayed exactly, so the recording is faithful
+even where the line is not readable.
 
 **A recorded `Enter` may appear as `Ctrl+j`.** In raw mode a terminal sends 0x0d
 for Enter and the recorder names that `Enter`. Some pipes deliver 0x0a instead,

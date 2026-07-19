@@ -17,7 +17,7 @@ ExpectExit 0
 
 ## Verbs
 
-There are 19, and `Kind.Verb()` in [`tape/parse.go`](../tape/parse.go) is the
+There are 20, and `Kind.Verb()` in [`tape/parse.go`](../tape/parse.go) is the
 authoritative list.
 
 | Verb | Argument shape | Effect |
@@ -35,9 +35,10 @@ authoritative list.
 | `ExpectExit` | `code` | Wait for exit and assert the status. |
 | `Snapshot` | `name [+Styled]` | Compare the screen against a golden file. |
 | `Resize` | `cols rows` | Change the terminal size mid-tape. |
-| `Mouse` | `action button col row [+mods]` | Send one SGR mouse event. |
+| `Mouse` | `action button col row [+mods] [+enc]` | Send one mouse event. |
 | `Paste` | Go-quoted string | Send text wrapped in bracketed-paste markers. |
 | `Raw` | Go-quoted string | Write bytes to the child with no interpretation. |
+| `Focus` | `In` or `Out` | Send a focus reporting event (mode 1004). |
 | `Hide` | | Make subsequent `Snapshot` commands no-ops. |
 | `Show` | | Undo `Hide`. |
 | `Sleep` | duration | Sleep. Rejected under `-strict`. |
@@ -89,12 +90,40 @@ of `Mod+Base`:
 - Named: `Enter` (or `Return`), `Tab`, `Esc` (or `Escape`), `Space`,
   `Backspace`, `Delete`, `Insert`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
   `PageUp`, `PageDown`, and `F1` through `F12`.
-- Modifiers: `Ctrl` (or `C`), `Alt` (or `M`), `Shift` (or `S`). `Ctrl+` requires
-  a single character base; `Shift+` only has an effect on a lowercase letter.
+- Modifiers: `Ctrl` (or `C`), `Alt` (or `M`), `Shift` (or `S`), `Super`,
+  `Hyper` and `Meta`. `Shift+` only has an effect on a lowercase letter.
 - Anything else that is exactly one rune is sent as itself, so `Key %` works.
+  A token ending in `+` names `+` itself, so `Key +` and `Key Alt++` both work.
 
 An unknown key name is a parse error with the column of the offending token, not
-a silent no-op at run time.
+a silent no-op at run time. So is a chord with no faithful encoding: `Ctrl++`
+would have to send `0x0b`, which reads back as `Ctrl+k`, so it is rejected under
+the legacy encoding rather than silently changing the key.
+
+### Key attributes
+
+A key reported by the kitty keyboard protocol can carry detail the legacy
+encoding cannot express, written as trailing attributes:
+
+```
+Key a +Release
+Key a +Repeat
+Key a +Shifted A +Base a
+Key a +Text "á"
+```
+
+`+Press`, `+Repeat` and `+Release` are the event type; `+Shifted` and `+Base`
+are the key's alternate layouts; `+Text` is the text the keypress inserts, which
+differs from the key itself for dead keys and input methods.
+
+An attribute is a whitespace-separated token beginning with `+`, which cannot be
+confused with a modifier because a modifier joins its key without spaces
+(`Ctrl+b` is one token). A `Key` line carrying attributes names exactly one key,
+so an attribute is never ambiguous about which keypress it qualifies.
+
+See [input-protocols.md](input-protocols.md) for which encodings these map to,
+the round-trip guarantees, and what happens when a tape is replayed against a
+program that negotiates different keyboard modes than the recording did.
 
 ## Mouse
 
@@ -104,11 +133,32 @@ Mouse Release Left 10 5
 Mouse Move Left 12 5
 ```
 
-The action is `Press`, `Release` or `Move`; the button is `Left`, `Middle`,
-`Right`, `WheelUp` or `WheelDown`; the coordinates are zero-based cells, encoded
-1-based on the wire. `+Ctrl`, `+Alt` and `+Shift` are optional and repeatable.
-The event is sent as an SGR (mode 1006) sequence unconditionally, so a program
-that never enabled mouse reporting will not react to it.
+The action is `Press`, `Release`, `Move` or `Drag`. `Move` is motion with
+nothing held and `Drag` is motion with a button held; on the wire both set the
+same motion bit, and they are told apart by whether a button is named.
+
+The button is `Left`, `Middle`, `Right`, `WheelUp`, `WheelDown`, `WheelLeft`,
+`WheelRight`, `Backward`, `Forward` or `None`. The coordinates are zero-based
+cells, encoded 1-based on the wire. `+Ctrl`, `+Alt` and `+Shift` are optional
+and repeatable.
+
+The event is sent as an SGR (mode 1006) sequence by default, so a program that
+never enabled mouse reporting will not react to it. A recording preserves the
+encoding the terminal actually used, which is written as `+X10` or `+Urxvt`
+where it was not SGR, and `+Pixel` for SGR-pixel (mode 1016) reports whose
+coordinates are pixels rather than cells. Replaying sends the encoding named on
+the line rather than re-encoding, so a tape sends the program the same shape of
+report it saw when the tape was recorded.
+
+## Focus
+
+```
+Focus In
+Focus Out
+```
+
+Sends a focus reporting event, `CSI I` or `CSI O` (mode 1004). A program that
+did not enable focus reporting will not react to it.
 
 ## Paste and Raw
 

@@ -1,0 +1,24 @@
+[?1049h[22;0;0t[24;1H[?1h=# Full data: /usr/share/iana-etc/port-numbers.iana
+
+tcpmux              1/tcp
+tcpmux              1/udp
+rje                 5/tcp
+rje                 5/udp
+echo                7/tcp
+echo                7/udp
+discard             9/tcp
+discard             9/udp
+discard             9/sctp
+discard             9/dccp
+systat             11/tcp
+systat             11/udp
+daytime            13/tcp
+daytime            13/udp
+qotd               17/tcp
+qotd               17/udp
+chargen            19/tcp
+chargen            19/udp
+ftp-data           20/tcp
+ftp-data           20/udp
+ftp-data           20/sctp
+[7m/etc/services[27m[K

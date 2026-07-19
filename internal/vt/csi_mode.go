@@ -81,8 +81,20 @@ func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
 	switch mode {
 	case ansi.ModeTextCursorEnable:
 		e.scr.setCursorHidden(!setting.IsSet())
-	case ansi.ModeAltScreen:
-		e.setAltScreenMode(setting.IsSet())
+	case ansi.DECMode(47), ansi.ModeAltScreen:
+		// 47 is the original alternate screen; older terminfo entries still use
+		// "\e[?47h" for smcup, and a terminal that ignores it draws the whole
+		// full-screen UI onto the primary screen and never puts the primary
+		// contents back. Neither 47 nor 1047 saves the cursor, so on the way
+		// back the cursor stays where the alternate screen left it rather than
+		// jumping to wherever the primary buffer was last written.
+		if !setting.IsSet() {
+			pos := e.scrs[1].cur.Position
+			e.setAltScreenMode(false)
+			e.scr.setCursor(pos.X, pos.Y, false)
+		} else {
+			e.setAltScreenMode(true)
+		}
 	case ansi.ModeSaveCursor:
 		if setting.IsSet() {
 			e.saveCursor()
