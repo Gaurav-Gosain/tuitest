@@ -8,6 +8,13 @@
 
 A headless testing harness for terminal programs in Go.
 
+<p align="center">
+  <img src="docs/images/hero.gif" alt="a tape drives lazygit through a pseudo-terminal while tuitest's command trace scrolls in the pane below: bursts of arrow keys walk the commit history and the diff redraws each time, Enter opens a commit and Escape leaves it, a mouse click and three wheel events move and scroll a panel, then tape is typed into the search field and n jumps to the next matching commit, and the run ends with an Expect assertion passing and the program exiting 0" width="100%">
+</p>
+<p align="center">
+  <sub>every keypress, click, scroll and assertion above is tuitest driving the real program, and the pane below it is tuitest's own trace of what it sent</sub>
+</p>
+
 You bring a terminal program, any language, any framework, and a tape script or
 a Go test function. tuitest gives back a real pseudo-terminal to run it on, a VT
 emulator that turns its output into a grid of cells, waits that block on screen
@@ -259,9 +266,9 @@ newer to install. Windows deliberately fails to build; see
 
 Every recording below drives the real binary against a real program: `less`
 paging this repository's README, `vim` opening a file from `scripts/`, and the
-deliberately broken fixture in `testdata/buggytui`. The tapes that produce them
-are in [scripts/demo](scripts/demo) and regenerate with
-`scripts/demo/record.sh`.
+deliberately broken fixture in `testdata/buggytui`. The recording at the top of
+this page drives `lazygit` the same way. The tapes that produce them are in
+[scripts/demo](scripts/demo) and regenerate with `scripts/demo/record.sh`.
 
 <table>
   <tr>

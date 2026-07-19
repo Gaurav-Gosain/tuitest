@@ -34,7 +34,7 @@ if [ ${#tapes[@]} -eq 0 ]; then
 	# recording is faithful and replays green; it just reads far worse than the
 	# tape language deserves. Ask for it by name to regenerate it, and put it in
 	# the README once consecutive printable input is coalesced.
-	tapes=(snap run fuzz)
+	tapes=(hero snap run fuzz)
 fi
 
 for name in "${tapes[@]}"; do
@@ -44,11 +44,22 @@ for name in "${tapes[@]}"; do
 	rm -rf .demo-corpus
 	vhs "scripts/demo/$name.tape"
 	rm -rf .demo-corpus
+
+	# vhs already emits frame-differenced GIFs with a tight palette, and for the
+	# recordings that are mostly still text a second pass only bands the glyphs.
+	# The hero is the exception: it repaints a whole diff pane on every keypress
+	# and lands near a megabyte, so it is requantised once. Twenty-four colours
+	# is where the size stops falling and is still pixel-identical to the source
+	# here, because the palette is sixteen terminal colours and a few blends.
+	if [ "$name" = hero ]; then
+		gif="docs/images/hero.gif"
+		ffmpeg -y -loglevel error -i "$gif" -filter_complex \
+			"fps=12,split[a][b];[a]palettegen=max_colors=24:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
+			"$gif.tmp.gif" && mv "$gif.tmp.gif" "$gif"
+	fi
 done
 
-# vhs already emits frame-differenced GIFs with a tight palette, so there is no
-# post-pass here; anything more aggressive visibly banded the text. Just report
-# the sizes, since the README budget is what actually matters.
+# Report the sizes, since the README budget is what actually matters.
 for name in "${tapes[@]}"; do
 	gif="docs/images/$name.gif"
 	[ -f "$gif" ] || continue
