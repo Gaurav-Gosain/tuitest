@@ -1,11 +1,44 @@
 package ptyproc
 
 import (
+	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// windowsMarker is the identifier ptyproc_windows.go leaves undefined so that a
+// Windows build fails with a message naming the reason.
+const windowsMarker = "tuitest_does_not_support_windows"
+
+// TestWindowsBuildFailsLoudly compiles this package for Windows and requires
+// that it does not build. The previous stubs compiled and then silently skipped
+// process-group teardown, which looks like support until a test leaks a daemon.
+// The build has to keep failing, and the failure has to name the reason.
+func TestWindowsBuildFailsLoudly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-compiling for another GOOS is slow")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+
+	// go build without -o writes no artifact, only cache entries.
+	cmd := exec.Command("go", "build", "github.com/Gaurav-Gosain/tuitest/internal/ptyproc")
+	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64")
+	out, err := cmd.CombinedOutput()
+
+	switch {
+	case err == nil:
+		t.Fatal("the package built for Windows; it must fail loudly instead of shipping stubs")
+	case strings.Contains(string(out), windowsMarker):
+		// The deliberate failure, naming itself.
+	default:
+		t.Skipf("Windows build failed for an unrelated reason (no module cache?):\n%s", out)
+	}
+}
 
 // TestDoneClosesAfterOnClose pins the ordering the exit-code path depends on:
 // a waiter woken by Done must never observe a receiver that has not yet been

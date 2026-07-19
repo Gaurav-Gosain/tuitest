@@ -13,8 +13,8 @@ works equally against a Bubble Tea app, a Rust or C TUI, vim, or a bare shell.
 ## Requirements
 
 - Go 1.25 or newer.
-- A Unix-like OS that can open PTYs (`/dev/ptmx`). Windows is not supported; see
-  Limitations.
+- A Unix-like OS that can open PTYs (`/dev/ptmx`). Windows is not supported and
+  deliberately fails to build; see Limitations.
 
 ## Installation
 
@@ -192,13 +192,37 @@ func (t *Terminal) WaitForText(substr string, timeout time.Duration) error
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error
 func (t *Terminal) WaitStable(timeout time.Duration) error
-func (t *Terminal) Wait(timeout time.Duration) (int, error)
+func (t *Terminal) WaitExit(timeout time.Duration) (int, error)
 ```
 
 `Scope` is `ScopeScreen` (the whole screen) or `ScopeLastLine` (the last
 non-blank row, useful for prompts). A wait that times out returns
 `*TimeoutError`; a wait whose child exits first returns `*ClosedError`. Both
 embed a screen dump and the recent I/O.
+
+Both unwrap to a sentinel, so the kind of failure is matchable without a type
+assertion:
+
+```go
+switch err := term.WaitForText("ready", 5*time.Second); {
+case errors.Is(err, tuitest.ErrTimeout):
+    // still running, just not there yet
+case errors.Is(err, tuitest.ErrChildExited):
+    // it died; err's message carries the exit code and the last screen
+}
+```
+
+The sentinels are `ErrTimeout`, `ErrChildExited`, and `ErrSemanticMarkers`, the
+last returned by the OSC 133 waits when `WithSemanticMarkers` was not passed.
+
+`WaitStable` measures its quiet window from the later of the last output byte
+and the last input tuitest sent, so calling it straight after `SendKeys` cannot
+report the pre-keystroke screen as stable. It remains a heuristic: a program
+that takes longer than the interval to produce its first byte is reported
+stable too early. Wait for the content you expect whenever you know it.
+
+`WaitExit` waits for process exit rather than for screen state. `Wait` is a
+deprecated alias for it.
 
 With `WithSemanticMarkers`, OSC 133 shell integration adds:
 
@@ -299,9 +323,13 @@ Commands: `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`, `WaitPrompt`,
 `WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`, `Hide`, `Show`, `Sleep`.
 
 `Set` accepts `Size cols rows`, `Term name`, `Env KEY=VALUE`, `WaitTimeout dur`
-and `StabilizeInterval dur`. The wait-like commands take an optional `/regex/`,
-a `+Screen` or `+Line` scope, and an `@timeout` such as `@5s`. `Type` preserves
-the literal spacing of the rest of its line. `Hide` makes subsequent `Snapshot`
+and `StabilizeInterval dur`. Durations must be positive and `Size` must be
+within 1..10000, since a tape is untrusted input to the CLI. The wait-like
+commands take an optional `/regex/`, a `+Screen` or `+Line` scope, and an
+`@timeout` such as `@5s`; the pattern runs from the first slash on the line to
+the last, so it may contain spaces and slashes. `Wait Stable` is a spelling of
+`WaitStable` and takes the same `@timeout`. `Type` preserves the literal
+spacing of the rest of its line. `Hide` makes subsequent `Snapshot`
 commands no-ops until `Show`, which is how you skip capture during setup steps.
 Golden files default to `./testdata`. Under `-strict`, `Sleep` is rejected,
 which is a useful way to keep a suite honest.
@@ -342,18 +370,26 @@ binary including a stress test that floods a pane while repeatedly resizing it.
 
 Known limitations, in rough order of how likely you are to hit them:
 
-- **Unix only.** There is no ConPTY backend. The Windows files are stubs that
-  keep the package compiling; process-group teardown does nothing there.
+- **Unix only, loudly.** There is no ConPTY backend, and no process group to
+  signal, so teardown could not keep its promise on Windows. The package
+  deliberately fails to compile there with a message naming the reason, rather
+  than building into something that looks supported and leaks every grandchild
+  it spawns. Use WSL or a Unix runner.
 - **`Screen.Line` returns one physical row.** A soft-wrapped logical line is not
   de-wrapped, so text that wrapped across the right margin will not match as a
   single string. Match per row, or use `Screen.Text` and account for the wrap.
-- **`WaitStable` can observe a pre-action frame.** Called immediately after
-  sending input, the quiet window can elapse before the program has reacted, and
-  it will report stability against the old screen. Wait for the expected content
-  with `WaitForText`, `WaitForMatch` or `WaitFor` instead; reach for `WaitStable`
-  only after heavy output where no specific end state is known.
+- **`WaitStable` is a heuristic.** The window is measured from the later of the
+  last output and the last input, so it can no longer return the pre-keystroke
+  screen, but a program that takes longer than the interval to produce its first
+  byte will still be reported stable early. Wait for the expected content with
+  `WaitForText`, `WaitForMatch` or `WaitFor` whenever you know it; reach for
+  `WaitStable` only after heavy output with no specific end state.
 - **The VT emulator is a vendored copy** of tuios's interpreter rather than an
-  external dependency, so it does not pick up upstream fixes automatically.
+  external dependency, so it does not pick up upstream fixes automatically. The
+  exact upstream commit is recorded in `internal/vt/UPSTREAM`, the policy is in
+  `internal/vt/VENDOR.md`, and `scripts/vendor-vt.sh -n /path/to/tuios` reports
+  drift without changing anything. Fixes go to tuios first; a change made only
+  in the copy is lost at the next sync.
 - **Emulator throughput is a few thousand lines per second.** A program that
   emits a very large burst will feel PTY backpressure. Size heavy-output tests
   accordingly rather than assuming an instant drain.
@@ -416,6 +452,21 @@ go test -race ./...
 
 The default suite is hermetic: it spawns a small Go echo-TUI fixture under
 `testdata/echotui` and a plain `sh`, and requires no tuios.
+
+Everything that parses input tuitest does not control has a fuzz target: the
+tape lexer and parser, the key-name resolver, the golden diff, the styled
+snapshot encoder, and the emulator behind the screen accessors. Their seed
+corpora live in `testdata/fuzz`, so `go test` runs them as ordinary unit tests
+and they act as regression guards with no fuzzing session. To actually fuzz:
+
+```
+go test -run '^$' -fuzz FuzzParse ./tape
+go test -run '^$' -fuzz FuzzEmulatorScreen .
+```
+
+Set `TUITEST_TUIOS_SRC` to a tuios checkout to have the suite also verify that
+the vendored emulator still matches the commit recorded in
+`internal/vt/UPSTREAM`.
 
 ## License
 
