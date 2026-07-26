@@ -206,12 +206,14 @@ blank lines dropped. `Line` returns one physical row and does not de-wrap: a
 logical line that soft-wrapped at the right margin occupies several rows and
 will not match as one string.
 
-A `Cell` carries `Rune`, `Width` (1 normal, 2 wide, 0 for a wide rune's
-continuation column), `Fg` and `Bg` as a `Color` (`ColorDefault`,
+A `Cell` carries `Content`, `Rune`, `Width` (1 normal, 2 wide, 0 for a wide
+rune's continuation column), `Fg` and `Bg` as a `Color` (`ColorDefault`,
 `ColorIndexed` with an `Index`, or `ColorRGB` with `R`, `G`, `B`), and the
 `Bold`, `Italic`, `Underline`, `Reverse`, `Strikethrough` and `Blink`
-attributes. `Rune` is the cell's first rune only; combining marks are not
-exposed.
+attributes. `Content` is the whole grapheme cluster, base rune plus any
+combining marks, joiners and modifiers, and is what `Line` and `Text` render
+and what a caller should match against. `Rune` is its first rune, so a cell
+holding `e` plus a combining acute reports `e` there.
 
 ## Snapshots and golden files
 
