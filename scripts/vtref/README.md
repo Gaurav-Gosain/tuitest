@@ -35,7 +35,38 @@ over JSON.
   them. tuitest follows tmux.
 - **C1 controls arriving as UTF-8** (U+0084, U+0085) are given a cell by the
   reference and dropped by tuitest. No real program emits them.
+- **Emoji joined by ZWJ** are two width-2 cells in this build and one in ours.
+  The reference is reading widths the wcswidth way; ultraviolet clusters, tmux
+  clusters, and tuitest has to agree with the emulator tuios renders through.
 - Only the active screen is compared. Scrollback is out of scope here.
+
+## tmux as a third opinion
+
+tmux is one package away where the wasm above is a blob out of another repo's
+history, so it is the cheap cross-check when the two disagree. Drive it with a
+pane running `stty -echo; cat corpus.vt`, read the screen back with
+`capture-pane -p -N` and the cursor with `display-message -p
+'#{cursor_x},#{cursor_y},#{alternate_on}'`.
+
+It is a weaker reference than ghostty and needs its own artefact list, so it is
+a tool to reach for rather than a test to keep. Where it is not evidence:
+
+- `capture-pane` writes literal tabs into its output for runs of blanks a tab
+  produced, and emits the raw ACS bytes for line-drawing rather than the
+  Unicode the cell holds. Neither says anything about the grid.
+- It reports the pending-wrap state as a cursor one column past the end, so its
+  cursor is 80 where ours is 79 on a full row. ghostty agrees with ours on
+  every pending-wrap case, including what backspace and EL do there, so the
+  apparent disagreement is only notation.
+- It does not implement CHT, HPR, VPR, HPB, VPB, DECSED, DECSEL, mode 1048,
+  DECLRMM or DECSLRM, and it ignores a CSI parameter larger than about 2^31
+  rather than saturating it. Every one of those looks like a divergence and is
+  tmux declining to act.
+- It performs IL and DL with the cursor outside the scrolling region, which the
+  VT220 manual says to ignore, and it does not return to the primary screen on
+  RIS.
+- Deleting one column from a run of wide runes costs it two columns of content.
+  ghostty and tuitest both keep the column budget.
 
 ## Running it
 

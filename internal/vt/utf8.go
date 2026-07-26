@@ -64,8 +64,86 @@ func (e *Emulator) flushGrapheme() {
 	e.grapheme = e.grapheme[:0] // Reset the grapheme buffer.
 }
 
+// printedCell remembers the cell the last grapheme cluster was written to, so
+// that a cluster arriving afterwards can be tested for whether it continues
+// that one. It carries enough to tell "still the cell I wrote" from "something
+// has happened since" without every cursor move and erase having to invalidate
+// it by hand: the cursor must not have moved off where printing left it, and
+// the cell must still hold what was put there.
+type printedCell struct {
+	scr        *Screen
+	x, y       int
+	curX, curY int
+	content    string
+	valid      bool
+}
+
+// extendPrinted folds content into the cell printed immediately before, when
+// Unicode says the two are one grapheme, and reports whether it did.
+//
+// This is what a terminal does with a combining mark: the base rune is drawn
+// as soon as it arrives, and the mark modifies the cell already on screen. The
+// alternative, holding a cluster back until the next character proves it
+// complete, cannot work in a harness, because the last character of a burst
+// would never appear.
+//
+// It also removes a source of flaky results. The grapheme buffer is flushed at
+// the end of every Write, so where a PTY read happens to split "a" from its
+// accent, or an emoji from its zero-width joiner, decided whether they were
+// clustered at all. Folding a continuation into the cell in front of it gives
+// the same screen either way.
+func (e *Emulator) extendPrinted(content string) bool {
+	p := &e.printed
+	if !p.valid || p.scr != e.scr {
+		return false
+	}
+	curX, curY := e.scr.CursorPosition()
+	if curX != p.curX || curY != p.curY {
+		return false
+	}
+	prev := e.scr.CellAt(p.x, p.y)
+	if prev == nil || prev.Content != p.content {
+		return false
+	}
+
+	joined := prev.Content + content
+	cluster, _ := ansi.FirstGraphemeCluster(joined, ansi.GraphemeWidth)
+	if len(cluster) != len(joined) {
+		return false
+	}
+
+	cell := *prev
+	cell.Content = joined
+	// The width is deliberately not recomputed. The columns this cell occupies
+	// were committed when the base rune was drawn and everything after it was
+	// laid out against them; a terminal cannot give a column back after the
+	// fact, and pretending otherwise would move text that is already on screen.
+	e.scr.SetCell(p.x, p.y, &cell)
+	p.content = joined
+	return true
+}
+
 // handleGrapheme handles UTF-8 graphemes.
 func (e *Emulator) handleGrapheme(content string, width int) {
+	// Only a cluster starting outside ASCII can continue the one before it, so
+	// the check costs the common path nothing.
+	if len(content) > 0 && content[0] >= utf8.RuneSelf && e.extendPrinted(content) {
+		return
+	}
+	e.printed.valid = false
+
+	if width < 1 {
+		// A cluster with no width of its own and nothing in front of it to
+		// attach to: a combining mark opening a line, or one whose base has
+		// since been overwritten. Giving it a cell would be worse than dropping
+		// it, since the cell would take a column away from whatever stood there
+		// and then not be drawn. Dropped here, before anything below can move
+		// the cursor, so a stray mark cannot wrap a line on its own. A cluster
+		// the charset tables rewrite is a single byte and always one column
+		// wide, so nothing below can widen this.
+		return
+	}
+
 	awm := e.isModeSet(ansi.ModeAutoWrap)
 	cell := uv.Cell{
 		Content: content,
@@ -133,6 +211,7 @@ func (e *Emulator) handleGrapheme(content string, width int) {
 		e.scr.insertCellsAt(x, y, cell.Width)
 	}
 
+	cellX, cellY := x, y
 	e.scr.SetCell(x, y, &cell)
 
 	// Handle phantom state at the end of the line
@@ -143,4 +222,15 @@ func (e *Emulator) handleGrapheme(content string, width int) {
 
 	// NOTE: We don't reset the phantom state here, we handle it up above.
 	e.scr.setCursor(x, y, false)
+
+	cx, cy := e.scr.CursorPosition()
+	e.printed = printedCell{
+		scr:     e.scr,
+		x:       cellX,
+		y:       cellY,
+		curX:    cx,
+		curY:    cy,
+		content: cell.Content,
+		valid:   true,
+	}
 }

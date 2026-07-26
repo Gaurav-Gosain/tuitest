@@ -62,6 +62,29 @@ happens the next sync will report them as drift and reintroduce the bugs.
 - `handlers.go`: `CSI j` (HPB) and `CSI k` (VPB) had no handlers.
 - `csi_mode.go`: private mode 47, the original alternate screen and still
   smcup in older terminfo entries, was unhandled.
+- `screen.go`: a cell shift for ICH or DCH ran through ultraviolet's
+  `Buffer.Set`, which blanks the other half of any wide rune it lands on. The
+  cells being moved are still live during a shift, so blanking the neighbour of
+  a cell that had just been copied erased the copy, and the blanking cascaded:
+  a single DCH on a line of CJK left the line empty. The shift now assigns and
+  a single pass afterwards repairs any wide rune a shift cut in half. The
+  underlying `Buffer.InsertCellArea` / `Buffer.DeleteCellArea` are still wrong
+  and worth fixing in ultraviolet as well.
+- `utf8.go`, `emulator.go`: the printable-ASCII fast path emitted its character
+  immediately, so a combining mark arriving after it could not join it; the
+  mark was written as a zero-width cell of its own, which lost the accent and
+  blanked the next column. Clusters now fold into the cell in front of them
+  when Unicode says the two are one grapheme. That also removes a source of
+  chunk-dependent output: the grapheme buffer is flushed at the end of every
+  `Write`, so where a PTY read fell used to decide whether a cluster formed.
+- `csi_mode.go`: switching to the alternate screen homed the cursor. None of
+  47, 1047 or 1049 is defined to move it.
+- `csi_sgr.go`: `handleSgr` short-circuited to `uv.ReadStyle` whenever no theme
+  colours were set, so the careful reader beside it only ever ran under a
+  theme. Two bugs lived on the unthemed path as a result: an unrecognised
+  underline subparameter such as `4:7` was left unconsumed and read on as a
+  bare SGR 7, turning the cell reverse, and SGR 21 (double underline) was
+  dropped. One reader now serves both cases.
 
 Known divergences left alone deliberately are listed in
 `scripts/vtref/README.md`.

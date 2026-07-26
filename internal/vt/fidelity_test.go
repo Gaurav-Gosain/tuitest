@@ -3,6 +3,10 @@ package vt_test
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Gaurav-Gosain/tuitest/internal/vt"
 )
@@ -198,5 +202,172 @@ func TestPositionBackward(t *testing.T) {
 	}
 	if got, want := row(t, e, 3), "         Z"; got != want {
 		t.Errorf("VPB row: got %q, want %q", got, want)
+	}
+}
+
+// A cell shift used to run through the buffer's Set, which blanks the other
+// half of any wide rune it lands on. Inside a shift the cells being moved are
+// still live, so blanking the neighbour of a cell that had just been copied
+// erased the copy, and the blanking cascaded: one DCH on a line of CJK left the
+// whole line empty. A test asserting that some text was gone would have passed
+// against an emulator that had simply thrown the line away.
+func TestDeleteCharKeepsWideRunes(t *testing.T) {
+	t.Parallel()
+
+	// Deleting both columns of the first rune leaves the rest flush left.
+	e := feed(t, 10, 2, "\x1b[2J\x1b[H中日本\x1b[1;1H\x1b[2P")
+	if got, want := row(t, e, 0), "日本"; got != want {
+		t.Errorf("DCH 2: got %q, want %q", got, want)
+	}
+
+	// Deleting one column splits the first rune. Both halves go, and the rest
+	// moves left by exactly the one column that was deleted, so the line still
+	// occupies the width it should.
+	e = feed(t, 10, 2, "\x1b[2J\x1b[H中日本\x1b[1;1H\x1b[1P")
+	if got, want := row(t, e, 0), " 日本"; got != want {
+		t.Errorf("DCH 1: got %q, want %q", got, want)
+	}
+}
+
+// The mirror image: an insert used Set for the blanks it fills in, which
+// reached back over the rune it had just shifted right and emptied it.
+func TestInsertCharKeepsWideRunes(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 12, 2, "\x1b[2J\x1b[H中日本\x1b[1;1H\x1b[1@")
+	if got, want := row(t, e, 0), " 中日本"; got != want {
+		t.Errorf("ICH 1: got %q, want %q", got, want)
+	}
+
+	e = feed(t, 12, 2, "\x1b[2J\x1b[H中日本\x1b[1;1H\x1b[2@")
+	if got, want := row(t, e, 0), "  中日本"; got != want {
+		t.Errorf("ICH 2: got %q, want %q", got, want)
+	}
+}
+
+// A rune shifted so that its second half falls off the right margin leaves a
+// lead with nothing to finish it, which no terminal can draw.
+func TestShiftOffMarginBlanksOrphanedHalf(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 6, 2, "\x1b[2J\x1b[Hab中日\x1b[1;1H\x1b[1@")
+	if got, want := row(t, e, 0), " ab中"; got != want {
+		t.Errorf("ICH pushing a wide rune off the margin: got %q, want %q", got, want)
+	}
+}
+
+// The printable-ASCII fast path emitted its character immediately, so a
+// combining mark arriving after it could not join it. The mark was written as a
+// zero-width cell of its own at the cursor, which both lost the accent and
+// blanked whatever stood in the next column.
+func TestCombiningMarkJoinsAsciiBase(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 10, 2, "\x1b[2J\x1b[Héx")
+	if got, want := row(t, e, 0), "éx"; got != want {
+		t.Errorf("combining acute on ASCII: got %q, want %q", got, want)
+	}
+	if got, want := e.CursorPosition().X, 2; got != want {
+		t.Errorf("cursor column: got %d, want %d", got, want)
+	}
+}
+
+// The same defect seen from the other side: the mark took the cell to the right
+// of its base, so text already on screen there disappeared.
+func TestCombiningMarkLeavesNextColumnAlone(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 10, 2, "\x1b[2J\x1b[HAB\x1b[1;1Hé")
+	if got, want := row(t, e, 0), "éB"; got != want {
+		t.Errorf("combining mark over existing text: got %q, want %q", got, want)
+	}
+}
+
+// The grapheme buffer is flushed at the end of every Write, so where a PTY read
+// happened to fall decided whether a cluster was formed at all: the same bytes
+// rendered as one cell or as two depending on chunking, which is a test that
+// passes or fails by luck. Folding a continuation into the cell in front of it
+// gives the same screen either way.
+func TestGraphemeClusteringIsIndependentOfWriteChunking(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, whole string }{
+		{"zwj", "\U0001F469‍\U0001F4BB!"},
+		{"skin tone", "\U0001F44D\U0001F3FD!"},
+		{"regional indicators", "\U0001F1EF\U0001F1F5!"},
+		{"combining on wide", "中́!"},
+		{"combining on ascii", "é!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want := feed(t, 10, 2, "\x1b[2J\x1b[H"+tc.whole)
+			wantRow, wantX := row(t, want, 0), want.CursorPosition().X
+
+			// Split at every byte boundary the parser could see a read end on.
+			for cut := 1; cut < len(tc.whole); cut++ {
+				if !utf8.RuneStart(tc.whole[cut]) {
+					continue
+				}
+				e := vt.NewEmulator(10, 2)
+				if _, err := e.WriteString("\x1b[2J\x1b[H" + tc.whole[:cut]); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				if _, err := e.WriteString(tc.whole[cut:]); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				if got := row(t, e, 0); got != wantRow {
+					t.Errorf("split at %d: row %q, want %q", cut, got, wantRow)
+				}
+				if got := e.CursorPosition().X; got != wantX {
+					t.Errorf("split at %d: cursor %d, want %d", cut, got, wantX)
+				}
+			}
+		})
+	}
+}
+
+// Switching to the alternate screen used to home the cursor. None of 47, 1047
+// or 1049 is defined to move it, so a program that positioned the cursor,
+// flipped screens and wrote without repositioning landed in the wrong place,
+// and on the way back out of 47 or 1047 it carried the wrong position with it.
+func TestAltScreenKeepsCursorPosition(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"47", "1047", "1049"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			e := feed(t, 20, 6, "\x1b[2J\x1b[H\x1b[3;5Hmain\x1b[?"+mode+"hA")
+			if got, want := row(t, e, 2), "        A"; got != want {
+				t.Errorf("alt screen row: got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// SGR 21 is a double underline in ECMA-48 and in xterm. It was dropped, so
+// text a program deliberately underlined came back unstyled.
+func TestDoubleUnderline(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 10, 2, "\x1b[2J\x1b[H\x1b[21mD")
+	if got := e.CellAt(0, 0).Style.Underline; got == ansi.UnderlineNone {
+		t.Errorf("SGR 21: underline style %v, want an underline", got)
+	}
+}
+
+// An underline subparameter the terminal does not recognise was left
+// unconsumed, so "4:7" was read on as a bare SGR 7 and turned the cell reverse:
+// a stray byte in a program's output silently inverted its colours.
+func TestUnknownUnderlineSubparameterIsNotReverse(t *testing.T) {
+	t.Parallel()
+
+	e := feed(t, 10, 2, "\x1b[2J\x1b[H\x1b[4:7mD")
+	if e.CellAt(0, 0).Style.Attrs&uv.AttrReverse != 0 {
+		t.Error("SGR 4:7 set reverse video")
+	}
+	if got := e.CellAt(0, 0).Style.Underline; got == ansi.UnderlineNone {
+		t.Errorf("SGR 4:7: underline style %v, want an underline", got)
 	}
 }

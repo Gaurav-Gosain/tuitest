@@ -6,6 +6,8 @@
 # differ, so a stale entry fails the build rather than rotting quietly.
 cc.go
 csi_mode.go
+csi_sgr.go
+emulator.go
 handlers.go
 screen.go
 utf8.go

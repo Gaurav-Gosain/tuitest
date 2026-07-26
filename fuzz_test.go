@@ -248,3 +248,56 @@ func FuzzEmulatorScreen(f *testing.F) {
 		styledEncode(snap)
 	})
 }
+
+// FuzzChunkingIsInvisible asserts that the screen a byte stream produces does
+// not depend on where the reads that delivered it happened to end.
+//
+// This is the harness property that matters most and is the hardest to notice
+// missing. A PTY read boundary falls wherever the kernel put it, so a rule that
+// consults one is a rule the program under test cannot influence and a test
+// author cannot see: the suite goes green or red by luck, and the usual
+// response to that is to rerun until it is green. The emulator did consult one
+// (its grapheme buffer was flushed at the end of every Write, so an emoji split
+// from its joiner was never clustered), which is why this is worth pinning.
+//
+// The first byte of the input chooses the split point so the fuzzer can steer
+// it; the rest is the stream.
+func FuzzChunkingIsInvisible(f *testing.F) {
+	f.Add(byte(1), []byte("\U0001F469‍\U0001F4BB done"))
+	f.Add(byte(4), []byte("\U0001F469‍\U0001F4BB done"))
+	f.Add(byte(2), []byte("éx"))
+	f.Add(byte(3), []byte("\x1b[31mred\x1b[0m\r\nwide 世界"))
+	f.Add(byte(1), []byte("\x1b[1;5H\x1b[2J\x1b[?1049h\U0001F1EF\U0001F1F5"))
+	f.Fuzz(func(t *testing.T, cut byte, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		at := int(cut) % len(data)
+
+		whole := emu.New(20, 6)
+		if _, err := whole.Write(data); err != nil {
+			t.Fatalf("emulator rejected input: %v", err)
+		}
+
+		split := emu.New(20, 6)
+		if _, err := split.Write(data[:at]); err != nil {
+			t.Fatalf("emulator rejected first chunk: %v", err)
+		}
+		if _, err := split.Write(data[at:]); err != nil {
+			t.Fatalf("emulator rejected second chunk: %v", err)
+		}
+
+		wantText := (&Terminal{emu: whole, exitCode: -1}).snapshotLocked().Text()
+		gotText := (&Terminal{emu: split, exitCode: -1}).snapshotLocked().Text()
+		if gotText != wantText {
+			t.Fatalf("split at %d changed the screen:\nwhole:\n%q\nsplit:\n%q", at, wantText, gotText)
+		}
+
+		wantX, wantY, wantVis := whole.Cursor()
+		gotX, gotY, gotVis := split.Cursor()
+		if gotX != wantX || gotY != wantY || gotVis != wantVis {
+			t.Fatalf("split at %d changed the cursor: got (%d,%d,%v), want (%d,%d,%v)",
+				at, gotX, gotY, gotVis, wantX, wantY, wantVis)
+		}
+	})
+}

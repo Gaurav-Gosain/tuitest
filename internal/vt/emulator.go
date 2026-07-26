@@ -91,6 +91,11 @@ type Emulator struct {
 	// When true, and a character is written, the cursor is moved to the next line.
 	atPhantom bool
 
+	// Where the most recently printed grapheme cluster landed, so that a
+	// combining mark or joiner arriving afterwards can be folded into it rather
+	// than taking a cell of its own. See [Emulator.extendPrinted].
+	printed printedCell
+
 	// Cell size in pixels for size reporting (XTWINOPS)
 	cellWidth  int
 	cellHeight int

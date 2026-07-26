@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/emu"
 )
 
 func TestCtrl(t *testing.T) {
@@ -228,4 +230,74 @@ func TestScreenTextTrims(t *testing.T) {
 	if got := snap.Text(); got != "hi" {
 		t.Errorf("Text() = %q, want %q", got, "hi")
 	}
+}
+
+// A cell can hold a whole grapheme cluster, and Line used to report only its
+// first rune. A program that drew "café" with a combining acute came back as
+// "cafe", so WaitForText missed a string plainly on screen and a golden
+// recorded the accent as absent and then defended that reading forever.
+// Verified to fail: rendering Cell.Rune instead of Cell.Content drops the
+// accent and the second half of the emoji sequence.
+func TestPlainTextRendersWholeClusters(t *testing.T) {
+	for _, tc := range []struct{ name, in string }{
+		{"combining acute", "café"},
+		{"zero width joiner", "\U0001F469‍\U0001F4BB!"},
+		{"skin tone modifier", "\U0001F44D\U0001F3FD!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := emu.New(20, 3)
+			if _, err := e.Write([]byte(tc.in)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := snapshotOf(e, 20, 3).Text(); got != tc.in {
+				t.Errorf("Text() = %q, want %q", got, tc.in)
+			}
+		})
+	}
+}
+
+// SGR 5 and SGR 6 are separate attributes but one visible effect. Only the slow
+// one was reported, so text a program made blink with SGR 6 came back unstyled
+// and a styled golden recorded it that way.
+// Verified to fail: dropping AttrRapidBlink from toCell reports Blink false.
+func TestRapidBlinkIsReportedAsBlink(t *testing.T) {
+	e := emu.New(10, 2)
+	if _, err := e.Write([]byte("\x1b[6mD")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !snapshotOf(e, 10, 2).Cell(0, 0).Blink {
+		t.Error("SGR 6 cell does not report Blink")
+	}
+}
+
+// Concealing a wide rune has to blank both of the columns it covers. One space
+// per cell shortened the line, which moves every column after it and makes a
+// golden of a concealed CJK line disagree with the same line unconcealed.
+// Verified to fail: writing a single space for a concealed cell yields "X Y".
+func TestConcealedWideRuneKeepsLineLength(t *testing.T) {
+	snap := &screenSnapshot{
+		cols: 4, rows: 1,
+		cells: [][]Cell{{
+			{Rune: 'X', Content: "X", Width: 1},
+			{Rune: '中', Content: "中", Width: 2, Conceal: true},
+			{Width: 0},
+			{Rune: 'Y', Content: "Y", Width: 1},
+		}},
+	}
+	if got, want := snap.Text(), "X  Y"; got != want {
+		t.Errorf("Text() = %q, want %q", got, want)
+	}
+}
+
+// snapshotOf copies an emulator's grid into the immutable form the assertions
+// run against, the same way Terminal.Screen does under its lock.
+func snapshotOf(e emu.Emulator, cols, rows int) *screenSnapshot {
+	cells := make([][]Cell, rows)
+	for row := 0; row < rows; row++ {
+		cells[row] = make([]Cell, cols)
+		for col := 0; col < cols; col++ {
+			cells[row][col] = toCell(e.CellAt(col, row))
+		}
+	}
+	return &screenSnapshot{cols: cols, rows: rows, cells: cells}
 }
