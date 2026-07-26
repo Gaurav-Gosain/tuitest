@@ -112,6 +112,72 @@ func terminateGroup(pid int, done <-chan struct{}) error {
 	return nil
 }
 
+// terminateSurvivors tears down whatever is left of the process group of a child
+// that has already been waited for.
+//
+// Once the child is reaped its descendants can no longer be found by walking
+// parent links: the kernel reparented them to init the moment it died, and an
+// orphan reparented to init is indistinguishable from an unrelated process. The
+// process group is what survives that. It stays this child's group for as long
+// as it has a member (see groupExists), so signalling it is safe even though the
+// leader is gone, and a program that backgrounded something and then exited is
+// torn down instead of being left running with Close reporting success.
+//
+// A descendant that called setsid before the child exited is still lost: it left
+// the group, its parent link died with the child, and nothing the harness can
+// observe ties it back here. Close names what it can and stays quiet about what
+// it genuinely cannot see.
+func terminateSurvivors(pgid int) error {
+	const grace = 2 * time.Second
+
+	// The leader has been reaped, so its pid was released back to the kernel.
+	// If something is answering to that number now it is an unrelated process
+	// that happens to have been handed it, and on a machine that has wrapped
+	// through the pid space that process is quite likely another child of this
+	// harness. Signalling its group would tear down a live test. The group id is
+	// only safe to use while nothing has taken the number back.
+	if processLive(pgid) {
+		return nil
+	}
+	if !groupExists(pgid) {
+		return nil // the common case: the child took its whole tree with it
+	}
+
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	awaitGroupGone(pgid, grace)
+
+	if left := liveProcs(groupMembers(pgid)); len(left) > 0 {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		awaitGroupGone(pgid, grace)
+	}
+
+	if left := liveProcs(groupMembers(pgid)); len(left) > 0 {
+		return fmt.Errorf("ptyproc: %d process(es) survived teardown: %v", len(left), left)
+	}
+	return nil
+}
+
+// awaitGroupGone polls until nothing living is left in the process group or
+// grace expires.
+//
+// The cheap group probe cannot end the wait on its own, because it answers yes
+// for a group holding nothing but zombies, and a zombie descendant is reaped by
+// init on its own schedule. Falling back to the process table keeps a routine
+// teardown from stalling for the full grace period on a corpse.
+func awaitGroupGone(pgid int, grace time.Duration) {
+	const tick = 20 * time.Millisecond
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !groupExists(pgid) {
+			return
+		}
+		if len(liveProcs(groupMembers(pgid))) == 0 {
+			return
+		}
+		time.Sleep(tick)
+	}
+}
+
 // signalTree sends sig to the child's process group and to every descendant
 // that escaped it.
 func signalTree(pid int, tree []int, sig syscall.Signal) {

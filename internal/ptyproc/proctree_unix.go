@@ -5,6 +5,7 @@ package ptyproc
 import (
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,10 +13,12 @@ import (
 )
 
 // procInfo is the part of a process table entry teardown cares about: who the
-// parent is, and whether the process is a zombie. A zombie has already died and
-// is only waiting to be reaped, so it must not be counted as a survivor.
+// parent is, which process group the entry belongs to, and whether the process
+// is a zombie. A zombie has already died and is only waiting to be reaped, so it
+// must not be counted as a survivor.
 type procInfo struct {
 	ppid   int
+	pgrp   int
 	zombie bool
 }
 
@@ -30,9 +33,9 @@ func procTable() map[int]procInfo {
 }
 
 // procTableProc reads /proc, which exists on Linux. Each stat line is
-// "pid (comm) state ppid ...", and comm is an arbitrary string that may itself
-// contain spaces and parentheses, so the fields are taken after the final ')'
-// rather than by splitting the whole line.
+// "pid (comm) state ppid pgrp ...", and comm is an arbitrary string that may
+// itself contain spaces and parentheses, so the fields are taken after the final
+// ')' rather than by splitting the whole line.
 func procTableProc() map[int]procInfo {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -54,14 +57,18 @@ func procTableProc() map[int]procInfo {
 			continue
 		}
 		fields := strings.Fields(s[close+1:])
-		if len(fields) < 2 {
+		if len(fields) < 3 {
 			continue
 		}
 		ppid, err := strconv.Atoi(fields[1])
 		if err != nil {
 			continue
 		}
-		table[pid] = procInfo{ppid: ppid, zombie: fields[0] == "Z"}
+		pgrp, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		table[pid] = procInfo{ppid: ppid, pgrp: pgrp, zombie: fields[0] == "Z"}
 	}
 	return table
 }
@@ -69,14 +76,14 @@ func procTableProc() map[int]procInfo {
 // procTablePS is the fallback for Unixes without /proc, notably macOS. It shells
 // out to ps, which is specified by POSIX and present everywhere tuitest runs.
 func procTablePS() map[int]procInfo {
-	out, err := exec.Command("ps", "-Ao", "pid=,ppid=,state=").Output()
+	out, err := exec.Command("ps", "-Ao", "pid=,ppid=,pgid=,state=").Output()
 	if err != nil {
 		return nil
 	}
 	table := map[int]procInfo{}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 3 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -87,8 +94,12 @@ func procTablePS() map[int]procInfo {
 		if err != nil {
 			continue
 		}
-		zombie := len(fields) > 2 && strings.HasPrefix(fields[2], "Z")
-		table[pid] = procInfo{ppid: ppid, zombie: zombie}
+		pgrp, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		zombie := len(fields) > 3 && strings.HasPrefix(fields[3], "Z")
+		table[pid] = procInfo{ppid: ppid, pgrp: pgrp, zombie: zombie}
 	}
 	return table
 }
@@ -138,6 +149,38 @@ func descendants(root int) []int {
 			queue = append(queue, child)
 		}
 	}
+	return out
+}
+
+// groupExists reports whether the process group pgid still has a member.
+//
+// This is the one handle on a child's descendants that outlives the child. A
+// process group id cannot be recycled while the group is non-empty, because the
+// kernel holds the leader's pid number for as long as anything references it as
+// a group, so a group that answers here is still the group the harness created
+// and is safe to signal. A group that has emptied answers ESRCH, which is the
+// answer teardown wants anyway: there is nothing left to kill.
+//
+// One syscall, so it is cheap enough to be the fast path on every teardown.
+func groupExists(pgid int) bool {
+	return pgid > 0 && syscall.Kill(-pgid, 0) == nil
+}
+
+// groupMembers returns the pids currently in process group pgid, zombies
+// included, so a caller can name what survived teardown. It walks the whole
+// process table, which is why callers only reach for it once groupExists has
+// said there is something to look for.
+func groupMembers(pgid int) []int {
+	if pgid <= 0 {
+		return nil
+	}
+	var out []int
+	for pid, info := range procTable() {
+		if info.pgrp == pgid {
+			out = append(out, pid)
+		}
+	}
+	sort.Ints(out) // a stable order keeps the leak message reproducible
 	return out
 }
 

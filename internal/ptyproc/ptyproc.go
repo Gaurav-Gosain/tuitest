@@ -174,6 +174,13 @@ func (p *Process) Resize(cols, rows int) error {
 }
 
 // ExitCode reports the child's exit code and whether it has exited.
+//
+// The code is -1 for a child that died from a signal, which is what
+// os.ProcessState.ExitCode reports and not the shell's 128+signal convention: a
+// harness that invented 137 for SIGKILL would be unable to tell it apart from a
+// program that genuinely exited 137. It is also -1 before the child has exited
+// at all, so the second return value is the only thing that separates the two,
+// and ExitStatus is what distinguishes a crash from an ordinary failure.
 func (p *Process) ExitCode() (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -204,7 +211,8 @@ func (p *Process) Done() <-chan struct{} { return p.done }
 // and safe to call from a cleanup hook even after the child exited.
 //
 // It returns a non-nil error when something the child spawned was still running
-// after SIGKILL. That is a leak the caller needs to know about: a test that
+// after SIGKILL, or failing that when the PTY could not be released. Both are
+// leaks the caller needs to know about, the process one most of all: a test that
 // ignores it hands the next test a machine with stray processes on it, which is
 // how a suite ends up flooding a workstation.
 func (p *Process) Close() error {
@@ -217,19 +225,44 @@ func (p *Process) Close() error {
 		}
 		p.mu.Unlock()
 
-		// Only signal while the child is unreaped. Once it has been waited for,
-		// the kernel may have recycled its pid, and signalling a recycled pid
-		// would tear down an unrelated process group. Descendants of an
-		// already-exited child are therefore left alone; they are orphans the
-		// harness can no longer identify safely.
-		if !exited && pid > 0 {
+		// setSysProcAttr made the child a session leader, so its pid doubles as
+		// the id of the process group everything it spawned inherits. Which
+		// teardown applies depends on whether the child is still around to be
+		// signalled through: while it lives its descendants can be found by
+		// walking parent links, and once it has been reaped only the process
+		// group is left to go on.
+		switch {
+		case pid <= 0:
+			// The child never started; there is nothing to tear down.
+		case !exited:
 			p.closeErr = terminateGroup(pid, p.done)
+		default:
+			p.closeErr = terminateSurvivors(pid)
 		}
 		// Close the PTY only after the process tree is gone, so the pump
-		// goroutine is not left spinning on a half-open descriptor.
-		_ = p.pty.Close()
+		// goroutine is not left spinning on a half-open descriptor. A failure
+		// here is a leaked descriptor and is worth reporting, but not at the
+		// cost of hiding a leaked process, which is the worse of the two.
+		if err := p.closePTY(); err != nil && p.closeErr == nil {
+			p.closeErr = err
+		}
 	})
 	return p.closeErr
+}
+
+// closePTY releases the parent's remaining descriptor for the pseudo-terminal.
+//
+// Start already closed the parent's copy of the slave, and xpty's own Close
+// closes both ends and reports the slave's "file already closed" as the outcome
+// whenever the master closed cleanly. That makes its error useless: it is always
+// non-nil here, so a genuine failure to release the master is indistinguishable
+// from the double close this package causes on purpose. Closing the master
+// directly keeps the error that is reported the one that means something.
+func (p *Process) closePTY() error {
+	if u, ok := p.pty.(*xpty.UnixPty); ok {
+		return u.Master().Close()
+	}
+	return p.pty.Close()
 }
 
 // Probe reports whether a pseudo-terminal can be allocated at all, by opening

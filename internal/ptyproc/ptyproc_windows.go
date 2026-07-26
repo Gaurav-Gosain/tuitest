@@ -37,6 +37,8 @@ func neutraliseLineDiscipline(xpty.Pty) error { return nil }
 
 func terminateGroup(int, <-chan struct{}) error { return nil }
 
+func terminateSurvivors(int) error { return nil }
+
 // waitSignal has no meaning on Windows, which has no signal-death exit status;
 // a crash there surfaces as an ordinary non-zero exit code instead.
 func waitSignal(*os.ProcessState) (bool, syscall.Signal) { return false, 0 }

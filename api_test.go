@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest/internal/emu"
+	"github.com/Gaurav-Gosain/tuitest/internal/ptyproc"
 )
 
 // newIdleTerminal builds a Terminal with no child attached. WaitStable only
@@ -186,5 +187,69 @@ func TestWaitErrorsUnwrapToSentinels(t *testing.T) {
 
 	if err := errSemanticDisabled("WaitForPrompt"); !errors.Is(err, ErrSemanticMarkers) {
 		t.Errorf("the semantic-markers error should match ErrSemanticMarkers, got %v", err)
+	}
+}
+
+// TestScreenAgreesWithExitCodeWhileOnCloseRuns closes the one window where the
+// two exit accessors could disagree. The pump reaps the child, then hands the
+// code to onClose, then closes Done, so for the length of that callback the
+// process handle knows the child is gone while this Terminal's own copy still
+// says it is running. ExitCode asks the process, so the answer flipped there
+// first; Screen read the stale copy, and a caller that branched on
+// Screen().ExitCode() would be told the program was still running by one
+// accessor and finished by the other.
+//
+// The real callback is far too fast to catch, so the one below holds the window
+// open on purpose. That is the only way to observe an ordering that is otherwise
+// nanoseconds wide.
+//
+// Verified to fail: reading t.exitCode and t.exited directly in snapshotLocked
+// makes Screen report a running child here while ExitCode reports exit 4.
+func TestScreenAgreesWithExitCodeWhileOnCloseRuns(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not on PATH")
+	}
+
+	term := newIdleTerminal(DefaultStabilizeInterval)
+	reaped := make(chan struct{})
+	released := make(chan struct{})
+
+	proc, err := ptyproc.Start(ptyproc.Config{
+		Argv: []string{sh, "-c", "exit 4"},
+		Env:  term.cfg.buildEnv(),
+		Cols: 20,
+		Rows: 5,
+	}, ptyproc.Handler{
+		OnData: term.onData,
+		OnClose: func(code int) {
+			close(reaped) // the process has recorded the exit; the Terminal has not
+			<-released
+			term.onClose(code)
+		},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	term.proc = proc
+	defer func() { _ = proc.Close() }()
+
+	select {
+	case <-reaped:
+	case <-time.After(10 * time.Second):
+		close(released)
+		t.Fatal("child never finished")
+	}
+
+	code, exited := term.ExitCode()
+	screenCode, screenExited := term.Screen().ExitCode()
+	close(released)
+
+	if !exited || code != 4 {
+		t.Fatalf("ExitCode() = (%d, %v), want (4, true)", code, exited)
+	}
+	if screenExited != exited || screenCode != code {
+		t.Errorf("Screen().ExitCode() = (%d, %v) but ExitCode() = (%d, %v); the two accessors disagree",
+			screenCode, screenExited, code, exited)
 	}
 }
