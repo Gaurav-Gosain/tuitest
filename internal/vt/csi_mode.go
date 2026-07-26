@@ -43,10 +43,14 @@ func (e *Emulator) setAltScreenMode(on bool) {
 	}
 	if on {
 		e.scr = &e.scrs[1]
+		// The switch carries the cursor across rather than homing it. None of
+		// 47, 1047 or 1049 is defined to move the cursor: 1049 saves and later
+		// restores it, and the other two leave it wherever it stood, which is
+		// how a program that draws a status line, flips to the alternate screen
+		// and writes without repositioning lands where a real terminal puts it.
 		e.scrs[1].cur = e.scrs[0].cur
 		e.scr.Clear()
 		e.scr.buf.Touched = nil
-		e.setCursor(0, 0)
 	} else {
 		e.scr = &e.scrs[0]
 	}

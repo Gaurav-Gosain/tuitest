@@ -121,7 +121,6 @@ type Terminal struct {
 	lastWrite time.Time // last byte received from the child
 	lastInput time.Time // last byte sent to the child
 	outBytes  int64     // total bytes read from the child
-	closed    bool      // stream ended (child EOF)
 	exited    bool
 	exitCode  int
 	// pendingResp holds emulator responses produced before proc was stored.
@@ -252,7 +251,6 @@ func (t *Terminal) sendResponses(resp []byte) {
 
 func (t *Terminal) onClose(code int) {
 	t.mu.Lock()
-	t.closed = true
 	t.exited = true
 	t.exitCode = code
 	t.cond.Broadcast()
@@ -287,6 +285,7 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 		cells[row] = line
 	}
 	curCol, curRow, curVis := t.emu.Cursor()
+	code, exited := t.exitLocked()
 	return &screenSnapshot{
 		cols:       cols,
 		rows:       rows,
@@ -294,9 +293,33 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 		curCol:     curCol,
 		curRow:     curRow,
 		curVisible: curVis,
-		exitCode:   t.exitCode,
-		exited:     t.exited,
+		exitCode:   code,
+		exited:     exited,
 	}
+}
+
+// exitLocked reports the exit state from whichever source knows about it first.
+// Caller must hold t.mu.
+//
+// The pump reaps the child, then hands the code to onClose, then closes Done, so
+// for the length of that callback the process knows the child is gone and this
+// terminal does not. Falling back to the process covers that window, and every
+// accessor then answers the same thing throughout it, instead of Screen
+// reporting a running program while ExitCode reports a finished one.
+//
+// Once onClose has run the local copy is authoritative and the process is never
+// consulted, which keeps the waits that rebuild a snapshot on every wakeup off
+// the process's lock.
+func (t *Terminal) exitLocked() (int, bool) {
+	if t.exited {
+		return t.exitCode, true
+	}
+	if t.proc != nil {
+		if code, exited := t.proc.ExitCode(); exited {
+			return code, true
+		}
+	}
+	return t.exitCode, false
 }
 
 // Screen returns an immutable view of the current screen.
@@ -349,30 +372,26 @@ func (t *Terminal) Progress() (bytes int64, last time.Time) {
 
 // ExitCode reports the child's exit code and whether it has exited.
 //
-// The process records its status before closing the channel Done reports on,
-// whereas this terminal's own copy is filled in by the OnClose callback that
-// runs after it. Consulting the process first closes that window, so a caller
-// that reads the exit code the instant Done fires sees the real code rather
-// than the not-yet-exited placeholder.
+// The code is -1 for a child killed by a signal, not the shell's 128+signal
+// convention, so that it can never be confused with a program that exited with
+// that number itself. It is -1 before the child has exited too, and the second
+// return value is the only thing that separates those two cases. Use ExitStatus
+// to tell a crash apart from an ordinary non-zero exit.
 func (t *Terminal) ExitCode() (int, bool) {
-	if t.proc != nil {
-		if code, exited := t.proc.ExitCode(); exited {
-			return code, true
-		}
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.exitCode, t.exited
+	return t.exitLocked()
 }
 
 // WaitExit blocks until the child exits or timeout elapses, returning the exit
 // code. On timeout it returns -1 and a *TimeoutError, which unwraps to
-// ErrTimeout like every other wait.
+// ErrTimeout like every other wait. A child killed by a signal also returns -1,
+// with a nil error; ExitStatus is what tells the two apart.
 func (t *Terminal) WaitExit(timeout time.Duration) (int, error) {
 	// Wait on the terminal's own view of the exit rather than on the process
-	// handle. The pump closes the process's done channel before it delivers the
-	// exit code here, so waking on that channel could observe the code before
-	// this Terminal had recorded it and report -1 for a clean exit.
+	// handle. onClose sets it only after every byte the child wrote has been fed
+	// to the emulator, so a caller that snapshots the screen the moment this
+	// returns sees the program's final frame and not one chunk short of it.
 	err := t.waitLoop("WaitExit", "the child to exit", timeout, true, func() bool {
 		return t.exited
 	})

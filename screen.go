@@ -58,8 +58,15 @@ type Color struct {
 
 // Cell is a single grid cell with its rune and visual attributes.
 type Cell struct {
-	// Rune is the cell's first rune; combining marks are not exposed.
+	// Rune is the cell's first rune. A cell can hold a whole grapheme cluster,
+	// so this is not always the character a user sees: "e" plus a combining
+	// acute reports 'e' here. Use Content to compare against text.
 	Rune rune
+	// Content is the cell's full grapheme cluster: the base rune together with
+	// any combining marks, joiners and modifiers that attach to it. It is what
+	// Line and Text render, and what a caller should match against. Empty for
+	// the continuation column of a wide rune.
+	Content string
 	// Width is 1 for normal runes, 2 for wide runes, and 0 for the
 	// continuation column that follows a wide rune.
 	Width int
@@ -76,6 +83,24 @@ type Cell struct {
 	// a blank, so Line and Text render these cells as spaces; the rune is still
 	// available here for a caller that needs to know what was concealed.
 	Conceal bool
+}
+
+// text is what the cell puts on screen: the whole grapheme cluster, not just
+// its first rune. A cell holding "e" plus a combining acute reads as "é" to a
+// user, and reporting "e" would let WaitForText miss a string plainly on screen
+// and let a golden record the accent as absent.
+//
+// Cell is an exported struct, so a caller (and several of this package's own
+// tests) can build one with only Rune set. Falling back to Rune keeps those
+// working rather than rendering them as nothing.
+func (c Cell) text() string {
+	if c.Content != "" {
+		return c.Content
+	}
+	if c.Rune == 0 {
+		return " "
+	}
+	return string(c.Rune)
 }
 
 func toColor(c color.Color) Color {
@@ -95,15 +120,21 @@ func toColor(c color.Color) Color {
 
 func toCell(c *uv.Cell) Cell {
 	if c == nil {
-		return Cell{Rune: ' ', Width: 1}
+		return Cell{Rune: ' ', Content: " ", Width: 1}
 	}
-	out := Cell{Width: c.Width, Rune: ' '}
+	out := Cell{Width: c.Width, Rune: ' ', Content: c.Content}
 	for _, r := range c.Content {
 		out.Rune = r
 		break
 	}
 	if c.Content == "" {
 		out.Rune = ' '
+		// A blank cell and the continuation column of a wide rune both arrive
+		// with no content. Only the blank stands for a space on screen; the
+		// continuation is skipped by Line, which keys off Width.
+		if c.Width != 0 {
+			out.Content = " "
+		}
 	}
 	st := c.Style
 	out.Fg = toColor(st.Fg)
@@ -114,7 +145,10 @@ func toCell(c *uv.Cell) Cell {
 	out.Italic = st.Attrs&uv.AttrItalic != 0
 	out.Reverse = st.Attrs&uv.AttrReverse != 0
 	out.Strikethrough = st.Attrs&uv.AttrStrikethrough != 0
-	out.Blink = st.Attrs&uv.AttrBlink != 0
+	// SGR 5 and SGR 6 are separate attributes but one visible effect, and a
+	// caller asking "is this blinking" means either. Reporting only the slow
+	// one let a golden record SGR 6 text as unstyled.
+	out.Blink = st.Attrs&(uv.AttrBlink|uv.AttrRapidBlink) != 0
 	out.Underline = st.Underline != uv.UnderlineStyleNone
 	return out
 }
@@ -157,12 +191,14 @@ func (s *screenSnapshot) Line(row int) string {
 		if c.Conceal {
 			// SGR 8: a real terminal paints the cell blank, so reporting the
 			// rune here would let a wait match text no user can see. One space
-			// per non-continuation cell keeps a concealed line exactly as long
+			// per column the cell covers keeps a concealed line exactly as long
 			// as the same line unconcealed.
-			b.WriteByte(' ')
+			for i := 0; i < c.Width; i++ {
+				b.WriteByte(' ')
+			}
 			continue
 		}
-		b.WriteRune(c.Rune)
+		b.WriteString(c.text())
 	}
 	return strings.TrimRight(b.String(), " ")
 }

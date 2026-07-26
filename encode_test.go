@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/emu"
 )
 
 func TestCtrl(t *testing.T) {
@@ -227,5 +229,155 @@ func TestScreenTextTrims(t *testing.T) {
 	}
 	if got := snap.Text(); got != "hi" {
 		t.Errorf("Text() = %q, want %q", got, "hi")
+	}
+}
+
+// A cell can hold a whole grapheme cluster, and Line used to report only its
+// first rune. A program that drew "café" with a combining acute came back as
+// "cafe", so WaitForText missed a string plainly on screen and a golden
+// recorded the accent as absent and then defended that reading forever.
+// Verified to fail: rendering Cell.Rune instead of Cell.Content drops the
+// accent and the second half of the emoji sequence.
+func TestPlainTextRendersWholeClusters(t *testing.T) {
+	for _, tc := range []struct{ name, in string }{
+		{"combining acute", "café"},
+		{"zero width joiner", "\U0001F469‍\U0001F4BB!"},
+		{"skin tone modifier", "\U0001F44D\U0001F3FD!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := emu.New(20, 3)
+			if _, err := e.Write([]byte(tc.in)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := snapshotOf(e, 20, 3).Text(); got != tc.in {
+				t.Errorf("Text() = %q, want %q", got, tc.in)
+			}
+		})
+	}
+}
+
+// SGR 5 and SGR 6 are separate attributes but one visible effect. Only the slow
+// one was reported, so text a program made blink with SGR 6 came back unstyled
+// and a styled golden recorded it that way.
+// Verified to fail: dropping AttrRapidBlink from toCell reports Blink false.
+func TestRapidBlinkIsReportedAsBlink(t *testing.T) {
+	e := emu.New(10, 2)
+	if _, err := e.Write([]byte("\x1b[6mD")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !snapshotOf(e, 10, 2).Cell(0, 0).Blink {
+		t.Error("SGR 6 cell does not report Blink")
+	}
+}
+
+// Concealing a wide rune has to blank both of the columns it covers. One space
+// per cell shortened the line, which moves every column after it and makes a
+// golden of a concealed CJK line disagree with the same line unconcealed.
+// Verified to fail: writing a single space for a concealed cell yields "X Y".
+func TestConcealedWideRuneKeepsLineLength(t *testing.T) {
+	snap := &screenSnapshot{
+		cols: 4, rows: 1,
+		cells: [][]Cell{{
+			{Rune: 'X', Content: "X", Width: 1},
+			{Rune: '中', Content: "中", Width: 2, Conceal: true},
+			{Width: 0},
+			{Rune: 'Y', Content: "Y", Width: 1},
+		}},
+	}
+	if got, want := snap.Text(), "X  Y"; got != want {
+		t.Errorf("Text() = %q, want %q", got, want)
+	}
+}
+
+// snapshotOf copies an emulator's grid into the immutable form the assertions
+// run against, the same way Terminal.Screen does under its lock.
+func snapshotOf(e emu.Emulator, cols, rows int) *screenSnapshot {
+	cells := make([][]Cell, rows)
+	for row := 0; row < rows; row++ {
+		cells[row] = make([]Cell, cols)
+		for col := 0; col < cols; col++ {
+			cells[row][col] = toCell(e.CellAt(col, row))
+		}
+	}
+	return &screenSnapshot{cols: cols, rows: rows, cells: cells}
+}
+
+// The legacy encodings are checked against the byte sequences xterm's ctlseqs
+// document specifies rather than against tuitest's own decoder. A round trip
+// through our reader agrees with any consistent mistake; these do not.
+func TestMouseEncodeLegacyMatchesXtermSpec(t *testing.T) {
+	// CSI M Cb Cx Cy, each field a byte: the button offset by 32 and the
+	// one-based coordinates offset by 32 on top of that.
+	for _, tc := range []struct {
+		name string
+		ev   MouseEvent
+		want string
+	}{
+		{
+			"left press at the origin",
+			MouseEvent{Col: 0, Row: 0, Button: MouseLeft, Action: MousePress},
+			"\x1b[M\x20\x21\x21",
+		},
+		{
+			"middle press with shift",
+			MouseEvent{Col: 1, Row: 2, Button: MouseMiddle, Action: MousePress, Mods: ModShift},
+			"\x1b[M\x25\x22\x23",
+		},
+		{
+			// Wheel notches are buttons 4 and 5, carried in bit 64.
+			"wheel up",
+			MouseEvent{Col: 0, Row: 0, Button: MouseWheelUp, Action: MousePress},
+			"\x1b[M\x60\x21\x21",
+		},
+		{
+			// A release names no button in this encoding; it is button 3.
+			"release",
+			MouseEvent{Col: 0, Row: 0, Button: MouseNone, Action: MouseRelease},
+			"\x1b[M\x23\x21\x21",
+		},
+		{
+			// The last coordinate the packing can hold: 222 lands on byte 255.
+			"largest representable coordinate",
+			MouseEvent{Col: 222, Row: 222, Button: MouseLeft, Action: MousePress},
+			"\x1b[M\x20\xff\xff",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := tc.ev
+			ev.Enc = MouseX10
+			got, ok := ev.Encode()
+			if !ok {
+				t.Fatalf("Encode reported the event unrepresentable")
+			}
+			if got != tc.want {
+				t.Errorf("Encode() = % x, want % x", got, tc.want)
+			}
+		})
+	}
+
+	// Past 222 the field has no representation at all, and approximating it
+	// would hand the program a coordinate the user never clicked.
+	over := MouseEvent{Col: 223, Row: 0, Button: MouseLeft, Action: MousePress, Enc: MouseX10}
+	if got, ok := over.Encode(); ok {
+		t.Errorf("column 223 encoded as % x, want a refusal", got)
+	}
+
+	// A release naming a button and a press naming none collide on button 3,
+	// so neither can be encoded without the reader getting the other one back.
+	for _, ev := range []MouseEvent{
+		{Col: 1, Row: 1, Button: MouseLeft, Action: MouseRelease, Enc: MouseX10},
+		{Col: 1, Row: 1, Button: MouseNone, Action: MousePress, Enc: MouseX10},
+		{Col: 1, Row: 1, Button: MouseLeft, Action: MouseRelease, Enc: MouseURXVT},
+	} {
+		if got, ok := ev.Encode(); ok {
+			t.Errorf("%+v encoded as %q, want a refusal", ev, got)
+		}
+	}
+
+	// urxvt is the same packing written as decimal parameters, which lifts the
+	// coordinate limit but keeps everything else.
+	urxvt := MouseEvent{Col: 300, Row: 9, Button: MouseLeft, Action: MousePress, Enc: MouseURXVT}
+	if got, ok := urxvt.Encode(); !ok || got != "\x1b[32;301;10M" {
+		t.Errorf("urxvt = %q, %v, want \\x1b[32;301;10M", got, ok)
 	}
 }

@@ -29,15 +29,16 @@ func (e *Emulator) parseThemedColor(params ansi.Params, i int) (color.Color, int
 	return nil, 0
 }
 
-// handleSgr handles SGR escape sequences.
 // handleSgr handles Select Graphic Rendition (SGR) escape sequences.
+//
+// It used to short-circuit to uv.ReadStyle whenever no theme colours were set,
+// which meant the careful reader below only ever ran under a theme. Everything
+// it fixes was therefore fixed on a path most callers never take: a stray
+// underline subparameter such as "4:7" fell through uv.ReadStyle as a separate
+// SGR 7 and turned the cell reverse, and SGR 21 was dropped. One reader keeps
+// the themed and unthemed cases from drifting apart again; the colours agree
+// because IndexedColor falls back to the plain palette entry with no theme set.
 func (e *Emulator) handleSgr(params ansi.Params) {
-	// If theming is disabled or no theme colors are set, use standard ultraviolet handling
-	if !e.hasThemeColors() {
-		uv.ReadStyle(params, &e.scr.cur.Pen)
-		return
-	}
-
 	e.readStyleWithTheme(params, &e.scr.cur.Pen)
 }
 
@@ -81,7 +82,10 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 				case 5:
 					pen.Underline = ansi.UnderlineDashed
 				default:
-					// Unknown underline style: no-op, but still consumed above.
+					// An underline style this terminal cannot name still asks
+					// for an underline, so draw the one it can. Leaving it
+					// unstyled would hide a decoration the program did ask for.
+					pen.Underline = ansi.UnderlineSingle
 				}
 			} else {
 				pen.Underline = ansi.UnderlineSingle
@@ -96,6 +100,12 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 			pen.Attrs |= uv.AttrConceal
 		case 9: // Crossed-out/Strikethrough
 			pen.Attrs |= uv.AttrStrikethrough
+		case 21: // Doubly underlined
+			// ECMA-48 and xterm both spend 21 on a double underline. Some older
+			// terminals used it for "bold off" instead, which is why 22 exists;
+			// following xterm means a program that emits it gets an underline
+			// rather than nothing at all.
+			pen.Underline = ansi.UnderlineDouble
 		case 22: // Normal Intensity
 			pen.Attrs &^= uv.AttrBold | uv.AttrFaint
 		case 23: // Not italic

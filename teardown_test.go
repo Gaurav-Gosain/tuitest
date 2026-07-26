@@ -123,3 +123,121 @@ func shellPath(t *testing.T) string {
 	t.Skip("no POSIX shell available")
 	return ""
 }
+
+// Close must also tear down what a child left behind after exiting on its own.
+// Descendants used to be found by walking parent links from the child, which
+// stops working the instant the child is reaped and the kernel reparents its
+// children to init, so Close did nothing at all in that case and StartT's
+// cleanup reported success over a process that was still running. A program that
+// backgrounds a worker and returns is an ordinary shape, not an exotic one, and
+// this is the leak that fills a workstation with stray processes.
+//
+// Verified to fail: restoring the "leave an exited child's descendants alone"
+// branch in ptyproc.Close leaves the grandchild running and this test reports
+// the leak.
+func TestCloseReapsSurvivorsOfAChildThatExitedOnItsOwn(t *testing.T) {
+	sh := shellPath(t)
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+
+	// The grandchild ignores the hangup the kernel sends when the session
+	// leader exits, which is the only reason a backgrounded process outlives
+	// the program that spawned it. The child waits for the trap to be in place
+	// before exiting, since racing it would let the hangup do teardown's job.
+	script := sh + ` -c 'trap "" HUP; echo $$ > ` + pidFile + `; exec sleep 30' </dev/null >/dev/null 2>&1 &
+while [ ! -s ` + pidFile + ` ]; do sleep 0.02; done
+printf 'SPAWNED\n'
+exit 0`
+
+	term, err := tuitest.Start([]string{sh, "-c", script})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if _, err := term.WaitExit(10 * time.Second); err != nil {
+		_ = term.Close()
+		t.Fatalf("the child never exited: %v", err)
+	}
+
+	pid := waitForPidFile(t, pidFile, 10*time.Second)
+	// Never leave the grandchild behind, whatever this test concludes.
+	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+	if !processAlive(pid) {
+		t.Skip("the grandchild did not outlive the hangup, so there is nothing to leak")
+	}
+
+	if err := term.Close(); err != nil {
+		t.Errorf("Close reported a teardown failure: %v", err)
+	}
+	if processAlive(pid) {
+		t.Errorf("grandchild %d survived Close and Close reported success", pid)
+	}
+}
+
+// A program's last words have to be on screen once WaitExit returns. If the
+// harness reaped the child before draining the PTY, an assertion that some
+// string is absent from the screen would pass because the string never arrived
+// rather than because the program stopped printing it, and a test that passes
+// for the wrong reason reports nothing at all.
+//
+// The guarantee comes from the pump reaping only once the stream has ended, so
+// nothing short of restructuring the pump breaks it. That makes this a shape
+// test rather than a mutation test: it is repeated so that a future pump which
+// races the drain shows up as an intermittent failure here rather than as an
+// intermittent failure in somebody's suite.
+func TestFinalOutputIsOnScreenWhenWaitExitReturns(t *testing.T) {
+	t.Parallel()
+	sh := shellPath(t)
+
+	const runs = 200
+	for i := range runs {
+		term, err := tuitest.Start([]string{sh, "-c", `printf 'LAST_WORDS\n'`}, tuitest.WithSize(40, 6))
+		if err != nil {
+			t.Fatalf("run %d: spawn: %v", i, err)
+		}
+		if _, err := term.WaitExit(10 * time.Second); err != nil {
+			_ = term.Close()
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if snap := term.Snapshot(); !strings.Contains(snap, "LAST_WORDS") {
+			_ = term.Close()
+			t.Fatalf("run %d: the child's final output never reached the screen:\n%s", i, snap)
+		}
+		if err := term.Close(); err != nil {
+			t.Fatalf("run %d: close: %v", i, err)
+		}
+	}
+}
+
+// Output a program prints on its way out under Close must reach the screen too.
+// Close signals the child and then waits for the pump to drain, so a program
+// with a SIGTERM handler still gets its cleanup message recorded; a teardown
+// that closed the PTY as soon as the process table said the child was gone
+// would truncate it.
+//
+// Verified to fail: replacing awaitGone's wait on done with a poll of the
+// process table loses the message, because a dying child is a zombie in the
+// table well before the pump has read the last of what it wrote.
+func TestOutputPrintedDuringTeardownReachesTheScreen(t *testing.T) {
+	t.Parallel()
+	sh := shellPath(t)
+
+	const runs = 50
+	for i := range runs {
+		script := `trap 'printf "DYING_WORDS\n"; exit 0' TERM
+printf 'READY\n'
+while :; do sleep 0.05; done`
+		term, err := tuitest.Start([]string{sh, "-c", script}, tuitest.WithSize(40, 6))
+		if err != nil {
+			t.Fatalf("run %d: spawn: %v", i, err)
+		}
+		if err := term.WaitForText("READY", 10*time.Second); err != nil {
+			_ = term.Close()
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if err := term.Close(); err != nil {
+			t.Fatalf("run %d: close: %v", i, err)
+		}
+		if snap := term.Snapshot(); !strings.Contains(snap, "DYING_WORDS") {
+			t.Fatalf("run %d: what the program printed while shutting down was lost:\n%s", i, snap)
+		}
+	}
+}

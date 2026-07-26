@@ -96,11 +96,6 @@ de-wrapped, so text that wrapped across the right margin will not match as a
 single string. Match per row, use `Screen.Text` and account for the wrap, or
 widen the terminal with `WithSize` so the line fits.
 
-**`Cell.Rune` is the cell's first rune only.** Combining marks are not exposed,
-so a cell holding `e` plus a combining acute is indistinguishable from a plain
-`e` at the assertion level. The underlying emulator keeps the full content; the
-public `Cell` does not surface it.
-
 **Scrollback is not reachable through `Screen`.** The vendored VT maintains it
 and `tuitest doctor` reports it as supported, but the public interface exposes
 only the visible grid. A test that needs to assert on scrolled-off content has
