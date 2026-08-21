@@ -275,6 +275,74 @@ few commands race the program's redraw will sometimes fail to re-verify. Those
 are reported and labelled rather than hidden. See
 [docs/limits.md](limits.md).
 
+## Fuzzing the other direction
+
+Everything above drives a program's input. `fuzz/vtgen` drives the other end of
+the pipe: it generates the bytes a program writes, for testing whatever parses
+them. tuitest uses it against its own emulator, which is worth doing because
+every assertion tuitest makes is read off that emulator, so a sequence it
+mishandles is a suite that goes green on a screen the program never drew. The
+package is public, so a terminal, a multiplexer, or anything else with a VT
+parser can point it at their own.
+
+Random bytes are a poor fuzzer for a VT parser. Almost no byte string is a
+sequence, so a campaign spends its budget in the parser's ground state proving
+that garbage is garbage, and never reaches the code that moves the cursor, sizes
+a scroll region or decides how many cells a character takes. What breaks an
+emulator is a well-formed sequence carrying a parameter nobody expected.
+
+So `vtgen` generates by grammar. Every step is a real sequence with a name
+attached, drawn from the families that carry state: CSI with parameters weighted
+toward the values that have broken terminals, SGR including the colon
+subparameter forms, private modes, OSC and DCS and APC strings with and without
+their terminators, tmux and screen passthrough wrappings, margins, the erase
+family with the protection attribute that changes what erasing means, the tab
+stop table, and text drawn from the classes that decide layout: wide characters,
+combining marks, joiner sequences, regional indicators, presentation selectors,
+and encodings a decoder has to reject. One step in twenty is rewritten to
+introduce itself with an eight-bit C1 byte instead of ESC, which means the same
+thing and enters the parser through a different door.
+
+```go
+script := vtgen.New(seed).Script(150)
+for _, seq := range script {
+    if seq.Kind == "resize" {
+        term.Resize(seq.Cols, seq.Rows)
+        continue
+    }
+    term.Write([]byte(seq.Bytes))
+}
+```
+
+`vtgen.FromBytes` decodes a `go test -fuzz` corpus entry into a script instead,
+so the mutator steers which sequences get generated rather than which bytes get
+rejected, and a corpus entry always decodes to the same run.
+
+`Script.SplitWrites` replays the same bytes chopped at the boundaries a PTY read
+would have drawn. A read boundary falls wherever the kernel put it: inside a
+multi-byte character, halfway through a CSI parameter list, between a base
+character and the mark that belongs to it. A parser that only ever sees whole
+sequences is not the parser that runs in production, and the state it carries
+across a boundary is the state nothing else exercises.
+
+`vtgen.Shrink` reduces a failing script against a predicate that says whether it
+still fails. It runs delta debugging to a fixpoint and then simplifies the steps
+that survive in place, so a report names which parameter mattered rather than
+leaving a reader to work it out. Because every step is named, what comes out is
+something a person can read and retype:
+
+```
+  1  margin \e7\e[?69h\e[118;28s   DECSC save cursor, then enable DECLRMM, then
+                                    DECSLRM left and right margins 118 and 28
+  2  resize -                        resize to 40x12
+  3  esc    \e8                      DECRC restore cursor
+```
+
+Three bugs in tuitest's own emulator were found this way within the first five
+seeds, all the same shape: state a program set for the size it last saw, kept
+verbatim after that size changed. See `TestVTGenSweep` and the two fuzz targets
+in `internal/vt`.
+
 ## Testing the fuzzer
 
 The fuzzer is verified against `testdata/buggytui`, a fixture with individually

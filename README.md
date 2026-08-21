@@ -143,6 +143,7 @@ flowchart TB
   end
 
   FUZZ[fuzz<br/>generator, detectors, shrinker]
+  VTGEN[fuzz/vtgen<br/>VT sequence generator, shrinker]
 
   TAPE --> PARSE --> PLAY --> TERM
   REG --> PLAY
@@ -150,6 +151,7 @@ flowchart TB
   REG --> FUZZ --> TERM
   TERM --> PTY --> PROG
   PROG --> PTY --> TERM --> EMU --> VT
+  VTGEN -.-> VT
 ```
 
 Only the root package is public API; `internal/emu`, `internal/vt` and
@@ -166,6 +168,11 @@ The `fuzz` package generates `tape.Command` values, not bytes. Candidates replay
 through the same player `tuitest run` uses, which is what makes a minimised
 reproduction trustworthy: it is not a description of what the fuzzer did, it is
 the same execution path.
+
+`fuzz/vtgen` points the other way. It generates the bytes a program writes,
+by grammar rather than by byte, for testing whatever parses them: tuitest aims
+it at its own emulator, and it is public so anything else with a VT parser can
+aim it at theirs. See [docs/fuzzing.md](docs/fuzzing.md).
 
 ## How a tape becomes assertions
 
