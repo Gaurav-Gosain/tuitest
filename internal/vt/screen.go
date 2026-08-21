@@ -69,7 +69,41 @@ func (s *Screen) Resize(width int, height int) {
 	if h := s.buf.Height(); len(s.buf.Touched) != h {
 		s.buf.Touched = make([]*uv.LineData, h)
 	}
+	s.blankWideRunesCutByTheEdge()
 	s.scroll = s.buf.Bounds()
+
+	// Both the live cursor and the saved one have to come back inside the new
+	// screen. A resize can land between a DECSC and its DECRC, and the screen
+	// that is not currently active is resized here too, so a program that
+	// swapped to the alternate screen and back returns with a cursor still
+	// addressing the size it left.
+	s.cur.X = clamp(s.cur.X, 0, max(s.buf.Width()-1, 0))
+	s.cur.Y = clamp(s.cur.Y, 0, max(s.buf.Height()-1, 0))
+	s.saved.X = clamp(s.saved.X, 0, max(s.buf.Width()-1, 0))
+	s.saved.Y = clamp(s.saved.Y, 0, max(s.buf.Height()-1, 0))
+}
+
+// blankWideRunesCutByTheEdge clears a double-width rune left sitting in the
+// last column by a narrowing resize.
+//
+// Dropping columns takes away the continuation cell a wide rune needs without
+// touching the lead, so the grid comes out holding a rune two cells wide one
+// column from the edge. Everything that reads the grid back then renders it
+// whole and returns a row one cell wider than the screen it came from, so
+// Line and Text disagree with Size and an assertion about a column near the
+// right edge is answered about a cell that does not fit there. Blanking the
+// half left standing is what the insert and delete paths already do to a rune
+// they cut.
+func (s *Screen) blankWideRunesCutByTheEdge() {
+	x := s.buf.Width() - 1
+	if x < 0 {
+		return
+	}
+	for y := range s.buf.Height() {
+		if c := s.buf.CellAt(x, y); c != nil && c.Width > 1 {
+			s.buf.SetCell(x, y, nil)
+		}
+	}
 }
 
 // Width returns the width of the screen.
@@ -97,10 +131,18 @@ func (s *Screen) FillArea(c *uv.Cell, area uv.Rectangle) {
 	s.buf.FillArea(c, area)
 }
 
-// setHorizontalMargins sets the horizontal margins.
+// setHorizontalMargins sets the horizontal margins, clamped to the screen.
+//
+// The clamp is load bearing for the reason its vertical twin below is, and it
+// was missed when that one was added. DECSLRM carries a column the program
+// worked out from the width it last saw, so a pane narrowed under a program
+// that has not yet handled SIGWINCH sets a right margin past the end of every
+// row. Storing it verbatim leaves Max.X outside the buffer, and the first
+// insert, delete, or scroll inside the region indexes out of range.
 func (s *Screen) setHorizontalMargins(left, right int) {
-	s.scroll.Min.X = left
-	s.scroll.Max.X = right
+	width := s.buf.Width()
+	s.scroll.Min.X = clamp(left, 0, max(width-1, 0))
+	s.scroll.Max.X = clamp(right, s.scroll.Min.X+1, width)
 }
 
 // setVerticalMargins sets the vertical margins, clamped to the screen.
@@ -195,10 +237,19 @@ func (s *Screen) SaveCursor() {
 	s.saved = s.cur
 }
 
-// RestoreCursor restores the cursor.
+// RestoreCursor restores the cursor, clamped to the screen it is being
+// restored onto.
+//
+// The saved position outlives a resize, so a program that saves the cursor,
+// gets narrower, and then restores names a cell that no longer exists. Nothing
+// rejects that on the way in, so the cursor simply sits outside the grid and
+// every position the harness reports afterwards is a coordinate no terminal
+// would ever show.
 func (s *Screen) RestoreCursor() {
 	old := s.cur.Position
 	s.cur = s.saved
+	s.cur.X = clamp(s.cur.X, 0, max(s.buf.Width()-1, 0))
+	s.cur.Y = clamp(s.cur.Y, 0, max(s.buf.Height()-1, 0))
 
 	if s.cb.CursorPosition != nil && (old.X != s.cur.X || old.Y != s.cur.Y) {
 		s.cb.CursorPosition(old, s.cur.Position)
