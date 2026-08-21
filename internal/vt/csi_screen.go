@@ -11,6 +11,19 @@ func (e *Emulator) eraseCharacter(n int) {
 		n = 1
 	}
 	x, y := e.scr.CursorPosition()
+	// Clamp to the cells left on the line. ECH cannot erase past the right
+	// margin, and the count arrives straight off the wire: a program that
+	// emits ESC[2147483647X would otherwise drive FillArea through two billion
+	// out-of-bounds cells. Nothing is reading the PTY while that runs, so the
+	// program under test blocks on a full pipe and the run stalls on what
+	// should have been a single erase.
+	if rem := e.scr.Width() - x; n > rem {
+		n = rem
+	}
+	if n <= 0 {
+		e.atPhantom = false
+		return
+	}
 	rect := uv.Rect(x, y, n, 1)
 	e.scr.FillArea(e.scr.blankCell(), rect)
 	e.atPhantom = false
