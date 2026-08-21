@@ -38,7 +38,12 @@ func (e *Emulator) handleRequestMode(params ansi.Params, isAnsi bool) {
 		mode = ansi.ANSIMode(n)
 	}
 
+	// The mode map is written by the goroutine feeding the emulator and read
+	// here, so this read takes the same lock the writes do.
+	e.modesMu.RLock()
 	setting := e.modes[mode]
+	e.modesMu.RUnlock()
+
 	_, _ = io.WriteString(e.pipe, ansi.ReportMode(mode, setting))
 }
 

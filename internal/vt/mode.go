@@ -7,6 +7,11 @@ func (e *Emulator) resetModes() {
 	e.modesMu.Lock()
 	e.modes = ansi.Modes{
 		// Recognized modes and their default values.
+		// A mode this emulator acts on has to be listed here even when its
+		// default is reset. DECRQM answers out of this map, and a mode missing
+		// from it is answered "not recognized", so a program that probes before
+		// enabling turns off a feature that works.
+		ansi.ModeInsertReplace:       ansi.ModeReset, // 4, an ANSI mode
 		ansi.ModeCursorKeys:          ansi.ModeReset, // ?1
 		ansi.ModeOrigin:              ansi.ModeReset, // ?6
 		ansi.ModeAutoWrap:            ansi.ModeSet,   // ?7
@@ -28,6 +33,7 @@ func (e *Emulator) resetModes() {
 		ansi.ModeSynchronizedOutput:  ansi.ModeReset, // ?2026
 		ansi.ModeUnicodeCore:         ansi.ModeReset, // ?2027
 		ansi.ModeLightDark:           ansi.ModeReset, // ?2031
+		ansi.ModeInBandResize:        ansi.ModeReset, // ?2048
 	}
 	e.modesMu.Unlock()
 

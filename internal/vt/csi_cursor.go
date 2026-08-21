@@ -5,6 +5,20 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// reportedCursorPosition is the cursor as a CPR reply spells it: one-based,
+// line before column, and relative to the scroll region when [ansi.DECOM] is
+// set. A program that asks where the cursor is is usually about to work out a
+// width or a prompt position from the answer, so a transposed or absolute
+// reply is worse than no reply at all: it is believed.
+func (e *Emulator) reportedCursorPosition() (line, col int) {
+	x, y := e.scr.CursorPosition()
+	if e.isModeSet(ansi.DECOM) {
+		r := e.scr.ScrollRegion()
+		x, y = x-r.Min.X, y-r.Min.Y
+	}
+	return y + 1, x + 1
+}
+
 // nextTab moves the cursor to the next tab stop n times. This respects the
 // horizontal scrolling region. This performs the same function as [ansi.CHT].
 func (e *Emulator) nextTab(n int) {
