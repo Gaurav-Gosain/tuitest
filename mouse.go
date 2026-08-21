@@ -86,7 +86,9 @@ type MouseEvent struct {
 	// coordinates are produced during encoding. When Pixel is set they are
 	// zero-based pixel offsets instead.
 	Col, Row int
-	// Button is the button or wheel direction involved.
+	// Button is the button or wheel direction involved. It is ignored for
+	// MouseMove, which is motion with nothing held: to send motion with a
+	// button down, use MouseDrag.
 	Button MouseButton
 	// Action is what the button did.
 	Action MouseAction

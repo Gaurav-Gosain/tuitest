@@ -65,6 +65,13 @@ letters are case-insensitive) and `Alt(k any)` prefixes with ESC.
 the zero-based `Col`/`Row` you give it. It writes them unconditionally, so a
 program that never enabled mouse reporting will not react at all.
 
+Motion comes in two spellings and they are not interchangeable. `MouseMove` is
+motion with nothing held, and it drops whatever `Button` you set; `MouseDrag` is
+motion with a button held and requires one. A drag written as `MouseMove` with a
+button still encodes as no button, so a program tracking mode 1002 receives
+nothing between the press and the release and the test quietly exercises
+any-motion reporting instead.
+
 `Paste` wraps text in bracketed-paste markers (mode 2004), the way a terminal
 delivers a real paste. Programs take a different code path for pasted text than
 for typed text, and it is usually the less tested one.

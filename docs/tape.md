@@ -130,12 +130,18 @@ program that negotiates different keyboard modes than the recording did.
 ```
 Mouse Press Left 10 5 +Ctrl
 Mouse Release Left 10 5
-Mouse Move Left 12 5
+Mouse Drag Left 12 5
+Mouse Move None 14 5
 ```
 
 The action is `Press`, `Release`, `Move` or `Drag`. `Move` is motion with
 nothing held and `Drag` is motion with a button held; on the wire both set the
 same motion bit, and they are told apart by whether a button is named.
+
+Naming a button on a `Move` does not make it a drag. The button is dropped and
+the line goes out as motion with nothing held, so a program tracking mode 1002
+sees nothing between the press and the release. Write `Drag` when a button is
+down.
 
 The button is `Left`, `Middle`, `Right`, `WheelUp`, `WheelDown`, `WheelLeft`,
 `WheelRight`, `Backward`, `Forward` or `None`. The coordinates are zero-based

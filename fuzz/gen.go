@@ -201,6 +201,11 @@ func (g *generator) mouseCommands() []tape.Command {
 	// A drag: press, several moves with the button held, then release. The
 	// moves walk from the press point so the path is coherent rather than
 	// teleporting, which is what a real drag looks like to the program.
+	//
+	// The moves are MouseDrag, not MouseMove. MouseMove is motion with nothing
+	// held and drops the button, so spelling a drag that way produces
+	// any-motion reports that a program tracking mode 1002 never sees, and the
+	// drag path goes unfuzzed while the run looks like it covered it.
 	start := g.mouse()
 	start.Action = tuitest.MousePress
 	if start.Button > tuitest.MouseRight {
@@ -214,7 +219,7 @@ func (g *generator) mouseCommands() []tape.Command {
 		col += g.rand.IntN(7) - 3
 		row += g.rand.IntN(5) - 2
 		mv := start
-		mv.Action = tuitest.MouseMove
+		mv.Action = tuitest.MouseDrag
 		mv.Col, mv.Row = max(col, 0), max(row, 0)
 		cmds = append(cmds, tape.Command{Kind: tape.KindMouse, Mouse: mv})
 	}
