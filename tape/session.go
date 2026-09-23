@@ -36,7 +36,8 @@ type Session struct {
 	In io.Reader
 	// Out receives the program's output, normally the operator's terminal.
 	Out io.Writer
-	// Resizes, when non-nil, delivers terminal size changes.
+	// Resizes, when non-nil, delivers terminal size changes. Closing it is
+	// allowed and means no further resizes.
 	Resizes <-chan Size
 
 	Cols, Rows int
@@ -54,6 +55,10 @@ type Session struct {
 
 	// Recorder receives the events. A nil Recorder gets a default one.
 	Recorder *Recorder
+
+	// resizes is Resizes while it is open, and nil once it has been closed,
+	// so that a closed channel is not received from in a loop.
+	resizes <-chan Size
 }
 
 // readerChunk is one read from the input stream.
@@ -94,6 +99,7 @@ func (s *Session) Run() ([]Command, error) {
 	}
 
 	rec.Header(cols, rows, term, s.Env, s.Argv)
+	s.resizes = s.Resizes
 
 	opts := []tuitest.Option{
 		tuitest.WithSize(cols, rows),
@@ -159,7 +165,11 @@ func (s *Session) Run() ([]Command, error) {
 				if c.err != nil {
 					stopped = true
 				}
-			case sz := <-s.Resizes:
+			case sz, ok := <-s.resizes:
+				if !ok {
+					s.resizes = nil
+					continue
+				}
 				s.applyResize(tt, rec, sz)
 				continue
 			case <-tt.Done():
@@ -295,7 +305,13 @@ func (s *Session) settleOnce(tt *tuitest.Terminal, quiet, settleMax time.Duratio
 			}
 			return settleResult{text: tt.Snapshot(), pending: c.data, stop: c.err != nil}
 
-		case sz := <-s.Resizes:
+		case sz, ok := <-s.resizes:
+			if !ok {
+				// A closed channel is always ready. Without this the
+				// loop would spin and restart the quiet window forever.
+				s.resizes = nil
+				continue
+			}
 			s.applyResize(tt, rec, sz)
 			// A resize repaints, so restart the quiet window.
 			quietSince = time.Now()
