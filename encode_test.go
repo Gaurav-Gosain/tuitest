@@ -8,15 +8,73 @@ import (
 	"github.com/Gaurav-Gosain/tuitest/internal/emu"
 )
 
+// TestCtrl pins Ctrl to the xterm table. Masking every rune to five bits, as
+// Ctrl used to, is right for letters and wrong for most other keys: it turned
+// Ctrl('2') into 0x12 (Ctrl+R), Ctrl('?') into 0x1f and Ctrl('1') into 0x11
+// (Ctrl+Q, which is XON), and it truncated any rune above 0xff to a byte.
 func TestCtrl(t *testing.T) {
-	if got := Ctrl('b'); got != "\x02" {
-		t.Errorf("Ctrl('b') = %q, want \\x02", got)
+	cases := []struct {
+		r    rune
+		want Key
+	}{
+		{'b', "\x02"},
+		{'B', "\x02"},
+		{'c', "\x03"},
+		{'a', "\x01"},
+		{'z', "\x1a"},
+		{'@', "\x00"},
+		{' ', "\x00"},
+		{'[', "\x1b"},
+		{'\\', "\x1c"},
+		{']', "\x1d"},
+		{'^', "\x1e"},
+		{'_', "\x1f"},
+		{'2', "\x00"},
+		{'3', "\x1b"},
+		{'4', "\x1c"},
+		{'5', "\x1d"},
+		{'6', "\x1e"},
+		{'7', "\x1f"},
+		{'8', "\x7f"},
+		{'?', "\x7f"},
+		{'1', "1"},
+		{'9', "9"},
+		{'é', "é"},
+		{'ł', "ł"},
 	}
-	if got := Ctrl('B'); got != "\x02" {
-		t.Errorf("Ctrl('B') = %q, want \\x02", got)
+	for _, tc := range cases {
+		if got := Ctrl(tc.r); got != tc.want {
+			t.Errorf("Ctrl(%q) = %q, want %q", tc.r, got, tc.want)
+		}
 	}
-	if got := Ctrl('c'); got != "\x03" {
-		t.Errorf("Ctrl('c') = %q, want \\x03", got)
+}
+
+// TestCursorKeysFollowDECCKM covers the cursor key mode. A terminal sends the
+// arrow keys, Home and End as SS3 sequences once a program sets mode 1, and a
+// program that set it matches its input against those. Sending the CSI form
+// regardless, as SendKeys used to, is sending a key the program does not know.
+func TestCursorKeysFollowDECCKM(t *testing.T) {
+	normal := map[Key]string{Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D", Home: "\x1b[H", End: "\x1b[F"}
+	app := map[Key]string{Up: "\x1bOA", Down: "\x1bOB", Right: "\x1bOC", Left: "\x1bOD", Home: "\x1bOH", End: "\x1bOF"}
+	for k, want := range normal {
+		if got, _ := keyString(k, false); got != want {
+			t.Errorf("keyString(%q, false) = %q, want %q", k, got, want)
+		}
+		if got, _ := keyString(k, true); got != app[k] {
+			t.Errorf("keyString(%q, true) = %q, want %q", k, got, app[k])
+		}
+	}
+	// Other keys and literal text are not affected by the mode.
+	for _, k := range []Key{PageUp, Delete, F1, Enter, Esc} {
+		if got, _ := keyString(k, true); got != string(k) {
+			t.Errorf("keyString(%q, true) = %q, want it unchanged", k, got)
+		}
+	}
+	if got, _ := keyString("\x1b[A", true); got != "\x1b[A" {
+		t.Errorf("a plain string must be sent literally, got %q", got)
+	}
+	if got, _ := keyString([]any{Up, []Key{Down}}, true); got != "\x1bOA\x1bOB" {
+		t.Errorf("keys inside slices must follow the mode too, got %q", got)
 	}
 }
 
@@ -30,14 +88,14 @@ func TestAlt(t *testing.T) {
 }
 
 func TestKeyString(t *testing.T) {
-	got, err := keyString([]any{"ab", 'c', Enter})
+	got, err := keyString([]any{"ab", 'c', Enter}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "abc\r" {
 		t.Errorf("keyString = %q, want %q", got, "abc\r")
 	}
-	if _, err := keyString(42); err == nil {
+	if _, err := keyString(42, false); err == nil {
 		t.Error("expected error for unsupported type int")
 	}
 }

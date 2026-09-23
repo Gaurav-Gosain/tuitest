@@ -1,6 +1,9 @@
 package tuitest
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Key is a named key or chord expressed as the escape sequence it sends. Using
 // typed values means a mistyped key name is a compile error, not a silent
@@ -39,13 +42,31 @@ const (
 	F12 Key = "\x1b[24~"
 )
 
-// Ctrl returns the control-key byte for a rune, so Ctrl('b') is 0x02. Letters
-// are case-insensitive.
+// Ctrl returns the byte a terminal sends for a rune typed with Control held,
+// so Ctrl('b') is 0x02. Letters are case-insensitive.
+//
+// It follows the xterm table rather than masking every rune to five bits, which
+// is what makes the non-letter chords come out right: Ctrl('@'), Ctrl(' ') and
+// Ctrl('2') are NUL, Ctrl('[') and Ctrl('3') are ESC, Ctrl('\\'), Ctrl(']'),
+// Ctrl('^') and Ctrl('_') are 0x1c to 0x1f as are Ctrl('4') to Ctrl('7'), and
+// Ctrl('?') and Ctrl('8') are DEL. A rune with no control encoding, such as a
+// digit other than 2 to 8 or anything outside ASCII, is sent unchanged, since
+// that is what a terminal without the kitty keyboard protocol sends for it.
 func Ctrl(r rune) Key {
-	if r >= 'a' && r <= 'z' {
-		r -= 'a' - 'A'
+	switch {
+	case r >= 'a' && r <= 'z':
+		return Key([]byte{byte(r - 'a' + 1)})
+	case r >= '@' && r <= '_': // @, A-Z, [, \, ], ^, _
+		return Key([]byte{byte(r) & 0x1f})
+	case r == ' ' || r == '2':
+		return Key([]byte{0})
+	case r >= '3' && r <= '7':
+		return Key([]byte{byte(r-'3') + 0x1b})
+	case r == '?' || r == '8':
+		return Key([]byte{0x7f})
+	default:
+		return Key(string(r))
 	}
-	return Key([]byte{byte(r) & 0x1f})
 }
 
 // Alt prefixes a key or rune with ESC, the conventional meta encoding. It
@@ -53,43 +74,60 @@ func Ctrl(r rune) Key {
 // bare Esc, since Alt has no way to report an error. Pass a string, rune, Key,
 // or slice of those and that cannot happen.
 func Alt(k any) Key {
-	s, err := keyString(k)
+	s, err := keyString(k, false)
 	if err != nil {
 		return Esc
 	}
 	return Key("\x1b" + s)
 }
 
-func keyString(item any) (string, error) {
+// applicationCursorKeys maps each cursor key to what a terminal sends for it
+// once the program has set DECCKM (mode 1): the same final byte, introduced by
+// SS3 instead of CSI.
+var applicationCursorKeys = map[Key]Key{
+	Up:    "\x1bOA",
+	Down:  "\x1bOB",
+	Right: "\x1bOC",
+	Left:  "\x1bOD",
+	Home:  "\x1bOH",
+	End:   "\x1bOF",
+}
+
+// keyString flattens one SendKeys item into the bytes to send. appCursor
+// reports whether the program has set DECCKM, in which case the named cursor
+// keys are sent in their SS3 form.
+func keyString(item any, appCursor bool) (string, error) {
 	switch v := item.(type) {
 	case Key:
+		if appCursor {
+			if k, ok := applicationCursorKeys[v]; ok {
+				return string(k), nil
+			}
+		}
 		return string(v), nil
 	case string:
 		return v, nil
 	case rune:
 		return string(v), nil
 	case []Key:
-		var s string
+		var s strings.Builder
 		for _, k := range v {
-			s += string(k)
+			ks, _ := keyString(k, appCursor)
+			s.WriteString(ks)
 		}
-		return s, nil
+		return s.String(), nil
 	case []string:
-		var s string
-		for _, k := range v {
-			s += k
-		}
-		return s, nil
+		return strings.Join(v, ""), nil
 	case []any:
-		var s string
+		var s strings.Builder
 		for _, k := range v {
-			ks, err := keyString(k)
+			ks, err := keyString(k, appCursor)
 			if err != nil {
 				return "", err
 			}
-			s += ks
+			s.WriteString(ks)
 		}
-		return s, nil
+		return s.String(), nil
 	default:
 		return "", fmt.Errorf("tuitest: unsupported key item %T", item)
 	}
@@ -103,9 +141,14 @@ const (
 )
 
 // Paste sends text wrapped in bracketed-paste markers, the way a terminal
-// delivers a real paste. Programs that enable mode 2004 take a different code
-// path for pasted text than for typed text, and that path is often the less
-// tested one.
+// delivers a real paste to a program that enabled mode 2004. Such programs take
+// a different code path for pasted text than for typed text, and that path is
+// often the less tested one.
+//
+// The markers are sent whether or not the program enabled the mode, so a test
+// can check how a program copes with markers it did not ask for. A real
+// terminal sends a paste to such a program as plain text; to reproduce that,
+// use Type.
 func (t *Terminal) Paste(s string) error {
 	return t.write([]byte(pasteStart + s + pasteEnd))
 }
@@ -117,10 +160,19 @@ func (t *Terminal) Paste(s string) error {
 //
 //	term.SendKeys("git status", tuitest.Enter)
 //	term.SendKeys(tuitest.Ctrl('b'), "%")
+//
+// The arrow keys, Home and End are sent the way a terminal sends them in the
+// program's current cursor key mode: as CSI sequences (ESC [ A) normally, and
+// as SS3 sequences (ESC O A) once the program has set DECCKM (mode 1), which
+// full-screen programs built on terminfo do at startup and then match against.
+// Every other key is sent as its constant says.
 func (t *Terminal) SendKeys(items ...any) error {
+	t.mu.Lock()
+	appCursor := t.emu.ApplicationCursorKeys()
+	t.mu.Unlock()
 	var buf []byte
 	for _, item := range items {
-		s, err := keyString(item)
+		s, err := keyString(item, appCursor)
 		if err != nil {
 			return err
 		}
