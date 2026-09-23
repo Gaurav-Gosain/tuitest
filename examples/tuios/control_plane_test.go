@@ -41,28 +41,13 @@ type ctlEnv struct {
 func newCtlEnv(t *testing.T) *ctlEnv {
 	t.Helper()
 	bin := locateTuios(t)
-
-	base := t.TempDir()
-	env := make([]string, 0, 8)
-	dirs := map[string]string{}
-	for _, key := range []string{
-		"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
-		"XDG_CACHE_HOME", "XDG_DATA_HOME",
-	} {
-		dir := filepath.Join(base, key)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", key, err)
-		}
-		dirs[key] = dir
-		env = append(env, key+"="+dir)
-	}
-	env = append(env, "SHELL=/bin/sh")
+	env, runtimeDir := hermeticEnv(t)
 
 	e := &ctlEnv{
 		t:      t,
 		bin:    bin,
 		env:    env,
-		socket: filepath.Join(dirs["XDG_RUNTIME_DIR"], "tuios", "tuios.sock"),
+		socket: filepath.Join(runtimeDir, "tuios", "tuios.sock"),
 	}
 	t.Cleanup(e.killServer)
 	return e

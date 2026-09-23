@@ -11,9 +11,10 @@
 //
 // Each test runs tuios in a fully isolated, hermetic environment: a private
 // TERM, SHELL, and a per-test set of XDG directories (config, state, cache,
-// data, runtime). That keeps the user's real tuios daemon socket, sessions, and
-// config file completely untouched, and lets tests run in parallel without
-// colliding on a shared daemon.
+// data, runtime, and the config and data search lists). That keeps the user's
+// real tuios daemon socket, sessions, and config file completely untouched, and
+// lets tests run in parallel without colliding on a shared daemon. See
+// hermeticEnv for the two details that are easy to get wrong.
 //
 // # tuios interaction notes (learned by driving it)
 //
@@ -33,12 +34,16 @@
 //     keys for 150ms (a guard against misparsed mouse-sequence fragments during
 //     the AllMotion->CellMotion transition). Input typed inside that window is
 //     silently dropped, so tests settle briefly before typing. See
-//     settlePastInsertGuard.
+//     enterTerminalMode.
 //
 //  2. tuios shows mode changes as toast notifications that linger and stack, so
-//     both "Terminal Mode" and "Window Management Mode" can be on screen at
+//     both "Terminal mode" and "Window management mode" can be on screen at
 //     once. Assertions therefore wait for the *newly appearing* toast (a
 //     positive edge) rather than for an old one to disappear.
+//
+// These tests assert on text tuios draws, so a tuios release that rewords its
+// welcome screen or its toasts breaks them. When that happens, update the
+// strings below from what `tuitest snap -- tuios` prints.
 package tuios_test
 
 import (
@@ -54,7 +59,10 @@ import (
 
 const (
 	welcomeText = "Terminal UI Operating System"
-	welcomeHint = "Press 'n' for a new window"
+	welcomeHint = "new window"
+
+	terminalModeToast = "Terminal mode"
+	windowModeToast   = "Window management mode"
 )
 
 // insertGuard is tuios's post-terminal-mode single-char suppression window
@@ -74,42 +82,90 @@ func locateTuios(t *testing.T) string {
 	return ""
 }
 
-// startTuios spawns tuios headlessly in a hermetic, per-test environment. Every
-// XDG directory is redirected into the test's TempDir so the real daemon socket,
-// sessions, and user config are never touched, and TERM/SHELL are pinned for
-// determinism.
-func startTuios(t *testing.T, opts ...tuitest.Option) *tuitest.Terminal {
+// maxSocketPath is the size of sockaddr_un's path field on Darwin, the smaller
+// of the two Unix platforms tuitest runs on (Linux allows 108).
+const maxSocketPath = 104
+
+// hermeticEnv returns the environment for an isolated tuios installation: every
+// XDG directory redirected into a fresh per-test root, and a plain POSIX shell.
+//
+// Two details are easy to get wrong:
+//
+//   - XDG_RUNTIME_DIR, where the daemon puts its unix socket, cannot live under
+//     t.TempDir on macOS. That path starts with a 49 byte $TMPDIR and adds the
+//     test name, and a socket path longer than 104 bytes makes bind fail with
+//     EINVAL, which tuios reports as a daemon that "exited immediately". The
+//     runtime directory is made under /tmp instead.
+//   - XDG_CONFIG_DIRS and XDG_DATA_DIRS are search lists. On macOS they include
+//     ~/.config whatever XDG_CONFIG_HOME says, so leaving them unset lets the
+//     developer's own config into the test.
+func hermeticEnv(t *testing.T) (env []string, runtimeDir string) {
 	t.Helper()
-	bin := locateTuios(t)
+
+	runtimeDir, err := os.MkdirTemp("/tmp", "tt")
+	if err != nil {
+		t.Fatalf("hermeticEnv: runtime dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	if n := len(runtimeDir + "/tuios/tuios.sock.pid"); n > maxSocketPath {
+		t.Fatalf("hermeticEnv: %s leaves a %d byte socket path, over the %d byte limit", runtimeDir, n, maxSocketPath)
+	}
+	env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
 
 	base := t.TempDir()
-	env := make([]string, 0, 8)
-	// Isolate config AND runtime (daemon socket lives under XDG_RUNTIME_DIR) plus
-	// the rest of the XDG family, so nothing leaks into the user's real state.
 	for _, key := range []string{
-		"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
-		"XDG_CACHE_HOME", "XDG_DATA_HOME",
+		"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+		"XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
 	} {
 		dir := filepath.Join(base, key)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("startTuios: mkdir %s: %v", key, err)
+			t.Fatalf("hermeticEnv: mkdir %s: %v", key, err)
 		}
 		env = append(env, key+"="+dir)
 	}
-	// A deterministic POSIX shell with a stable, greppable prompt.
-	env = append(env, "SHELL=/bin/sh")
+	// A deterministic POSIX shell with no rc file changing the prompt.
+	env = append(env, "SHELL=/bin/sh", "ENV=", "PS1=$ ")
+	return env, runtimeDir
+}
 
-	base_opts := []tuitest.Option{
+// startTuios spawns the standalone tuios TUI headlessly in a hermetic, per-test
+// environment. TUIOS_NO_DAEMON keeps a bare "tuios" standalone, since recent
+// releases otherwise start a daemon and attach to it. Animations are off because
+// they make frames depend on timing without testing anything asserted here.
+func startTuios(t *testing.T, opts ...tuitest.Option) *tuitest.Terminal {
+	t.Helper()
+	bin := locateTuios(t)
+	env, _ := hermeticEnv(t)
+	env = append(env, "TUIOS_NO_DAEMON=1")
+
+	baseOpts := []tuitest.Option{
 		tuitest.WithSize(120, 40),
 		tuitest.WithTerm("xterm-256color"),
 		tuitest.WithEnv(env...),
 	}
-	return tuitest.StartT(t, []string{bin}, append(base_opts, opts...)...)
+	return tuitest.StartT(t, []string{bin, "--no-animations"}, append(baseOpts, opts...)...)
 }
 
-// settlePastInsertGuard waits out tuios's 150ms single-char suppression window
-// so the next typed command is not silently dropped.
-func settlePastInsertGuard() { time.Sleep(insertGuard + 100*time.Millisecond) }
+// enterTerminalMode presses 'i' until the terminal mode toast appears, then
+// waits out the insert guard so the next typed command is not dropped. It
+// retries because a keypress that lands while tuios is still settling can be
+// swallowed.
+func enterTerminalMode(t *testing.T, term *tuitest.Terminal) {
+	t.Helper()
+	for range 4 {
+		if err := term.SendKeys("i"); err != nil {
+			t.Fatal(err)
+		}
+		if err := term.WaitForText(terminalModeToast, 3*time.Second); err == nil {
+			time.Sleep(insertGuard + 100*time.Millisecond)
+			return
+		}
+		if _, exited := term.ExitCode(); exited {
+			t.Fatalf("tuios exited while entering terminal mode\n%s", term.Snapshot())
+		}
+	}
+	t.Fatalf("did not enter terminal mode\n%s", term.Snapshot())
+}
 
 // TestBootRendersWelcome proves the harness spawns tuios in a PTY, interprets
 // its output, and sees the initial welcome UI.
@@ -151,13 +207,7 @@ func TestWindowLifecycle(t *testing.T) {
 	}
 
 	// 3. Enter terminal mode so keystrokes reach the shell.
-	if err := term.SendKeys("i"); err != nil {
-		t.Fatal(err)
-	}
-	if err := term.WaitForText("Terminal Mode", 5*time.Second); err != nil {
-		t.Fatalf("did not enter terminal mode: %v", err)
-	}
-	settlePastInsertGuard()
+	enterTerminalMode(t, term)
 
 	// 4. Run a command in the pane's shell. The marker is computed by the shell
 	//    ($((21*2)) -> 42) so seeing "marker-42" proves the command actually ran,
@@ -173,7 +223,7 @@ func TestWindowLifecycle(t *testing.T) {
 	if err := term.SendKeys(tuitest.Alt(tuitest.Esc)); err != nil {
 		t.Fatal(err)
 	}
-	if err := term.WaitForText("Window Management Mode", 5*time.Second); err != nil {
+	if err := term.WaitForText(windowModeToast, 5*time.Second); err != nil {
 		t.Fatalf("did not return to window management mode: %v", err)
 	}
 

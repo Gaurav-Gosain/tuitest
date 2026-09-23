@@ -36,13 +36,7 @@ func TestFloodWithResize(t *testing.T) {
 	}, 5*time.Second); err != nil {
 		t.Fatalf("window did not appear: %v", err)
 	}
-	if err := term.SendKeys("i"); err != nil {
-		t.Fatal(err)
-	}
-	if err := term.WaitForText("Terminal Mode", 5*time.Second); err != nil {
-		t.Fatalf("did not enter terminal mode: %v", err)
-	}
-	settlePastInsertGuard()
+	enterTerminalMode(t, term)
 
 	// Kick off the flood inside the pane's shell.
 	if err := term.SendKeys("seq 1 2000000", tuitest.Enter); err != nil {
