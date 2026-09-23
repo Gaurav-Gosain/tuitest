@@ -1,11 +1,22 @@
-// Package fixtures provides testing utilities for tuitest, including a fake
-// shell that produces predictable output and sends/receives ANSI sequences,
-// plus an ANSI escape-sequence builder. It is copied verbatim from tuios's
-// internal/testutil package (pure stdlib, no tuios imports).
+// Package fixtures provides in-process helpers for testing code that consumes
+// terminal output: FakeShell, an io.ReadWriteCloser that stands in for the
+// shell side of a PTY, and ANSIBuilder, which assembles escape sequences
+// without hand-written byte strings.
+//
+// Nothing here spawns a process. Use it to unit test a parser, an emulator or a
+// renderer; use the root tuitest package to test a real program through a real
+// PTY. It started as a copy of tuios's internal/testutil and has since been
+// fixed independently: FakeShell no longer delivers queued output twice.
+//
+//	sh := fixtures.NewFakeShell()
+//	sh.SendOutput(fixtures.NewANSIBuilder().Bold().Text("hi").Reset().String())
+//	buf := make([]byte, 64)
+//	n, _ := sh.Read(buf) // "\x1b[1mhi\x1b[0m"
 package fixtures
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -25,7 +36,11 @@ type FakeShell struct {
 	inputHistory []string      // History of all received input
 	closed       bool
 	closeOnce    sync.Once
-	readCh       chan []byte // Channel to signal new output is available
+	// outputBuf is the only copy of pending output. ready holds one token
+	// whenever output may have arrived since a reader last looked, and done
+	// is closed by Close, so a blocked reader wakes for either.
+	ready chan struct{}
+	done  chan struct{}
 }
 
 // NewFakeShell creates a new fake shell for testing.
@@ -34,34 +49,53 @@ func NewFakeShell() *FakeShell {
 		inputBuf:     new(bytes.Buffer),
 		outputBuf:    new(bytes.Buffer),
 		inputHistory: make([]string, 0),
-		readCh:       make(chan []byte, 100),
+		ready:        make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
 }
 
 // Read implements io.Reader, reading output that should go to the terminal.
-// This simulates PTY read (output from shell).
+// This simulates PTY read (output from shell). It blocks until output is
+// queued or the shell is closed, and returns io.EOF once it is closed.
 func (f *FakeShell) Read(p []byte) (n int, err error) {
-	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		return 0, io.EOF
-	}
+	return f.read(p, nil)
+}
 
-	// Check if there's data in the buffer
-	if f.outputBuf.Len() > 0 {
-		n, err = f.outputBuf.Read(p)
+// read returns queued output, waiting for some if none is queued. A nil
+// timeout channel waits forever.
+func (f *FakeShell) read(p []byte, timeout <-chan time.Time) (int, error) {
+	for {
+		f.mu.Lock()
+		if f.closed {
+			f.mu.Unlock()
+			return 0, io.EOF
+		}
+		if f.outputBuf.Len() > 0 {
+			n, err := f.outputBuf.Read(p)
+			f.mu.Unlock()
+			return n, err
+		}
 		f.mu.Unlock()
-		return n, err
-	}
-	f.mu.Unlock()
 
-	// Wait for new data
-	data, ok := <-f.readCh
-	if !ok {
-		return 0, io.EOF
+		select {
+		case <-f.ready:
+		case <-f.done:
+		case <-timeout:
+			return 0, errReadTimeout
+		}
 	}
-	n = copy(p, data)
-	return n, nil
+}
+
+// errReadTimeout is returned by ReadWithTimeout when no output arrives in time.
+var errReadTimeout = errors.New("fixtures: read timed out")
+
+// notify wakes a blocked reader. The channel holds at most one token, which is
+// all a reader needs: it rechecks the buffer after waking.
+func (f *FakeShell) notify() {
+	select {
+	case f.ready <- struct{}{}:
+	default:
+	}
 }
 
 // Write implements io.Writer, receiving input from the terminal.
@@ -87,43 +121,35 @@ func (f *FakeShell) Close() error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.closed = true
-		close(f.readCh)
+		close(f.done)
 	})
 	return nil
 }
 
 // SendOutput queues output to be read by the terminal.
-// Use this to simulate shell output.
+// Use this to simulate shell output. It does nothing after Close.
 func (f *FakeShell) SendOutput(data string) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if f.closed {
+		f.mu.Unlock()
 		return
 	}
-
 	f.outputBuf.WriteString(data)
-	// Non-blocking send to channel
-	select {
-	case f.readCh <- []byte(data):
-	default:
-	}
+	f.mu.Unlock()
+	f.notify()
 }
 
-// SendBytes queues raw bytes to be read by the terminal.
+// SendBytes queues raw bytes to be read by the terminal. The bytes are copied,
+// so the caller may reuse data. It does nothing after Close.
 func (f *FakeShell) SendBytes(data []byte) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if f.closed {
+		f.mu.Unlock()
 		return
 	}
-
 	f.outputBuf.Write(data)
-	select {
-	case f.readCh <- data:
-	default:
-	}
+	f.mu.Unlock()
+	f.notify()
 }
 
 // GetInput returns all input received so far.
@@ -162,32 +188,17 @@ func (f *FakeShell) SendOutputf(format string, args ...any) {
 	f.SendOutput(fmt.Sprintf(format, args...))
 }
 
-// ReadWithTimeout reads from the shell with a timeout.
-// Returns the data read, or an error if the timeout expires or the shell is closed.
+// ReadWithTimeout is Read with a deadline. It returns io.EOF once the shell is
+// closed, and a non-nil error other than io.EOF if no output arrives within
+// timeout.
 func (f *FakeShell) ReadWithTimeout(p []byte, timeout time.Duration) (int, error) {
-	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		return 0, io.EOF
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	n, err := f.read(p, timer.C)
+	if errors.Is(err, errReadTimeout) {
+		return n, fmt.Errorf("read timed out after %v: %w", timeout, err)
 	}
-
-	if f.outputBuf.Len() > 0 {
-		n, err := f.outputBuf.Read(p)
-		f.mu.Unlock()
-		return n, err
-	}
-	f.mu.Unlock()
-
-	select {
-	case data, ok := <-f.readCh:
-		if !ok {
-			return 0, io.EOF
-		}
-		n := copy(p, data)
-		return n, nil
-	case <-time.After(timeout):
-		return 0, fmt.Errorf("read timed out after %v", timeout)
-	}
+	return n, err
 }
 
 // =============================================================================
@@ -592,7 +603,7 @@ func (a *ANSIBuilder) Bytes() []byte {
 	return []byte(a.buf.String())
 }
 
-// Reset clears the builder.
+// Clear empties the builder. Reset, by contrast, appends SGR 0.
 func (a *ANSIBuilder) Clear() *ANSIBuilder {
 	a.buf.Reset()
 	return a
@@ -626,7 +637,8 @@ func ColoredLine(color int, text string) string {
 		String()
 }
 
-// LSOutput simulates `ls` command output with colors.
+// LSOutput simulates `ls` command output with colors. isDir[i] says whether
+// files[i] is a directory, so it must be at least as long as files.
 func LSOutput(files []string, isDir []bool) string {
 	b := NewANSIBuilder()
 	for i, file := range files {
@@ -639,8 +651,10 @@ func LSOutput(files []string, isDir []bool) string {
 	return b.Newline().String()
 }
 
-// ProgressBar simulates a progress bar update.
+// ProgressBar simulates a progress bar update. percent is clamped to 0..100,
+// so the bar is always width cells between its brackets.
 func ProgressBar(percent int, width int) string {
+	percent = min(max(percent, 0), 100)
 	filled := width * percent / 100
 	empty := width - filled
 
