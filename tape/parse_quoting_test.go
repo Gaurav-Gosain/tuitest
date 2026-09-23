@@ -53,6 +53,50 @@ func TestParseQuotedArguments(t *testing.T) {
 	}
 }
 
+// Before quoted arguments existed the recorder printed a double quote layout
+// character bare, so the kitty report "\x1b[39:34;2u" became
+// `Key Shift+' +Shifted "`. Quoted lexing after +Shifted read that lone quote as
+// an unterminated string and rejected the tape. A lone quote cannot begin a
+// Go-quoted string, so it is read bare again.
+//
+// Verified to fail without the fix: every case was an "unterminated quoted
+// argument" error.
+func TestParseLoneQuoteStaysBare(t *testing.T) {
+	cases := []struct {
+		src   string
+		check func(Command) bool
+	}{
+		{`Key Shift+' +Shifted "`, func(c Command) bool {
+			return c.KeyAttrs.Shifted == `"` && equalStrings(c.Keys, []string{"Shift+'"})
+		}},
+		{`Key ' +Base "`, func(c Command) bool { return c.KeyAttrs.Base == `"` }},
+		{`Key Shift+' +Shifted " +Base '`, func(c Command) bool {
+			return c.KeyAttrs.Shifted == `"` && c.KeyAttrs.Base == "'"
+		}},
+		// The quoted reading of `" +Text "` is not followed by a space, so the
+		// lone quote is the +Shifted value and +Text keeps its quoted string.
+		{`Key Shift+' +Shifted " +Text "\""`, func(c Command) bool {
+			return c.KeyAttrs.Shifted == `"` && c.KeyAttrs.Text == `"`
+		}},
+		{`Spawn printf "`, func(c Command) bool { return equalStrings(c.Argv, []string{"printf", `"`}) }},
+		// A well-formed quoted argument still wins, so a quoted space is a space.
+		{`Key Space +Shifted " "`, func(c Command) bool { return c.KeyAttrs.Shifted == " " }},
+		{`Spawn sh -c " echo hi"`, func(c Command) bool {
+			return equalStrings(c.Argv, []string{"sh", "-c", " echo hi"})
+		}},
+	}
+	for _, tc := range cases {
+		cmds, err := Parse(strings.NewReader(tc.src))
+		if err != nil {
+			t.Errorf("Parse(%q): %v", tc.src, err)
+			continue
+		}
+		if !tc.check(cmds[0]) {
+			t.Errorf("Parse(%q) = %+v", tc.src, cmds[0])
+		}
+	}
+}
+
 // A malformed quoted argument is a positioned parse error, not a silent split.
 func TestParseQuotedArgumentErrors(t *testing.T) {
 	cases := []struct {

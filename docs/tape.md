@@ -70,7 +70,9 @@ Key Space +Text " "
 
 A token is quoted only when it starts with `"`, and it must end at a space or
 the end of the line. A bare word is taken as written, including one with a
-quote inside it such as `a"b`. `tuitest record` quotes an argument when, and
+quote inside it such as `a"b`. A lone `"` that does not open a well-formed
+quoted string is a bare token too, so a tape recorded before quoting existed,
+such as `Key Shift+' +Shifted "`, still reads as it did. `tuitest record` quotes an argument when, and
 only when, it needs it, so a recording of `sh -c 'echo hi'` replays the same
 command. `Key` names are never quoted: `Key "` sends the double quote key.
 

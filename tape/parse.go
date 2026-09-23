@@ -279,20 +279,31 @@ func lexArgs(s string, base int, quotable func(prev []token) bool) ([]token, *Pa
 		start, startCol := i, col
 		if r == '"' && (quotable == nil || quotable(toks)) {
 			lit, err := strconv.QuotedPrefix(s[i:])
-			if err != nil {
+			if err != nil && !loneQuote(s[i:]) {
 				return nil, perr(startCol, "unterminated quoted argument (want a Go-quoted string such as \"a b\")")
 			}
-			// QuotedPrefix only accepts a literal that unquotes.
-			val, _ := strconv.Unquote(lit)
-			i += len(lit)
-			col += utf8.RuneCountInString(lit)
-			if i < len(s) {
-				if next, _ := utf8.DecodeRuneInString(s[i:]); !unicode.IsSpace(next) {
-					return nil, perr(col, "a quoted argument must be followed by a space or the end of the line")
-				}
+			end := i + len(lit)
+			spaced := end == len(s)
+			if !spaced {
+				next, _ := utf8.DecodeRuneInString(s[end:])
+				spaced = unicode.IsSpace(next)
 			}
-			toks = append(toks, token{text: val, col: startCol, quoted: true})
-			continue
+			switch {
+			case err == nil && spaced:
+				// QuotedPrefix only accepts a literal that unquotes.
+				val, _ := strconv.Unquote(lit)
+				col += utf8.RuneCountInString(lit)
+				i = end
+				toks = append(toks, token{text: val, col: startCol, quoted: true})
+				continue
+			case loneQuote(s[i:]):
+				// A lone double quote that does not open a well-formed quoted
+				// argument is a bare token. Tapes written before quoting existed
+				// spell a double quote that way, for example
+				// "Key Shift+' +Shifted \"" or "Key Shift+' +Shifted \" +Text \"\\\"\"".
+			default:
+				return nil, perr(col+utf8.RuneCountInString(lit), "a quoted argument must be followed by a space or the end of the line")
+			}
 		}
 		for i < len(s) {
 			r, size = utf8.DecodeRuneInString(s[i:])
@@ -305,6 +316,16 @@ func lexArgs(s string, base int, quotable func(prev []token) bool) ([]token, *Pa
 		toks = append(toks, token{text: s[start:i], col: startCol})
 	}
 	return toks, nil
+}
+
+// loneQuote reports whether s starts with a double quote that is a whole token
+// by itself: followed by a space or the end of the line.
+func loneQuote(s string) bool {
+	if len(s) == 1 {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(s[1:])
+	return unicode.IsSpace(next)
 }
 
 // quoteArg renders one free-form argument so lexArgs reads it back unchanged.
