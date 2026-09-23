@@ -104,11 +104,15 @@ func TestProgressCountsOutputBytes(t *testing.T) {
 	if err := term.SendKeys(tuitest.Up); err != nil {
 		t.Fatal(err)
 	}
-	if err := term.WaitForOutput(5 * time.Second); err != nil {
-		t.Fatal(err)
+	// Poll rather than call WaitForOutput. WaitForOutput counts only output
+	// that arrives after it starts, so a redraw that lands between SendKeys
+	// returning and the wait starting is missed and the wait times out. That
+	// happened under load.
+	second := first
+	for deadline := time.Now().Add(5 * time.Second); second <= first && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		second, _ = term.Progress()
 	}
-
-	second, _ := term.Progress()
 	if second <= first {
 		t.Fatalf("byte count did not advance after a redraw: %d then %d", first, second)
 	}
