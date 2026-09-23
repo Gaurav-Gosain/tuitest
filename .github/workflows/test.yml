@@ -1,0 +1,62 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting, vet and module tidiness are the same on every platform, so they
+  # run once, on Linux, next to the test jobs rather than before them.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go mod tidy
+        run: go mod tidy -diff
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: go build
+        run: go build ./...
+      - name: tuitest doctor
+        # The same preflight the docs recommend: it fails the job with a named
+        # cause if the runner cannot allocate a PTY, before any test does.
+        run: go run ./cmd/tuitest doctor
+      - name: go test -race
+        # Tests that need a tuios binary skip themselves, since none is
+        # installed here. TERM is unset on a runner and nothing needs it: every
+        # spawned program gets its own TERM from tuitest.
+        run: go test -race -timeout 15m ./...
