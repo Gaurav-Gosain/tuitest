@@ -307,8 +307,13 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 		// output counter rather than any single wait.
 		if err != nil && !isTimeout(err) {
 			// Writing to a program that has exited fails; let the exit check
-			// classify it rather than reporting the write error.
-			if _, exited := p.Terminal().ExitStatus(); !exited {
+			// classify it rather than reporting the write error. The write
+			// fails as soon as the child is gone, but the child is only
+			// marked exited once the output pump has emulated its last
+			// output and reaped it, which can take a while. Checking the exit
+			// status on the spot raced that and reported clean exits as
+			// crashes, so wait for the reap before deciding.
+			if !exitsWithin(p.Terminal(), opts.SettleTimeout) {
 				return withCommands(&Failure{
 					Kind:   FailCrash,
 					Detail: fmt.Sprintf("driving the program failed: %v", err),
@@ -390,6 +395,17 @@ func settle(t *tuitest.Terminal, timeout time.Duration) {
 	// Give it a short grace period so the difference between "quit cleanly" and
 	// "still running" is decided by the program rather than by our timing.
 	_, _ = t.WaitExit(exitGrace)
+}
+
+// exitsWithin reports whether the program has exited, or does so within
+// timeout. It returns at once for a program already marked exited.
+func exitsWithin(t *tuitest.Terminal, timeout time.Duration) bool {
+	if _, exited := t.ExitStatus(); exited {
+		return true
+	}
+	_, _ = t.WaitExit(timeout)
+	_, exited := t.ExitStatus()
+	return exited
 }
 
 // exitGrace is how long a quiesced program is given to finish exiting before
