@@ -3,6 +3,7 @@ package tuitest_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -81,7 +82,7 @@ const setsidHelperEnv = "TUITEST_TEST_SETSID_HELPER"
 // arguments, which then run outside the caller's process group. The command is
 // part of util-linux and absent on macOS and the BSDs, which is where the
 // teardown it tests matters most, since those systems have no /proc and find
-// descendants through ps.
+// descendants another way.
 //
 // It runs from init so that it takes over before the testing package parses
 // the arguments, which are the helper's command line and not test flags.
@@ -275,4 +276,80 @@ while :; do sleep 0.05; done`
 			t.Fatalf("run %d: what the program printed while shutting down was lost:\n%s", i, snap)
 		}
 	}
+}
+
+// Every way a terminal can end has to give back what Start took: the PTY
+// master and the pump goroutine. A leak of either is invisible in any single
+// test and only shows once a long suite runs out of descriptors, so this
+// counts both across many cycles of each shape: closed while running, closed
+// after WaitExit, and closed while the child may still be exiting.
+func TestStartAndCloseLeakNoDescriptorsOrGoroutines(t *testing.T) {
+	sh := shellPath(t)
+	if _, err := os.ReadDir("/dev/fd"); err != nil {
+		t.Skipf("cannot count descriptors: %v", err)
+	}
+	openFDs := func() int {
+		entries, _ := os.ReadDir("/dev/fd")
+		return len(entries)
+	}
+	// Every terminal stays reachable until the end. An os.File closes its
+	// descriptor from a finalizer once it is garbage, which would hide a leaked
+	// master whenever the collector happened to run mid-test.
+	var keep []*tuitest.Terminal
+	cycle := func() {
+		running, err := tuitest.Start([]string{sh, "-c", "echo up; sleep 30"}, tuitest.WithSize(20, 5))
+		keep = append(keep, running)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := running.WaitForText("up", 10*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		if err := running.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		exited, err := tuitest.Start([]string{sh, "-c", "exit 2"}, tuitest.WithSize(20, 5))
+		keep = append(keep, exited)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := exited.WaitExit(10 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+		if err := exited.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		racing, err := tuitest.Start([]string{sh, "-c", "exit 2"}, tuitest.WithSize(20, 5))
+		keep = append(keep, racing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := racing.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One cycle first, so lazily created state (the netpoller, sync.Once
+	// values) is not counted as a leak.
+	cycle()
+	fds, goroutines := openFDs(), runtime.NumGoroutine()
+	const cycles = 20
+	for range cycles {
+		cycle()
+	}
+
+	// Goroutines that are finishing may take a moment to be gone.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && runtime.NumGoroutine() > goroutines {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := openFDs(); got > fds {
+		t.Errorf("%d cycles left %d descriptors open, want none", cycles, got-fds)
+	}
+	if got := runtime.NumGoroutine(); got > goroutines {
+		t.Errorf("%d cycles left %d goroutines running, want none", cycles, got-goroutines)
+	}
+	runtime.KeepAlive(keep)
 }
