@@ -34,11 +34,15 @@ func Locate() (path string, ok bool) {
 	return "", false
 }
 
-// StartTuios spawns tuios in an isolated, hermetic environment for a test. It
-// skips the test when no tuios binary is available. Each instance gets its own
-// temporary XDG directories, so its daemon socket and state never collide with
-// another test's, and the harness's process-group teardown reaps the daemon and
-// any pane processes on Close.
+// StartTuios spawns the standalone tuios TUI in an isolated, hermetic
+// environment for a test. It skips the test when no tuios binary is available.
+// Each instance gets its own temporary XDG directories, so its socket and state
+// never collide with another test's, and the harness's process-group teardown
+// reaps it and any pane processes on Close.
+//
+// TUIOS_NO_DAEMON=1 is set because a bare "tuios" otherwise starts a daemon and
+// attaches to it, which boots into a session rather than the welcome screen.
+// Pass tuitest.WithEnv("TUIOS_NO_DAEMON=") to get the daemon client instead.
 func StartTuios(tb testing.TB, opts ...tuitest.Option) *tuitest.Terminal {
 	tb.Helper()
 	bin, ok := Locate()
@@ -46,11 +50,23 @@ func StartTuios(tb testing.TB, opts ...tuitest.Option) *tuitest.Terminal {
 		tb.Skip("tuios binary not found (set TUIOS_BIN or add tuios to PATH)")
 	}
 
+	// The runtime directory holds the daemon's unix socket, and a socket path
+	// is limited to 104 bytes on macOS. tb.TempDir is under a long $TMPDIR and
+	// includes the test name, which overflows that and makes bind fail, so the
+	// runtime directory lives under /tmp instead.
+	runtimeDir, err := os.MkdirTemp("/tmp", "tx")
+	if err != nil {
+		tb.Fatalf("tuiosx: create XDG_RUNTIME_DIR: %v", err)
+	}
+	tb.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	isoEnv := []string{"XDG_RUNTIME_DIR=" + runtimeDir, "TUIOS_NO_DAEMON=1"}
+
+	// XDG_CONFIG_DIRS and XDG_DATA_DIRS are search lists that include ~/.config
+	// on macOS, so they are redirected too or the developer's config leaks in.
 	base := tb.TempDir()
-	isoEnv := []string{}
 	for _, name := range []string{
 		"XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-		"XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+		"XDG_DATA_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
 	} {
 		dir := filepath.Join(base, name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
