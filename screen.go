@@ -3,6 +3,7 @@ package tuitest
 import (
 	"image/color"
 	"strings"
+	"sync"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -154,6 +155,9 @@ func toCell(c *uv.Cell) Cell {
 }
 
 // screenSnapshot is an immutable copy of the grid taken under the terminal lock.
+//
+// The terminal hands one snapshot to every reader until the grid changes, so
+// the plain text of its rows is computed once, on first use, and shared.
 type screenSnapshot struct {
 	cols, rows int
 	cells      [][]Cell // [row][col]
@@ -162,6 +166,10 @@ type screenSnapshot struct {
 	curVisible bool
 	exitCode   int
 	exited     bool
+
+	renderOnce sync.Once
+	lines      []string // plain text per row, see renderLine
+	text       string   // the rows joined, see Text
 }
 
 func (s *screenSnapshot) Size() (int, int) { return s.cols, s.rows }
@@ -177,13 +185,71 @@ func (s *screenSnapshot) Cursor() (int, int, bool) { return s.curCol, s.curRow, 
 
 func (s *screenSnapshot) ExitCode() (int, bool) { return s.exitCode, s.exited }
 
+// resized returns a copy of s cut or padded with blank cells to cols by rows,
+// with the cursor kept inside it. A wide rune whose second column falls off the
+// right edge is blanked, since half of it cannot be shown.
+func (s *screenSnapshot) resized(cols, rows int) *screenSnapshot {
+	blank := Cell{Rune: ' ', Content: " ", Width: 1}
+	cells := make([][]Cell, rows)
+	for row := range cells {
+		line := make([]Cell, cols)
+		for col := range line {
+			line[col] = blank
+		}
+		if row < len(s.cells) {
+			copy(line, s.cells[row])
+			if last := len(s.cells[row]); last > cols && cols > 0 && line[cols-1].Width == 2 {
+				line[cols-1] = blank
+			}
+		}
+		cells[row] = line
+	}
+	return &screenSnapshot{
+		cols:       cols,
+		rows:       rows,
+		cells:      cells,
+		curCol:     max(0, min(s.curCol, cols-1)),
+		curRow:     max(0, min(s.curRow, rows-1)),
+		curVisible: s.curVisible,
+		exitCode:   s.exitCode,
+		exited:     s.exited,
+	}
+}
+
+// render fills in the per-row text and the joined text, once.
+func (s *screenSnapshot) render() {
+	s.renderOnce.Do(func() {
+		s.lines = make([]string, len(s.cells))
+		for row := range s.cells {
+			s.lines[row] = renderLine(s.cells[row])
+		}
+		// Drop trailing blank lines. rows disagrees with len(cells) only in a
+		// snapshot built by hand, and then the smaller one wins.
+		end := min(s.rows, len(s.lines))
+		for end > 0 && s.lines[end-1] == "" {
+			end--
+		}
+		s.text = strings.Join(s.lines[:end], "\n")
+	})
+}
+
 func (s *screenSnapshot) Line(row int) string {
 	if row < 0 || row >= len(s.cells) {
 		return ""
 	}
+	s.render()
+	return s.lines[row]
+}
+
+func (s *screenSnapshot) Text() string {
+	s.render()
+	return s.text
+}
+
+// renderLine is the plain text of one row with trailing blanks trimmed.
+func renderLine(cells []Cell) string {
 	var b strings.Builder
-	for col := 0; col < len(s.cells[row]); col++ {
-		c := s.cells[row][col]
+	for _, c := range cells {
 		if c.Width == 0 {
 			// Continuation column of a wide rune; already emitted.
 			continue
@@ -201,17 +267,4 @@ func (s *screenSnapshot) Line(row int) string {
 		b.WriteString(c.text())
 	}
 	return strings.TrimRight(b.String(), " ")
-}
-
-func (s *screenSnapshot) Text() string {
-	lines := make([]string, s.rows)
-	for row := 0; row < s.rows; row++ {
-		lines[row] = s.Line(row)
-	}
-	// Drop trailing blank lines.
-	end := len(lines)
-	for end > 0 && lines[end-1] == "" {
-		end--
-	}
-	return strings.Join(lines[:end], "\n")
 }

@@ -13,7 +13,7 @@ import (
 func (t *Terminal) Snapshot() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.snapshotLocked().Text()
+	return t.viewLocked().Text()
 }
 
 // SnapshotStyled returns the styled, diff-friendly encoding of the screen: each
@@ -21,7 +21,7 @@ func (t *Terminal) Snapshot() string {
 // from the default style. A screen with no styling degrades to the plain form.
 func (t *Terminal) SnapshotStyled() string {
 	t.mu.Lock()
-	snap := t.snapshotLocked()
+	snap := t.viewLocked()
 	t.mu.Unlock()
 	return styledEncode(snap)
 }

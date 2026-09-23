@@ -125,8 +125,28 @@ type Terminal struct {
 	outBytes  int64     // total bytes read from the child
 	exited    bool
 	exitCode  int
-	// pendingResp holds emulator responses produced before proc was stored.
-	pendingResp []byte
+
+	// Answers to the program's terminal queries wait in respQ until they are
+	// written. respMu guards respQ, and respWake nudges the goroutine that
+	// writes them. inputMu is held across every write to the PTY, so the
+	// answers and the caller's input reach the program in the order they
+	// were produced. See queueResponses.
+	respMu   sync.Mutex
+	respQ    []byte
+	respWake chan struct{}
+	inputMu  sync.Mutex
+
+	// gen counts changes to the emulator grid. The snapshot cache is valid for
+	// as long as gen has not moved and the exit state it recorded still holds.
+	gen      uint64
+	cache    *screenSnapshot
+	cacheGen uint64
+
+	// presented is the last complete frame while the program has a
+	// synchronized update (DEC mode 2026) open, and nil otherwise. syncSince is
+	// when that update opened. See viewLocked.
+	presented *screenSnapshot
+	syncSince time.Time
 
 	log       io.Writer
 	logMu     sync.Mutex
@@ -146,16 +166,7 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 		return nil, err
 	}
 
-	t := &Terminal{
-		cfg:       cfg,
-		emu:       emu.New(cfg.cols, cfg.rows),
-		log:       cfg.log,
-		outMirror: cfg.outMirror,
-		exitCode:  -1,
-		lastWrite: time.Now(), // measure the first quiet window from spawn
-	}
-	t.cond = sync.NewCond(&t.mu)
-
+	t := newTerminal(cfg)
 	proc, err := ptyproc.Start(ptyproc.Config{
 		Argv: argv,
 		Env:  cfg.buildEnv(),
@@ -172,9 +183,27 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 	t.mu.Lock()
 	t.proc = proc
 	t.mu.Unlock()
-	// Flush anything the emulator answered while proc was still unset.
-	t.sendResponses(nil)
+	// The first thing it does is write anything the emulator answered while
+	// proc was still unset.
+	go t.respond(proc)
 	return t, nil
+}
+
+// newTerminal builds a Terminal with its emulator and no process attached.
+func newTerminal(cfg config) *Terminal {
+	t := &Terminal{
+		cfg:       cfg,
+		emu:       emu.New(cfg.cols, cfg.rows),
+		log:       cfg.log,
+		outMirror: cfg.outMirror,
+		exitCode:  -1,
+		lastWrite: time.Now(), // measure the first quiet window from spawn
+		respWake:  make(chan struct{}, 1),
+	}
+	t.cond = sync.NewCond(&t.mu)
+	// Called from inside emu.Write, so t.mu is already held.
+	t.emu.OnSync(t.syncChangedLocked)
+	return t
 }
 
 // StartT is the testing.TB-friendly constructor: it wires the debug log to
@@ -209,13 +238,13 @@ func (w testLogWriter) Write(p []byte) (int, error) {
 func (t *Terminal) onData(p []byte) {
 	t.mu.Lock()
 	_, _ = t.emu.Write(p)
+	t.gen++
 	t.lastWrite = time.Now()
 	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
-	resp := t.emu.TakeResponses()
+	t.queueResponses(t.emu.TakeResponses())
 	t.mu.Unlock()
-	t.sendResponses(resp)
 	t.mirror(p)
 	// The pump is a single goroutine, so mirroring outside the lock still
 	// delivers chunks to w in the order the child produced them.
@@ -224,34 +253,69 @@ func (t *Terminal) onData(p []byte) {
 	}
 }
 
-// sendResponses forwards emulator query answers back to the child. Without
-// this a program that probes the terminal before drawing, which most Bubble
-// Tea and termenv programs do to detect the background colour, waits out its
-// retry loop and renders nothing.
+// maxQueuedResponses bounds the answers held for a program that asks faster
+// than it reads. Past it new answers are dropped, which is what a program that
+// never reads its input gets from a real terminal too, eventually.
+const maxQueuedResponses = 1 << 20
+
+// queueResponses hands emulator query answers to the goroutine that writes them
+// back to the child. Without them a program that probes the terminal before
+// drawing, which most Bubble Tea and termenv programs do to detect the
+// background colour, waits out its retry loop and renders nothing. Caller holds
+// t.mu, which keeps the answers in the order the emulator produced them.
 //
-// The output pump can deliver data before Start has stored the process handle,
-// so responses produced that early are held and flushed once it exists. They
-// are not mirrored to the debug log or counted as caller input: they are the
-// terminal answering on its own behalf, and treating them as input would keep
-// WaitStable from ever settling, since each response arrives with the output
-// that provoked it.
-func (t *Terminal) sendResponses(resp []byte) {
-	t.mu.Lock()
-	proc := t.proc
-	if proc == nil {
-		t.pendingResp = append(t.pendingResp, resp...)
-		t.mu.Unlock()
-		return
-	}
-	if len(t.pendingResp) > 0 {
-		resp = append(t.pendingResp, resp...)
-		t.pendingResp = nil
-	}
-	t.mu.Unlock()
+// The answers are queued rather than written here because this runs on the
+// output pump, and a write to the PTY blocks once the program's input buffer is
+// full. A program that sends queries faster than it reads the answers, or that
+// sends a burst of them and reads nothing, filled that buffer, the pump stopped
+// reading, the program then blocked writing its output, and the two waited on
+// each other until the test timed out. A real terminal keeps reading output
+// whatever the state of the input side.
+//
+// The answers are not mirrored to the debug log or counted as caller input:
+// they are the terminal answering on its own behalf, and treating them as input
+// would keep WaitStable from ever settling, since each one arrives with the
+// output that provoked it.
+func (t *Terminal) queueResponses(resp []byte) {
 	if len(resp) == 0 {
 		return
 	}
-	_ = proc.Write(resp)
+	t.respMu.Lock()
+	if len(t.respQ)+len(resp) <= maxQueuedResponses {
+		t.respQ = append(t.respQ, resp...)
+	}
+	t.respMu.Unlock()
+	select {
+	case t.respWake <- struct{}{}:
+	default: // a wakeup is already pending
+	}
+}
+
+// takeResponsesLocked removes and returns the queued answers. Caller holds
+// t.inputMu, so nothing else writes to the PTY between taking them and
+// writing them.
+func (t *Terminal) takeResponsesLocked() []byte {
+	t.respMu.Lock()
+	q := t.respQ
+	t.respQ = nil
+	t.respMu.Unlock()
+	return q
+}
+
+// respond writes queued answers to the child until it exits.
+func (t *Terminal) respond(proc *ptyproc.Process) {
+	for {
+		t.inputMu.Lock()
+		if q := t.takeResponsesLocked(); len(q) > 0 {
+			_ = proc.Write(q)
+		}
+		t.inputMu.Unlock()
+		select {
+		case <-t.respWake:
+		case <-proc.Done():
+			return
+		}
+	}
 }
 
 func (t *Terminal) onClose(code int) {
@@ -278,8 +342,76 @@ func (t *Terminal) appendTailLocked(p []byte) {
 	}
 }
 
-// snapshotLocked builds an immutable copy of the grid. Caller must hold t.mu.
+// syncHoldLimit bounds how long a synchronized update keeps the previous frame
+// on show. A program that opens an update and never closes it, because it
+// crashed mid-frame or has a bug, must not freeze what the harness reports.
+// Real terminals give up after a similar interval and present what they have.
+const syncHoldLimit = time.Second
+
+// syncChangedLocked is called by the emulator, from inside Write, when the
+// program opens or closes a synchronized update (DEC mode 2026). Caller holds
+// t.mu.
+//
+// Opening one captures the grid as it stands, before any byte of the new frame
+// has been applied: that is the frame a real terminal keeps on screen until the
+// update closes. Programs that draw with synchronized output, which includes
+// every Bubble Tea v2 program talking to a terminal that answers the mode query
+// the way this one does, rely on that to never show a half-drawn frame. The
+// PTY hands a frame over in pieces (on macOS in chunks of about a kilobyte), so
+// without this a wait could match text at the top of a new frame and the next
+// read could find the bottom half of the previous one.
+func (t *Terminal) syncChangedLocked(open bool) {
+	if open {
+		// Built fresh rather than through the cache: the bytes of this chunk
+		// that came before the mode change are already on the grid, and gen
+		// has not been advanced for them yet.
+		code, exited := t.exitLocked()
+		t.presented = t.buildSnapshotLocked(code, exited)
+		t.syncSince = time.Now()
+		return
+	}
+	t.presented = nil
+}
+
+// viewLocked returns the screen a user of a real terminal would see now: the
+// live grid, or the last complete frame while the program is inside a
+// synchronized update. Every public read of the screen goes through it, so a
+// wait, Screen, Snapshot and a failure dump always agree. Caller holds t.mu.
+//
+// The held frame is dropped once the update has been open for syncHoldLimit,
+// and as soon as the child has exited, since nothing can close the update
+// after that and the final output is what a caller wants to see.
+func (t *Terminal) viewLocked() *screenSnapshot {
+	if t.presented != nil && time.Since(t.syncSince) < syncHoldLimit {
+		if _, exited := t.exitLocked(); !exited {
+			return t.presented
+		}
+	}
+	return t.snapshotLocked()
+}
+
+// snapshotLocked returns an immutable copy of the live grid. Caller must hold
+// t.mu.
+//
+// The copy is cached until the grid or the exit state changes. Reading the
+// screen is what every wait does on every wakeup and what a polling helper does
+// in a loop, and on a screen that has not changed since the last read, which is
+// the common case, rebuilding it is pure waste: at 120x40 a rebuild costs about
+// a tenth of a millisecond and 400KB of garbage. Sharing one copy between
+// readers is safe because a snapshot is never modified after it is built.
 func (t *Terminal) snapshotLocked() *screenSnapshot {
+	code, exited := t.exitLocked()
+	if c := t.cache; c != nil && t.cacheGen == t.gen && c.exited == exited && c.exitCode == code {
+		return c
+	}
+	s := t.buildSnapshotLocked(code, exited)
+	t.cache, t.cacheGen = s, t.gen
+	return s
+}
+
+// buildSnapshotLocked copies the grid out of the emulator. Caller must hold
+// t.mu.
+func (t *Terminal) buildSnapshotLocked(code int, exited bool) *screenSnapshot {
 	cols, rows := t.emu.Size()
 	cells := make([][]Cell, rows)
 	for row := 0; row < rows; row++ {
@@ -290,7 +422,6 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 		cells[row] = line
 	}
 	curCol, curRow, curVis := t.emu.Cursor()
-	code, exited := t.exitLocked()
 	return &screenSnapshot{
 		cols:       cols,
 		rows:       rows,
@@ -328,10 +459,14 @@ func (t *Terminal) exitLocked() (int, bool) {
 }
 
 // Screen returns an immutable view of the current screen.
+//
+// While the program is inside a synchronized update (DEC mode 2026) this is the
+// last complete frame, not the half-drawn one being built, which is what a real
+// terminal shows too. The waits read the screen the same way.
 func (t *Terminal) Screen() Screen {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.snapshotLocked()
+	return t.viewLocked()
 }
 
 // Type sends literal text with no key-name interpretation (tmux send-keys -l).
@@ -342,10 +477,47 @@ func (t *Terminal) Type(s string) error {
 // write mirrors input to the debug log, records that input was sent (which is
 // what keeps WaitStable from reporting the pre-input screen as stable), then
 // sends it to the child.
+//
+// Input to a child that has gone is refused with an error wrapping
+// ErrChildExited. The terminal only records the exit once the PTY has reached
+// end of file, which means nothing holds the other end open to read the bytes,
+// so writing them anyway can only fail, and how it fails depends on the
+// platform: macOS reports an I/O error, Linux may accept the bytes and drop
+// them.
 func (t *Terminal) write(b []byte) error {
 	t.mirror(b)
 	t.markInput()
-	return t.inputErr("write", t.proc.Write(b))
+	if err := t.exitedError(); err != nil {
+		return err
+	}
+	// Answers the terminal owes the program go first: they were produced
+	// before this input was, and a real terminal delivers them in that order.
+	t.inputMu.Lock()
+	if q := t.takeResponsesLocked(); len(q) > 0 {
+		b = append(q, b...)
+	}
+	err := t.proc.Write(b)
+	t.inputMu.Unlock()
+	// A write usually fails because the program has just exited: its end of
+	// the PTY is closed, so macOS answers EIO, but the pump has not yet read
+	// the end of file and recorded the exit. inputErr waits briefly for it so
+	// the error says what happened instead of passing on the errno.
+	return t.inputErr("write", err)
+}
+
+// exitedError returns an error wrapping ErrChildExited when the child has
+// exited, and nil while it runs.
+func (t *Terminal) exitedError() error {
+	t.mu.Lock()
+	code, exited := t.exitLocked()
+	t.mu.Unlock()
+	if !exited {
+		return nil
+	}
+	if st, _ := t.ExitStatus(); st.Signaled {
+		return fmt.Errorf("tuitest: cannot send input, the program was %s: %w", st, ErrChildExited)
+	}
+	return fmt.Errorf("tuitest: cannot send input, the program exited with code %d: %w", code, ErrChildExited)
 }
 
 // exitSettleGrace bounds how long a failed write or resize waits for the child
@@ -367,9 +539,10 @@ const exitSettleGrace = time.Second
 // on it. Linux accepts writes to a master whose other end has closed and
 // discards the bytes, so there no write fails until Close has released the PTY.
 //
-// The pump never comes through here. It writes emulator responses with
-// proc.Write directly, and waiting for Done from the pump would wait on
-// itself.
+// Only caller input comes through here. The goroutine that writes queued
+// emulator responses calls proc.Write directly and drops its errors, and the
+// pump, which never writes, is what closes Done, so nothing that Done depends
+// on ever waits for it.
 func (t *Terminal) inputErr(op string, err error) error {
 	if err == nil {
 		return nil
@@ -422,15 +595,38 @@ func checkSize(op string, cols, rows int) error {
 // Resize changes the PTY window size and the emulator grid; the child receives
 // SIGWINCH. Like sending keys, a resize counts as input for WaitStable, since
 // the redraw it provokes has not arrived yet.
+//
+// A program that enabled in-band resize notifications (mode 2048) is sent the
+// report as part of the call, after the PTY has its new size, the way a real
+// terminal sends it.
 func (t *Terminal) Resize(cols, rows int) error {
 	if err := checkSize("Resize", cols, rows); err != nil {
 		return err
 	}
 	t.mu.Lock()
 	t.emu.Resize(cols, rows)
+	t.gen++
+	if t.presented != nil {
+		// A frame held for an open synchronized update has the old size. It
+		// is cut or padded to the new one rather than replaced by the live
+		// grid, which holds the unfinished frame the hold exists to hide.
+		t.presented = t.presented.resized(cols, rows)
+	}
 	t.lastInput = time.Now()
+	resp := t.emu.TakeResponses()
 	t.mu.Unlock()
-	return t.inputErr("resize", t.proc.Resize(cols, rows))
+	if err := t.proc.Resize(cols, rows); err != nil {
+		return t.inputErr("resize", err)
+	}
+	// The emulator produces the mode 2048 report during Resize. Before it was
+	// queued here it waited for the next write from the program, which a
+	// program that learns its size from the report has no reason to make. It
+	// is queued after the PTY has its new size, so a program that reads the
+	// size on receiving it sees the same one.
+	t.mu.Lock()
+	t.queueResponses(resp)
+	t.mu.Unlock()
+	return nil
 }
 
 // Progress reports how many bytes the child has written so far and when the

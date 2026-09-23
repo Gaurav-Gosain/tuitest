@@ -135,7 +135,7 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 				Op:       op,
 				Want:     want,
 				ExitCode: t.exitCode,
-				Screen:   t.snapshotLocked().Text(),
+				Screen:   t.viewLocked().Text(),
 				TailLog:  t.tailLogLocked(),
 			}
 		}
@@ -144,7 +144,7 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 				Op:      op,
 				Want:    want,
 				Elapsed: time.Since(start),
-				Screen:  t.snapshotLocked().Text(),
+				Screen:  t.viewLocked().Text(),
 				TailLog: t.tailLogLocked(),
 			}
 		}
@@ -158,24 +158,41 @@ func (t *Terminal) tailLogLocked() string {
 }
 
 // WaitFor blocks until cond returns true on the current screen, or timeout.
+//
+// cond is called with the terminal's lock held, each time the program writes
+// and every few milliseconds in between, so it must be quick and must not call
+// back into the Terminal. The Screen it receives is immutable and may be kept.
+//
+// Like every wait, WaitFor treats a timeout of zero or less as one second, and
+// returns an error wrapping ErrChildExited if the program exits before the
+// condition holds, or ErrTimeout if time runs out. The error message carries
+// the screen at that moment.
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error {
 	return t.waitLoop("WaitFor", "custom condition", timeout, false, func() bool {
-		return cond(t.snapshotLocked())
+		return cond(t.viewLocked())
 	})
 }
 
 // WaitForText blocks until the plain-text screen contains substr.
 func (t *Terminal) WaitForText(substr string, timeout time.Duration) error {
 	return t.waitLoop("WaitForText", fmt.Sprintf("text %q", substr), timeout, false, func() bool {
-		return strings.Contains(t.snapshotLocked().Text(), substr)
+		return strings.Contains(t.viewLocked().Text(), substr)
 	})
 }
 
 // WaitForMatch blocks until re matches within the given scope.
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error {
 	return t.waitLoop("WaitForMatch", fmt.Sprintf("match %s", re.String()), timeout, false, func() bool {
-		return re.MatchString(scopeText(t.snapshotLocked(), scope))
+		return re.MatchString(scopeText(t.viewLocked(), scope))
 	})
+}
+
+// stabilizeInterval is the quiet window WaitStable and WaitForStable use.
+func (t *Terminal) stabilizeInterval() time.Duration {
+	if t.cfg.stabilize <= 0 {
+		return DefaultStabilizeInterval
+	}
+	return t.cfg.stabilize
 }
 
 // WaitStable blocks until the terminal has been quiet for the stabilize
@@ -189,19 +206,26 @@ func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Dur
 // out the window from the keystroke instead gives the program that long to
 // start reacting, and any byte it produces restarts the window.
 //
+// A program that has not written anything yet is never stable. Starting a
+// process takes long enough, on a loaded machine or under -race, that a quiet
+// window measured from spawn used to elapse before the first byte arrived, and
+// WaitStable then returned a blank screen. A program that never writes at all
+// makes WaitStable time out.
+//
 // It is still a heuristic. A program that takes longer than the stabilize
-// interval to produce its first byte will be reported stable too early, and no
+// interval to react to input will be reported stable too early, and no
 // quiescence rule can distinguish that from a program with nothing to say.
 // Prefer WaitForText, WaitForMatch or WaitFor whenever the expected end state
-// is known, and reach for WaitStable only after heavy output where it is not.
+// is known, and WaitForStable when the state is known but may still be drawing.
+// Reach for WaitStable only after heavy output where it is not known at all.
 func (t *Terminal) WaitStable(timeout time.Duration) error {
-	quiet := t.cfg.stabilize
-	if quiet <= 0 {
-		quiet = DefaultStabilizeInterval
-	}
+	quiet := t.stabilizeInterval()
 	return t.waitLoop("WaitStable", fmt.Sprintf("output to quiesce for %s", quiet), timeout, true, func() bool {
 		if t.exited {
 			return true
+		}
+		if t.outBytes == 0 {
+			return false
 		}
 		since := t.lastWrite
 		if t.lastInput.After(since) {

@@ -3,24 +3,20 @@ package tuitest
 import (
 	"errors"
 	"os/exec"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuitest/internal/emu"
 	"github.com/Gaurav-Gosain/tuitest/internal/ptyproc"
 )
 
 // newIdleTerminal builds a Terminal with no child attached. WaitStable only
 // touches the emulator, the timestamps and the condition variable, so this is
-// enough to test its timing rules without spawning anything.
+// enough to test its timing rules without spawning anything. It reports one
+// byte of output already received, since WaitStable never settles on a program
+// that has written nothing.
 func newIdleTerminal(quiet time.Duration) *Terminal {
-	t := &Terminal{
-		cfg:      config{cols: 20, rows: 5, stabilize: quiet},
-		emu:      emu.New(20, 5),
-		exitCode: -1,
-	}
-	t.cond = sync.NewCond(&t.mu)
+	t := newTerminal(config{cols: 20, rows: 5, stabilize: quiet})
+	t.outBytes = 1
 	return t
 }
 

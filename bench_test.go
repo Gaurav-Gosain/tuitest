@@ -92,3 +92,49 @@ func BenchmarkEmulatorStyledLines(b *testing.B) {
 	}
 	b.ReportMetric(float64(b.N)*100/b.Elapsed().Seconds(), "lines/s")
 }
+
+// fillScreen paints every cell of a 120x40 terminal with styled text, the size
+// tuios's e2e suite runs at, so the benchmarks below read a realistic grid.
+func fillScreen(b *testing.B) *Terminal {
+	b.Helper()
+	term := newIdleTerminal(DefaultStabilizeInterval)
+	term.mu.Lock()
+	term.emu.Resize(120, 40)
+	var sb strings.Builder
+	sb.WriteString("\x1b[H")
+	for row := 0; row < 40; row++ {
+		sb.WriteString("\x1b[1;38;5;42m")
+		sb.WriteString(strings.Repeat("y", 60))
+		sb.WriteString("\x1b[0m")
+		sb.WriteString(strings.Repeat("z", 60))
+	}
+	_, _ = term.emu.Write([]byte(sb.String()))
+	term.mu.Unlock()
+	return term
+}
+
+// BenchmarkScreenTextUnchanged is what a polling helper pays per read of a
+// screen that has not changed since the last one: the e2e suite reads Screen
+// in loops every few tens of milliseconds, and every WaitForText re-reads it on
+// each wakeup.
+func BenchmarkScreenTextUnchanged(b *testing.B) {
+	term := fillScreen(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = term.Screen().Text()
+	}
+}
+
+// BenchmarkScreenTextAfterOutput is the other case: the program wrote since the
+// last read, so the grid has to be copied again. It guards the cache from
+// making the common changed-screen read slower.
+func BenchmarkScreenTextAfterOutput(b *testing.B) {
+	term := fillScreen(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		term.onData([]byte("\x1b[Hq"))
+		_ = term.Screen().Text()
+	}
+}

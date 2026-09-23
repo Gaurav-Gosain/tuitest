@@ -13,7 +13,11 @@ import (
 	"github.com/Gaurav-Gosain/tuitest"
 )
 
-var echoBin string
+var (
+	echoBin string
+	// probeBin is testdata/rawprobe, which reports every input byte it gets.
+	probeBin string
+)
 
 const (
 	echoFixturePrefix  = "tuitest-fixture-"
@@ -36,6 +40,12 @@ func TestMain(m *testing.M) {
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		panic("building echotui fixture: " + err.Error())
+	}
+	probeBin = filepath.Join(dir, "rawprobe")
+	build = exec.Command("go", "build", "-o", probeBin, "./testdata/rawprobe")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		panic("building rawprobe fixture: " + err.Error())
 	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)

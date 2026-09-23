@@ -34,12 +34,19 @@ const (
 // alternate screen, or with mouse reporting still on, leaves the user's shell
 // unusable.
 type TermState struct {
-	AltScreen      bool
-	MouseTracking  bool
+	// AltScreen is set while any of the alternate screen modes (47, 1047,
+	// 1049) is.
+	AltScreen bool
+	// MouseTracking is set while any mouse reporting mode (9, 1000, 1001,
+	// 1002, 1003) is.
+	MouseTracking bool
+	// BracketedPaste is mode 2004.
 	BracketedPaste bool
+	// FocusReporting is mode 1004.
 	FocusReporting bool
-	CursorHidden   bool
-	rawModes       map[int]bool
+	// CursorHidden is mode 25 reset.
+	CursorHidden bool
+	rawModes     map[int]bool
 }
 
 // Dirty reports whether any mode is left in a state that would visibly damage
