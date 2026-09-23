@@ -183,12 +183,17 @@ func reportFuzz(env *Env, res *fuzz.Result, corpus string) {
 	fmt.Fprintf(env.Stdout, "\n%d failure(s):\n", len(res.Failures))
 	for _, f := range res.Failures {
 		fmt.Fprintf(env.Stdout, "\n  %s\n    %s\n", f.Kind, f.Detail)
-		// f.Seed is the failing iteration's own seed, not the session's, so
-		// it regenerates that one iteration as iteration 0 of a new session.
-		// Saying "seed S, iteration I" instead sent readers to run the
-		// session seed and wait for iteration I, which drives other input.
-		fmt.Fprintf(env.Stdout, "    found at iteration %d; to regenerate its unminimised input, rerun with --seed %d --iterations 1 and the same generation flags\n",
-			f.Iteration, f.Seed)
+		if f.CorpusEntry != "" {
+			fmt.Fprintf(env.Stdout, "    replayed from corpus entry %s\n", f.CorpusEntry)
+		} else {
+			// f.Seed is the failing iteration's own seed, not the session's,
+			// so it regenerates that one iteration as iteration 0 of a new
+			// session. Saying "seed S, iteration I" instead sent readers to
+			// run the session seed and wait for iteration I, which drives
+			// other input.
+			fmt.Fprintf(env.Stdout, "    found at iteration %d; to regenerate its unminimised input, rerun with --seed %d --iterations 1 and the same generation flags\n",
+				f.Iteration, f.Seed)
+		}
 		if f.Original > 0 {
 			fmt.Fprintf(env.Stdout, "    minimised %d commands to %d\n", f.Original, len(f.Commands))
 		}

@@ -47,11 +47,18 @@ type Failure struct {
 	Commands []tape.Command
 	// Screen is the plain-text screen at the moment of detection.
 	Screen string
-	// Seed and Iteration identify the run that found it.
+	// Seed and Iteration identify the run that found it. Seed is that
+	// iteration's own seed, so a session with this Seed and one iteration
+	// regenerates its input. Both are zero for a finding replayed from the
+	// corpus; CorpusEntry says so.
 	Seed      uint64
 	Iteration int
-	// Shrunk records how many commands the original failing input had, so a
-	// report can show what minimisation achieved.
+	// CorpusEntry is the file name of the corpus entry a replayed finding came
+	// from, and empty for a finding generated in this session.
+	CorpusEntry string
+	// Original records how many commands the original failing input had, so
+	// a report can show what minimisation achieved. It is zero for a finding
+	// replayed from the corpus, which was minimised on an earlier run.
 	Original int
 	// Invariant names the user-supplied invariant that failed, for
 	// FailInvariant. It is empty for every other kind.

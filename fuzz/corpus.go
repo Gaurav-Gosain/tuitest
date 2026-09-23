@@ -28,12 +28,19 @@ func TapeFor(f *Failure) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# %s: %s\n", f.Kind, f.Detail)
-	// f.Seed is the iteration's own seed, so it is the one to rerun with, as
-	// iteration 0 of a one-iteration session. Printing it beside the iteration
-	// number as "seed S, iteration I" read as the session seed and sent the
-	// reader to wait for iteration I of a run that generates something else.
-	fmt.Fprintf(&b, "# found by tuitest fuzz at iteration %d, whose own seed is %d:\n", f.Iteration, f.Seed)
-	fmt.Fprintf(&b, "# --seed %d --iterations 1 with the same generation flags regenerates the unminimised input\n", f.Seed)
+	if f.CorpusEntry != "" {
+		// A replayed finding was not generated from a seed in this session,
+		// so there is no seed to offer.
+		fmt.Fprintf(&b, "# replayed by tuitest fuzz from corpus entry %s\n", f.CorpusEntry)
+	} else {
+		// f.Seed is the iteration's own seed, so it is the one to rerun with,
+		// as iteration 0 of a one-iteration session. Printing it beside the
+		// iteration number as "seed S, iteration I" read as the session seed
+		// and sent the reader to wait for iteration I of a run that generates
+		// something else.
+		fmt.Fprintf(&b, "# found by tuitest fuzz at iteration %d, whose own seed is %d:\n", f.Iteration, f.Seed)
+		fmt.Fprintf(&b, "# --seed %d --iterations 1 with the same generation flags regenerates the unminimised input\n", f.Seed)
+	}
 	if f.Original > 0 {
 		fmt.Fprintf(&b, "# minimised from %d commands to %d\n", f.Original, len(f.Commands))
 	}
@@ -155,6 +162,7 @@ func replayCorpus(ctx context.Context, opts Options) ([]*Failure, error) {
 		if f := drive(ctx, opts, cmds); f != nil {
 			f.Commands = cmds
 			f.Detail = fmt.Sprintf("%s (corpus entry %s)", f.Detail, name)
+			f.CorpusEntry = name
 			f.Verified = true
 			found = append(found, f)
 		}

@@ -338,8 +338,20 @@ func TestCorpusIsWrittenAndReplayedAsARegression(t *testing.T) {
 	replay.Shrink = false
 
 	second := runFuzz(t, replay)
-	if findFailure(second, fuzz.FailDirtyExit) == nil {
+	replayed := findFailure(second, fuzz.FailDirtyExit)
+	if replayed == nil {
 		t.Fatalf("the corpus entry should still reproduce on replay, got:\n%s", summarise(second))
+	}
+
+	// A replayed finding was not generated from a seed in this session, so it
+	// must say which entry it came from and must not offer a seed to rerun
+	// with. It used to carry Seed 0 and Iteration 0, and the report told the
+	// reader to rerun with --seed 0.
+	if replayed.CorpusEntry != tapes[0] {
+		t.Errorf("CorpusEntry = %q, want %q", replayed.CorpusEntry, tapes[0])
+	}
+	if tape := fuzz.TapeFor(replayed); strings.Contains(tape, "--seed") {
+		t.Errorf("a replayed finding offers a seed to rerun with:\n%s", tape)
 	}
 }
 
