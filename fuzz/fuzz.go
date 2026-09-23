@@ -114,6 +114,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Iterations <= 0 && opts.Duration <= 0 {
 		return nil, errors.New("fuzz: set Iterations or Duration to bound the run")
 	}
+	if _, err := excludedEncodings(opts.Gen.ExcludeKeys); err != nil {
+		return nil, fmt.Errorf("fuzz: %w", err)
+	}
 
 	start := time.Now()
 	res := &Result{Seed: opts.Seed}

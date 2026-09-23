@@ -55,7 +55,13 @@ terminal-restoration check can only run on a program that has exited, so a
 generator that never asks a program to quit can never find the single most
 common TUI bug. `Ctrl+z` is omitted entirely: suspending the child under a PTY
 wedges the run rather than finding anything about the program. `-exclude
-Ctrl+c,q` turns off whatever quits your program too early.
+Ctrl+c,q` turns off whatever quits your program too early. An excluded key is
+matched on the bytes it sends, so `Ctrl+C` and `Ctrl+c` are the same key, and
+those bytes are also removed from generated text, paste and hostile payloads,
+which would otherwise deliver the key anyway (`q` arrives inside "the quick
+brown fox", and Ctrl+c is byte 0x03 inside a burst of control characters). A
+token that names no key, such as `ctrl+c` with a lower-case modifier, is an
+error rather than a silent no-op.
 
 **Mouse**: clicks, wheel notches, and coherent drags (press, move, release with
 the same button), including coordinates outside the grid.

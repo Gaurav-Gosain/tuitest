@@ -1,7 +1,10 @@
 package fuzz
 
 import (
+	"errors"
+	"fmt"
 	"math/rand/v2"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,8 +82,13 @@ type Config struct {
 	Cols, Rows int
 	// ActionsPerRun bounds how many commands one iteration sends.
 	ActionsPerRun int
-	// ExcludeKeys lists key tokens the generator must never emit, for programs
-	// where a key legitimately quits and would cut every run short.
+	// ExcludeKeys lists key tokens the program must never receive, for
+	// programs where a key legitimately quits and would cut every run short.
+	// Tokens use tape key syntax ("Ctrl+c", "q", "Esc") and are matched on the
+	// bytes they send, so any spelling of the same key works. An excluded key
+	// is never generated as a key, and its bytes are removed from generated
+	// text, paste and hostile payloads, which would otherwise deliver it
+	// anyway. A token that names no key makes Run return an error.
 	ExcludeKeys []string
 	// NoHostile disables malformed and oversized escape sequences, leaving only
 	// well-formed input.
@@ -114,14 +122,23 @@ type generator struct {
 	// cols and rows track the size the program currently believes it has, so
 	// mouse coordinates can be aimed inside (and deliberately outside) it.
 	cols, rows int
-	excluded   map[string]bool
+	// excluded holds the bytes each excluded key sends. A generated key is
+	// dropped when it sends exactly one of them, and generated text has them
+	// removed, so an excluded key cannot reach the program inside a text or
+	// hostile payload either.
+	excluded map[string]bool
+	// strip is the same set, longest first, for removing from text.
+	strip []string
 }
 
 func newGenerator(cfg Config, seed uint64) *generator {
 	cfg = cfg.withDefaults()
-	excluded := make(map[string]bool, len(cfg.ExcludeKeys))
-	for _, k := range cfg.ExcludeKeys {
-		excluded[strings.TrimSpace(k)] = true
+	// Run has already rejected tokens that do not resolve; any that reach
+	// here unresolved are skipped rather than excluding nothing silently.
+	encs, _ := excludedEncodings(cfg.ExcludeKeys)
+	excluded := make(map[string]bool, len(encs))
+	for _, e := range encs {
+		excluded[e] = true
 	}
 	return &generator{
 		cfg: cfg,
@@ -130,7 +147,76 @@ func newGenerator(cfg Config, seed uint64) *generator {
 		cols:     cfg.Cols,
 		rows:     cfg.Rows,
 		excluded: excluded,
+		strip:    encs,
 	}
+}
+
+// excludedEncodings resolves excluded key tokens to the bytes they send,
+// longest first and without duplicates. Matching on bytes rather than on the
+// token means "Ctrl+C", "C+c" and "Ctrl+c" all exclude the same key. A token
+// that names no key is an error: excluding it would exclude nothing, and the
+// user would find out only by watching their program quit anyway.
+func excludedEncodings(tokens []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	var errs []error
+	for _, tok := range tokens {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		enc, err := tape.ResolveKey(tok)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("cannot exclude %q: %w", tok, err))
+			continue
+		}
+		if s := string(enc); s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out, errors.Join(errs...)
+}
+
+// keyEncodings caches what each key in the generator's pools sends, so an
+// exclusion can be checked without resolving a token on every draw.
+var keyEncodings = func() map[string]string {
+	m := map[string]string{}
+	for _, pool := range [][]string{navKeys, functionKeys, ctrlKeys, altKeys} {
+		for _, k := range pool {
+			if enc, err := tape.ResolveKey(k); err == nil {
+				m[k] = string(enc)
+			}
+		}
+	}
+	return m
+}()
+
+// withoutExcluded removes every excluded key's bytes from a text payload.
+// Removal can join two halves into a new occurrence, so it repeats until
+// nothing is left to remove. With nothing excluded it returns s untouched.
+func (g *generator) withoutExcluded(s string) string {
+	for changed := len(g.strip) > 0; changed; {
+		changed = false
+		for _, enc := range g.strip {
+			if strings.Contains(s, enc) {
+				s = strings.ReplaceAll(s, enc, "")
+				changed = true
+			}
+		}
+	}
+	return s
+}
+
+// textCommand builds a text-carrying command with excluded keys removed from
+// its payload, or nothing when removal leaves no payload at all.
+func (g *generator) textCommand(kind tape.Kind, s string) []tape.Command {
+	s = g.withoutExcluded(s)
+	if s == "" {
+		return nil
+	}
+	return []tape.Command{{Kind: kind, Text: s}}
 }
 
 // Run generates one complete iteration: a Spawn followed by input commands.
@@ -158,7 +244,7 @@ func (g *generator) Run(argv []string) []tape.Command {
 func (g *generator) action() []tape.Command {
 	switch g.pick() {
 	case actText:
-		return []tape.Command{{Kind: tape.KindRaw, Text: g.text()}}
+		return g.textCommand(tape.KindRaw, g.text())
 	case actKey:
 		k, ok := g.key()
 		if !ok {
@@ -166,7 +252,7 @@ func (g *generator) action() []tape.Command {
 		}
 		return []tape.Command{{Kind: tape.KindKey, Keys: []string{k}}}
 	case actPaste:
-		return []tape.Command{{Kind: tape.KindPaste, Text: g.pasteBurst()}}
+		return g.textCommand(tape.KindPaste, g.pasteBurst())
 	case actMouse:
 		return g.mouseCommands()
 	case actResize:
@@ -183,7 +269,7 @@ func (g *generator) action() []tape.Command {
 			{Kind: tape.KindWaitOutput, Timeout: resizeRedrawWait, HasTimeout: true},
 		}
 	case actHostile:
-		return []tape.Command{{Kind: tape.KindRaw, Text: hostile(g.rand)}}
+		return g.textCommand(tape.KindRaw, hostile(g.rand))
 	default:
 		// Wait for the program to react to what came before. WaitOutput rather
 		// than WaitStable: after a pause the screen is already stable, so
@@ -310,7 +396,7 @@ func (g *generator) key() (string, bool) {
 		pool = altKeys
 	}
 	k := pool[g.rand.IntN(len(pool))]
-	if g.excluded[k] {
+	if g.excluded[keyEncodings[k]] {
 		return "", false
 	}
 	return k, true

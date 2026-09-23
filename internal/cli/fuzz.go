@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest/fuzz"
+	"github.com/Gaurav-Gosain/tuitest/tape"
 	"github.com/spf13/cobra"
 )
 
@@ -78,6 +79,13 @@ not parsed as tuitest's.`,
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			if len(argv) == 0 {
 				return usageErrorf(env, cmd, "fuzz needs a program to run")
+			}
+			// A key that does not resolve is a mistake on the command line,
+			// so it is reported as one before anything is spawned.
+			for _, tok := range splitList(exclude) {
+				if _, err := tape.ResolveKey(tok); err != nil {
+					return usageErrorf(env, cmd, "--exclude %q: %v", tok, err)
+				}
 			}
 
 			opts := fuzz.Options{

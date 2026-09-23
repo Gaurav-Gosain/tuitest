@@ -889,3 +889,18 @@ func TestSingleDashHelpAndVersionStillWork(t *testing.T) {
 		})
 	}
 }
+
+// An --exclude token that names no key is a malformed invocation, and exits 2
+// with the command's usage like any other, before a program is spawned. It
+// used to be ignored, and then, once the fuzz package rejected it, surfaced as
+// exit 3, which says tuitest could not do its job rather than that the command
+// line was wrong.
+func TestFuzzRejectsAnExcludedKeyThatNamesNoKey(t *testing.T) {
+	code, _, stderr := runCLI(nil, "fuzz", "--iterations", "1", "--exclude", "Ctrl+c,ctrl+x", "--", "true")
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, `"ctrl+x"`) {
+		t.Errorf("the error should name the token that did not resolve:\n%s", stderr)
+	}
+}
