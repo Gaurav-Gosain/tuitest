@@ -74,7 +74,7 @@ func Start(cfg Config, h Handler) (*Process, error) {
 		cfg.Rows = 24
 	}
 
-	pty, err := xpty.NewPty(cfg.Cols, cfg.Rows)
+	pty, err := openPty(cfg.Cols, cfg.Rows)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +113,35 @@ func Start(cfg Config, h Handler) (*Process, error) {
 	}
 	go p.pump(h)
 	return p, nil
+}
+
+// openPtyAttempts bounds how often openPty tries again after a transient
+// failure.
+const openPtyAttempts = 5
+
+// openPty allocates a PTY, retrying the failure macOS reports as "errno -6".
+//
+// When several PTYs are allocated at once, the macOS kernel sometimes lets an
+// internal code escape from the ioctls that name, grant and unlock a new PTY:
+// EREDRIVEOPEN, which is -6 and means "reissue the open". A process that opens
+// PTYs concurrently, such as a test suite spawning in parallel, then sees
+// "errno -6" from Start. Measured with 24 goroutines each opening a PTY, 239
+// of 4800 opens failed this way, and every one succeeded on a second attempt.
+// No real errno is negative, so the retry can never hide an ordinary failure.
+func openPty(cols, rows int) (xpty.Pty, error) {
+	var err error
+	for range openPtyAttempts {
+		var pty xpty.Pty
+		pty, err = xpty.NewPty(cols, rows)
+		if err == nil {
+			return pty, nil
+		}
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || int(errno) >= 0 {
+			return nil, err
+		}
+	}
+	return nil, err
 }
 
 func (p *Process) pump(h Handler) {
@@ -156,9 +185,8 @@ func (p *Process) reap() Status {
 	return st
 }
 
-// Write sends input bytes to the child.
 // Write sends bytes to the child. Two goroutines write here: the caller
-// sending keystrokes, and the output pump forwarding emulator query responses.
+// sending keystrokes, and the one forwarding emulator query responses.
 // The lock keeps a short write from being interleaved into the middle of an
 // escape sequence from the other writer.
 func (p *Process) Write(b []byte) error {
