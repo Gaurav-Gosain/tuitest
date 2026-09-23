@@ -92,6 +92,15 @@ type printedCell struct {
 // accent, or an emoji from its zero-width joiner, decided whether they were
 // clustered at all. Folding a continuation into the cell in front of it gives
 // the same screen either way.
+//
+// That includes the cluster's width. A presentation selector or a keycap mark
+// turns a narrow base wide, so the cell is given the width of the whole cluster
+// and the cursor is moved to match, exactly as if the cluster had arrived in
+// one piece. Nothing has been laid out against the old width yet: the checks
+// below refuse to extend once the cursor has moved or the cell has changed.
+// Keeping the base's width instead drew "❤️" one column wide whenever a PTY
+// read ended between U+2764 and U+FE0F, and every character after it on the
+// row one column early. tuios's emulator widens the cell the same way.
 func (e *Emulator) extendPrinted(content string) bool {
 	p := &e.printed
 	if !p.valid || p.scr != e.scr {
@@ -107,18 +116,50 @@ func (e *Emulator) extendPrinted(content string) bool {
 	}
 
 	joined := prev.Content + content
-	cluster, _ := ansi.FirstGraphemeCluster(joined, ansi.GraphemeWidth)
+	cluster, width := ansi.FirstGraphemeCluster(joined, ansi.GraphemeWidth)
 	if len(cluster) != len(joined) {
 		return false
 	}
 
 	cell := *prev
 	cell.Content = joined
-	// The width is deliberately not recomputed. The columns this cell occupies
-	// were committed when the base rune was drawn and everything after it was
-	// laid out against them; a terminal cannot give a column back after the
-	// fact, and pretending otherwise would move text that is already on screen.
+	if width < 1 || width == cell.Width {
+		e.scr.SetCell(p.x, p.y, &cell)
+		p.content = joined
+		return true
+	}
+
+	awm := e.isModeSet(ansi.ModeAutoWrap)
+	scrWidth := e.scr.Width()
+	if p.x+width > scrWidth {
+		if !awm {
+			// The unsplit cluster would not fit either, and with autowrap
+			// off there is no next line to put it on. The base keeps its
+			// cell and the continuation is dropped, so the grid never holds
+			// a cell narrower than its content measures.
+			return true
+		}
+		// The widened cluster no longer fits where its base was drawn. Take
+		// the base back and draw the whole cluster from that position, which
+		// wraps it to the next line the way the unsplit write does.
+		e.scr.SetCell(p.x, p.y, nil)
+		e.scr.setCursor(p.x, p.y, false)
+		e.atPhantom = false
+		p.valid = false
+		e.handleGrapheme(joined, width)
+		return true
+	}
+
+	cell.Width = width
 	e.scr.SetCell(p.x, p.y, &cell)
+	// The same cursor rule handleGrapheme applies after drawing a cell.
+	x := p.x
+	e.atPhantom = awm && x+width >= scrWidth
+	if !e.atPhantom {
+		x += width
+	}
+	e.scr.setCursor(x, p.y, false)
+	p.curX, p.curY = e.scr.CursorPosition()
 	p.content = joined
 	return true
 }
