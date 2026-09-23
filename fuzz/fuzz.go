@@ -287,7 +287,15 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 		err := p.Exec(c)
 
 		if mon == nil && p.Terminal() != nil {
-			mon = newMonitor(p.Terminal(), opts.Limits, opts.Gen.Cols, opts.Gen.Rows, opts.Invariants)
+			// The grid is judged against the size the program was spawned at,
+			// which is what the tape's own Set Size said. The session's
+			// configured size is only what the generator writes into that
+			// line: a corpus entry from a session with other dimensions, or a
+			// shrink candidate without the Set line, spawns at a different
+			// size, and judging it against the configured one reports the
+			// harness rather than the program.
+			cols, rows := p.Terminal().Screen().Size()
+			mon = newMonitor(p.Terminal(), opts.Limits, cols, rows, opts.Invariants)
 		}
 		if mon == nil {
 			if err != nil {

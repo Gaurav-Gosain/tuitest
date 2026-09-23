@@ -60,3 +60,40 @@ func TestWriteRacingACleanExitIsNotACrash(t *testing.T) {
 		t.Fatalf("a program that exited 0 was reported as %s: %s", f.Kind, f.Detail)
 	}
 }
+
+// The screen-model check compares the grid against the size the program was
+// spawned at, which is whatever the tape's Set Size said, not the size the
+// session's generator is configured for. The two differ whenever a corpus entry
+// written by a session with --cols 100 is replayed by one with the default 80,
+// and whenever the shrinker tries a candidate without the Set line. An earlier
+// version took the size from the session's options and reported both as
+// "grid is 100x30 but the last requested size was 80x24", a finding about the
+// harness that pinned a regression on the program.
+func TestScreenModelIsJudgedAgainstTheSpawnedSize(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+
+	argv := []string{"/bin/sh", "-c", "printf ready; sleep 5"}
+	opts := Options{
+		Argv:          argv,
+		SettleTimeout: 500 * time.Millisecond,
+		Limits:        DefaultLimits(),
+		Gen:           Config{Cols: 80, Rows: 24},
+	}.withDefaults()
+
+	cmds := []tape.Command{
+		{Kind: tape.KindSet, SetKey: "Size", SetArgs: []string{"100", "30"}},
+		{Kind: tape.KindSpawn, Argv: argv},
+		{Kind: tape.KindWaitOutput},
+		{Kind: tape.KindResize, Cols: 90, Rows: 20},
+	}
+	f, err := driveReportingSpawn(context.Background(), opts, cmds)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if f != nil && f.Kind == FailScreenInconsistent {
+		t.Fatalf("a tape that spawned at 100x30 was judged against the session's 80x24: %s", f.Detail)
+	}
+}
