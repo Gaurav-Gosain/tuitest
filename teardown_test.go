@@ -31,13 +31,19 @@ func processAlive(pid int) bool {
 func TestCloseReapsDescendantsThatLeftTheProcessGroup(t *testing.T) {
 	sh := shellPath(t)
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	self, err := os.Executable()
+	if err != nil {
+		t.Skipf("cannot locate the test binary to use as setsid: %v", err)
+	}
 
 	// The child spawns a grandchild in its own session, so the grandchild is
-	// outside the process group teardown signals.
-	script := `setsid ` + sh + ` -c 'echo $$ > ` + pidFile + `; exec sleep 30' </dev/null >/dev/null 2>&1 &
+	// outside the process group teardown signals. The test binary stands in for
+	// setsid(1), which util-linux ships and macOS and the BSDs do not; see
+	// runSetsidHelper.
+	script := `"` + self + `" ` + sh + ` -c 'echo $$ > ` + pidFile + `; exec sleep 30' </dev/null >/dev/null 2>&1 &
 echo SPAWNED
 sleep 30`
-	term := tuitest.StartT(t, []string{sh, "-c", script})
+	term := tuitest.StartT(t, []string{sh, "-c", script}, tuitest.WithEnv(setsidHelperEnv+"=1"))
 
 	if err := term.WaitForText("SPAWNED", 10*time.Second); err != nil {
 		t.Fatalf("child never started the grandchild: %v", err)
@@ -65,6 +71,35 @@ sleep 30`
 		t.Errorf("grandchild %d survived Close: teardown is not transitive", pid)
 	}
 }
+
+// setsidHelperEnv makes the test binary act as setsid(1) instead of running
+// tests. See runSetsidHelper.
+const setsidHelperEnv = "TUITEST_TEST_SETSID_HELPER"
+
+// runSetsidHelper makes this test binary a portable setsid(1): started with
+// setsidHelperEnv set, it moves itself into a new session and execs its
+// arguments, which then run outside the caller's process group. The command is
+// part of util-linux and absent on macOS and the BSDs, which is where the
+// teardown it tests matters most, since those systems have no /proc and find
+// descendants through ps.
+//
+// It runs from init so that it takes over before the testing package parses
+// the arguments, which are the helper's command line and not test flags.
+func runSetsidHelper() {
+	if os.Getenv(setsidHelperEnv) == "" || len(os.Args) < 2 {
+		return
+	}
+	_ = os.Unsetenv(setsidHelperEnv)
+	if _, err := syscall.Setsid(); err != nil {
+		os.Stderr.WriteString("setsid helper: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	err := syscall.Exec(os.Args[1], os.Args[1:], os.Environ())
+	os.Stderr.WriteString("setsid helper: exec " + os.Args[1] + ": " + err.Error() + "\n")
+	os.Exit(1)
+}
+
+func init() { runSetsidHelper() }
 
 // waitForPidFile reads a pid a spawned process wrote, tolerating the window
 // between the file being created and the write landing.
