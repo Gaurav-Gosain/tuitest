@@ -18,16 +18,26 @@ import (
 // The fuzzer did exactly that and reported "driving the program failed: write
 // /dev/ptmx: input/output error" as a crash of a program that had simply quit.
 //
-// Linux accepts writes to a master whose slave has closed, so there the loop
-// below only ends at the deadline and the assertions have nothing to check.
+// Linux accepts writes to the master after the child has exited and discards
+// the bytes, so there no write fails. A run ends as soon as a write succeeds
+// after the exit was already reported, and the assertions have nothing to
+// check on that platform.
+//
+// The loop is bounded so it cannot block or spin: it pauses between writes and
+// sends fewer bytes than a PTY input buffer holds (4096 on Linux), so a write
+// never waits on a child that is not reading.
 //
 // Verified to fail on macOS: removing the wait for the child in
-// Terminal.writeErr makes the first assertion fire within a few runs.
+// Terminal.inputErr makes the first assertion fire within a few runs.
 func TestWriteErrorAfterExitReportsTheExit(t *testing.T) {
 	t.Parallel()
 	sh := shellPath(t)
 
-	const runs = 50
+	const (
+		runs        = 50
+		maxAttempts = 2000
+		pause       = time.Millisecond
+	)
 	for i := range runs {
 		term, err := tuitest.Start([]string{sh, "-c", "exit 0"}, tuitest.WithSize(20, 5))
 		if err != nil {
@@ -35,15 +45,24 @@ func TestWriteErrorAfterExitReportsTheExit(t *testing.T) {
 		}
 
 		var werr error
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
+		acceptedAfterExit := false
+		for range maxAttempts {
+			_, exitedBefore := term.ExitStatus()
 			if werr = term.Type("x"); werr != nil {
 				break
 			}
+			if exitedBefore {
+				acceptedAfterExit = true
+				break
+			}
+			time.Sleep(pause)
 		}
 		if werr == nil {
-			// The platform accepts writes to a finished program.
 			_ = term.Close()
+			if !acceptedAfterExit {
+				t.Fatalf("run %d: the child neither exited nor refused input after %d writes", i, maxAttempts)
+			}
+			// The platform accepts writes to a finished program.
 			continue
 		}
 		if _, exited := term.ExitStatus(); !exited {

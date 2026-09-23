@@ -83,8 +83,8 @@ store it; `WithSize` has the same range, and `Start` refuses anything outside
 it.
 
 Input to a program that has exited may fail, depending on the platform: macOS
-refuses writes to a PTY whose program has gone, Linux accepts them until
-`Close`. When it fails, the error wraps `ErrChildExited`, and `ExitStatus`
+refuses writes to a PTY whose program has gone, while Linux accepts them and
+discards the bytes until `Close`. When it fails, the error wraps `ErrChildExited`, and `ExitStatus`
 already reports the exit.
 
 ## Waiting

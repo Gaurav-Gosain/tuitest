@@ -364,8 +364,8 @@ const exitSettleGrace = time.Second
 // ExitStatus still reports a running child, and the caller cannot tell a
 // program that quit from a harness that broke. Waiting briefly for the reap
 // makes the two consistent, and wrapping ErrChildExited lets the caller branch
-// on it. Linux accepts writes to a master whose other end has closed, so there
-// the error only appears once Close has released the PTY.
+// on it. Linux accepts writes to a master whose other end has closed and
+// discards the bytes, so there no write fails until Close has released the PTY.
 //
 // The pump never comes through here. It writes emulator responses with
 // proc.Write directly, and waiting for Done from the pump would wait on

@@ -158,7 +158,9 @@ only, and only if the child's pid has not been reused. A descendant that both
 left the group and outlived the child cannot be found, and is not reported.
 
 Input sent after the child has exited behaves differently by platform. Linux
-accepts writes to a PTY whose program has gone until `Close` releases it. macOS
+accepts writes to a PTY whose program has gone until `Close` releases it. The
+bytes are discarded, since `Start` closed the parent's copy of the other end
+and nothing is left to read them, so the writes neither fail nor block. macOS
 fails them with EIO as soon as the program closes its end, before the pump has
 reaped it. `Terminal.write` and `Resize` wait up to a second for the reap in
 that case and return an error wrapping `ErrChildExited`, so the caller finds
