@@ -267,34 +267,49 @@ func FuzzTapeRoundTripsThroughSource(f *testing.F) {
 	for _, s := range []string{
 		"\x1b[<0;10;5M", "\x1b[M\x20\x2a\x25", "\x1b[200~hi\x1b[201~",
 		"\x1b[I", "\x1b[O", "\x1b_Gi=1;OK\x1b\\", "hello\r",
+		// Kitty reports whose attributes are a space, which the tape could
+		// only spell once quoted arguments existed.
+		"\x1b[32;1;32u", "\x1b[97:32:32u",
 	} {
 		f.Add([]byte(s))
 	}
 
 	f.Fuzz(func(t *testing.T, in []byte) {
-		cmds := decodeChunks(Modes{}, in)
-		src := Sprint(cmds)
-		back, err := Parse(strings.NewReader(src))
-		if err != nil {
-			t.Fatalf("decoder produced a tape that does not parse: %v\nsource: %q", err, src)
-		}
-		if len(back) != len(cmds) {
-			t.Fatalf("round trip changed the command count: %d then %d\nsource: %q",
-				len(cmds), len(back), src)
-		}
-		// The claim is about the tape file, so the comparison is between what
-		// the decoded commands replay and what the same commands replay after
-		// a trip through the file. Comparing against the original input
-		// instead would restate the decoder's canonicalization, which is
-		// FuzzReplayReproducesInputBytes' business: writing "\x1b[1A" down as
-		// "Key Up" and replaying "\x1b[A" is the legacy protocol normalizing a
-		// default parameter, not the file losing anything.
-		want := replayBytes(t, cmds, Modes{})
-		if got := replayBytes(t, back, Modes{}); string(got) != string(want) {
-			t.Fatalf("tape round trip changed the replayed bytes:\n  in:   %q\n  before: %q\n  after:  %q\n  src: %q",
-				in, want, got, src)
+		// Under every mode context, not only the default, since the same
+		// bytes decode to different commands under different modes and each
+		// of them has to survive the file.
+		for _, m := range fuzzModes {
+			checkSourceRoundTrip(t, in, m)
 		}
 	})
+}
+
+// checkSourceRoundTrip decodes in under m, writes the commands as a tape, parses
+// it back, and requires the result to replay the same bytes.
+func checkSourceRoundTrip(t *testing.T, in []byte, m Modes) {
+	t.Helper()
+	cmds := decodeChunks(m, in)
+	src := Sprint(cmds)
+	back, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("decoder produced a tape that does not parse: %v\nmodes: %+v\nsource: %q", err, m, src)
+	}
+	if len(back) != len(cmds) {
+		t.Fatalf("round trip changed the command count: %d then %d\nsource: %q",
+			len(cmds), len(back), src)
+	}
+	// The claim is about the tape file, so the comparison is between what
+	// the decoded commands replay and what the same commands replay after
+	// a trip through the file. Comparing against the original input
+	// instead would restate the decoder's canonicalization, which is
+	// FuzzReplayReproducesInputBytes' business: writing "\x1b[1A" down as
+	// "Key Up" and replaying "\x1b[A" is the legacy protocol normalizing a
+	// default parameter, not the file losing anything.
+	want := replayBytes(t, cmds, Modes{})
+	if got := replayBytes(t, back, Modes{}); string(got) != string(want) {
+		t.Fatalf("tape round trip changed the replayed bytes:\n  in:   %q\n  modes: %+v\n  before: %q\n  after:  %q\n  src: %q",
+			in, m, want, got, src)
+	}
 }
 
 func clampInt(v, lo, hi int) int {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // seedTapes are the corpus entries added in code. The committed corpus under
@@ -60,6 +61,46 @@ func FuzzParse(f *testing.F) {
 					i, diff, buf.String(), src)
 			}
 		}
+	})
+}
+
+// FuzzParseErrorPosition asserts that every parse error points somewhere real:
+// a line that exists in the source, a column no further than one past the end
+// of that line, and the line's own text. A caret under the wrong token is worse
+// than no caret, since the reader trusts it.
+func FuzzParseErrorPosition(f *testing.F) {
+	for _, s := range seedTapes {
+		f.Add(s)
+	}
+	for _, s := range []string{
+		"Wait /x/ +Screne", "Spawn sh -c \"echo", "Spawn \"a\"b", "Key a +Text x",
+		"Set Env \"A=1", "WaitStable /x/", "Expect /x/ @1s", "Hide x", "Snapshot ../x",
+		"\tKey\tNope", "Mouse Press Left 1", "Type ok\nFrob", "Key é +Text \"\\x\"",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, src string) {
+		_, err := Parse(strings.NewReader(src))
+		if err == nil {
+			return
+		}
+		pe, ok := err.(*ParseError)
+		if !ok {
+			// Only a read error may come back untyped, and a strings.Reader
+			// has none.
+			t.Fatalf("error is %T, want *ParseError: %v", err, err)
+		}
+		lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+		if pe.Line < 1 || pe.Line > len(lines) {
+			t.Fatalf("line %d is outside the %d-line source: %v", pe.Line, len(lines), pe)
+		}
+		if pe.Col < 0 || pe.Col > utf8.RuneCountInString(pe.Text)+1 {
+			t.Fatalf("column %d is outside line %q: %v", pe.Col, pe.Text, pe)
+		}
+		if pe.Text != "" && !strings.Contains(lines[pe.Line-1], strings.TrimSpace(pe.Text)) {
+			t.Fatalf("error quotes %q, but line %d is %q", pe.Text, pe.Line, lines[pe.Line-1])
+		}
+		_ = pe.Error()
 	})
 }
 
@@ -125,6 +166,20 @@ func commandDiff(a, b Command) string {
 	}
 	if a.Dur != b.Dur {
 		return "Dur differs"
+	}
+	// These were missing, so a printer that dropped a key attribute, changed a
+	// mouse event or flipped a focus direction still passed the round trip.
+	if a.KeyAttrs != b.KeyAttrs {
+		return "KeyAttrs differ"
+	}
+	if a.Cols != b.Cols || a.Rows != b.Rows {
+		return "Resize size differs"
+	}
+	if a.Mouse != b.Mouse {
+		return "Mouse event differs"
+	}
+	if a.FocusIn != b.FocusIn {
+		return "Focus direction differs"
 	}
 	return ""
 }
