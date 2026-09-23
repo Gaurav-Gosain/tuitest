@@ -29,6 +29,9 @@ func procTable() map[int]procInfo {
 	if t := procTableProc(); len(t) > 0 {
 		return t
 	}
+	if t := procTableNative(); len(t) > 0 {
+		return t
+	}
 	return procTablePS()
 }
 
@@ -73,8 +76,9 @@ func procTableProc() map[int]procInfo {
 	return table
 }
 
-// procTablePS is the fallback for Unixes without /proc, notably macOS. It shells
-// out to ps, which is specified by POSIX and present everywhere tuitest runs.
+// procTablePS is the fallback for Unixes with neither /proc nor a native reader
+// (procTableNative), such as the BSDs. It shells out to ps, which is specified
+// by POSIX and present everywhere tuitest runs.
 func procTablePS() map[int]procInfo {
 	out, err := exec.Command("ps", "-Ao", "pid=,ppid=,pgid=,state=").Output()
 	if err != nil {
@@ -279,8 +283,16 @@ func processLive(pid int) bool {
 		}
 		return true
 	}
-	// Without /proc, ask the kernel. This reports a zombie as alive, so a
-	// zombie descendant on such a system can be named as a survivor; that is a
-	// false alarm rather than a missed leak, which is the safer direction.
-	return syscall.Kill(pid, 0) == nil
+	// Without /proc, ask the kernel. The signal probe reports a zombie as
+	// alive, so where the platform can say whether a process is a zombie that
+	// answer is used as well. Elsewhere a zombie descendant can be named as a
+	// survivor; that is a false alarm rather than a missed leak, which is the
+	// safer direction.
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	if zombie, known := processZombie(pid); known {
+		return !zombie
+	}
+	return true
 }
