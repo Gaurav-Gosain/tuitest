@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/ptyproc"
 )
 
 // Private mode numbers that matter when judging whether a program cleaned up
@@ -120,7 +122,7 @@ func (s ExitStatus) Crashed() bool {
 
 func (s ExitStatus) String() string {
 	if s.Signaled {
-		return "killed by " + s.Signal.String()
+		return "killed by " + ptyproc.SignalName(s.Signal)
 	}
 	return "exit status " + strconv.Itoa(s.Code)
 }

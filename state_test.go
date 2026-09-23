@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -226,5 +227,31 @@ func TestPasteWrapsTextInBracketedPasteMarkers(t *testing.T) {
 	if err := term.WaitForText("<ESC>[200~hi<ESC>[201~", 5*time.Second); err != nil {
 		t.Fatalf("the pasted text should arrive wrapped in bracketed-paste markers: %v\nscreen:\n%s",
 			err, term.Screen().Text())
+	}
+}
+
+// ExitStatus.String ends up in failure messages, so it has to name the signal a
+// reader would look up. syscall.Signal's own String is the C library's
+// description ("killed", "terminated"), which made the message read "killed by
+// killed" for SIGKILL.
+//
+// Verified to fail: formatting with Signal.String again makes every signal
+// case below report the description instead of the name.
+func TestExitStatusStringNamesTheSignal(t *testing.T) {
+	cases := []struct {
+		st   tuitest.ExitStatus
+		want string
+	}{
+		{tuitest.ExitStatus{Code: 0}, "exit status 0"},
+		{tuitest.ExitStatus{Code: 3}, "exit status 3"},
+		{tuitest.ExitStatus{Code: -1, Signaled: true, Signal: syscall.SIGKILL}, "killed by SIGKILL"},
+		{tuitest.ExitStatus{Code: -1, Signaled: true, Signal: syscall.SIGTERM}, "killed by SIGTERM"},
+		{tuitest.ExitStatus{Code: -1, Signaled: true, Signal: syscall.SIGSEGV}, "killed by SIGSEGV"},
+		{tuitest.ExitStatus{Code: -1, Signaled: true, Signal: syscall.Signal(250)}, "killed by signal 250"},
+	}
+	for _, tc := range cases {
+		if got := tc.st.String(); got != tc.want {
+			t.Errorf("%+v.String() = %q, want %q", tc.st, got, tc.want)
+		}
 	}
 }

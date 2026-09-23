@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -216,6 +217,17 @@ func awaitGone(pid int, tree []int, done <-chan struct{}, grace time.Duration) {
 		}
 		time.Sleep(tick)
 	}
+}
+
+// SignalName returns the symbolic name of sig, such as "SIGKILL", or "signal N"
+// for a number the platform does not name. syscall.Signal's own String is the C
+// library's description ("killed", "terminated"), which reads badly after
+// "killed by" and is not what a reader searches for.
+func SignalName(sig syscall.Signal) string {
+	if name := unix.SignalName(sig); name != "" {
+		return name
+	}
+	return "signal " + strconv.Itoa(int(sig))
 }
 
 // waitSignal reports whether the child was killed by a signal, and which one.

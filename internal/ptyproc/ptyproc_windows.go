@@ -39,6 +39,10 @@ func terminateGroup(int, <-chan struct{}) error { return nil }
 
 func terminateSurvivors(int) error { return nil }
 
+// SignalName falls back to the description, since Windows has no signal death
+// to name.
+func SignalName(sig syscall.Signal) string { return sig.String() }
+
 // waitSignal has no meaning on Windows, which has no signal-death exit status;
 // a crash there surfaces as an ordinary non-zero exit code instead.
 func waitSignal(*os.ProcessState) (bool, syscall.Signal) { return false, 0 }
