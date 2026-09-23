@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Gaurav-Gosain/tuitest"
 	"github.com/Gaurav-Gosain/tuitest/tape"
@@ -375,11 +374,10 @@ func (g *generator) text() string {
 	s := textFragments[g.rand.IntN(len(textFragments))]
 	// Occasionally truncate mid-rune, which produces invalid UTF-8 from
 	// otherwise valid text: a realistic way for bad bytes to reach a program.
+	// The cut is always short of the end, so the result is always a strict
+	// prefix; on a multi-byte fragment it often lands inside a rune.
 	if g.rand.IntN(10) == 0 && len(s) > 2 {
-		cut := 1 + g.rand.IntN(len(s)-1)
-		if !utf8.ValidString(s[:cut]) || cut < len(s) {
-			return s[:cut]
-		}
+		return s[:1+g.rand.IntN(len(s)-1)]
 	}
 	return s
 }

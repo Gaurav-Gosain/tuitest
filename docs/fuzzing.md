@@ -211,7 +211,10 @@ evidence is muddied by output that was already in flight.
 
 Two passes run to exhaustion against a hard budget of candidate replays
 (`-shrink-budget`, 200 by default), because every candidate costs a full
-spawn-and-drive.
+spawn-and-drive. A hang is the expensive case: every candidate that still hangs
+has to wait out `-hang-after` before it can be judged, so minimising one can take
+the budget times that bound, several minutes at the defaults. Lower
+`-shrink-budget` or `-hang-after` when that matters more than the smallest tape.
 
 The first pass deletes chunks in decreasing sizes, the classic delta debugging
 shape: a fuzz run is mostly irrelevant input, so the cheapest big win is
