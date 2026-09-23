@@ -45,10 +45,18 @@ func TestUpstreamRecordIsWellFormed(t *testing.T) {
 	}
 }
 
+// upstreamImports maps tuios import paths to the ones the copied tests use
+// here. scripts/vendor-vt.sh applies the same rewrite.
+var upstreamImports = strings.NewReplacer(
+	"github.com/Gaurav-Gosain/tuios/internal/fuzz/vtgen", "github.com/Gaurav-Gosain/tuitest/fuzz/vtgen",
+	"github.com/Gaurav-Gosain/tuios/internal/vt", "github.com/Gaurav-Gosain/tuitest/internal/vt",
+)
+
 // TestVendoredCopyMatchesUpstream is the drift check. Point TUITEST_TUIOS_SRC at
 // a tuios checkout and every vendored file must be byte-identical to the commit
-// recorded in UPSTREAM. Without the checkout there is nothing to compare
-// against, so it skips; with it, a local edit or a stale record fails.
+// recorded in UPSTREAM, with only the import paths of a test rewritten. Without
+// the checkout there is nothing to compare against, so it skips; with it, a
+// local edit or a stale record fails.
 func TestVendoredCopyMatchesUpstream(t *testing.T) {
 	src := os.Getenv("TUITEST_TUIOS_SRC")
 	if src == "" {
@@ -68,15 +76,17 @@ func TestVendoredCopyMatchesUpstream(t *testing.T) {
 	checked := 0
 	for _, path := range local {
 		base := filepath.Base(path)
-		// doc.go, the tests and every tuitest_* file belong to tuitest, not
-		// to upstream.
-		if base == "doc.go" || strings.HasPrefix(base, "tuitest_") || strings.HasSuffix(base, "_test.go") {
+		// doc.go and every tuitest_* file belong to tuitest, not to upstream.
+		if base == "doc.go" || strings.HasPrefix(base, "tuitest_") {
 			continue
 		}
 		want, err := exec.Command("git", "-C", src, "show", rec["commit"]+":"+rec["path"]+"/"+base).Output()
 		if err != nil {
 			t.Errorf("%s: not present at upstream %s: %v", base, rec["commit"][:12], err)
 			continue
+		}
+		if strings.HasSuffix(base, "_test.go") {
+			want = []byte(upstreamImports.Replace(string(want)))
 		}
 		got, err := os.ReadFile(path)
 		if err != nil {
@@ -124,4 +134,49 @@ func divergenceRecord(t *testing.T) map[string]bool {
 		out[line] = true
 	}
 	return out
+}
+
+// TestVendoredDependenciesMatchUpstream holds the two modules the emulator is
+// written against to the versions tuios pins at the recorded commit. A
+// different ultraviolet can change what a cell reads back as without any file
+// here changing, which the file comparison above cannot see.
+func TestVendoredDependenciesMatchUpstream(t *testing.T) {
+	src := os.Getenv("TUITEST_TUIOS_SRC")
+	if src == "" {
+		t.Skip("set TUITEST_TUIOS_SRC to a tuios checkout to check for vendor drift")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	rec := upstreamRecord(t)
+	theirs, err := exec.Command("git", "-C", src, "show", rec["commit"]+":go.mod").Output()
+	if err != nil {
+		t.Fatalf("reading tuios's go.mod at %s: %v", rec["commit"][:12], err)
+	}
+	ours, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mod := range []string{"github.com/charmbracelet/ultraviolet", "github.com/charmbracelet/x/ansi"} {
+		want, got := requiredVersion(string(theirs), mod), requiredVersion(string(ours), mod)
+		if want == "" {
+			t.Errorf("tuios's go.mod at %s does not require %s", rec["commit"][:12], mod)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s is %s here but %s in tuios at %s; pin it to match", mod, got, want, rec["commit"][:12])
+		}
+	}
+}
+
+// requiredVersion returns the version a go.mod requires of mod, or "".
+func requiredVersion(gomod, mod string) string {
+	for _, line := range strings.Split(gomod, "\n") {
+		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "require "))
+		if len(fields) >= 2 && fields[0] == mod {
+			return fields[1]
+		}
+	}
+	return ""
 }
