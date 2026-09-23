@@ -224,10 +224,14 @@ func (m *monitor) noteCommand(c tape.Command) {
 
 	switch c.Kind {
 	case tape.KindResize:
-		m.wantCols, m.wantRows = c.Cols, c.Rows
 		// A resize is input too: it delivers SIGWINCH, and a program that stops
 		// responding to one is exactly the degenerate-size bug worth finding.
-		m.inputsSinceOutput++
+		// A resize to the size the terminal already has delivers nothing,
+		// because the kernel only signals a change, so it is not counted.
+		if c.Cols != m.wantCols || c.Rows != m.wantRows {
+			m.inputsSinceOutput++
+		}
+		m.wantCols, m.wantRows = c.Cols, c.Rows
 	case tape.KindKey, tape.KindMouse:
 		m.inputsSinceOutput++
 	case tape.KindType, tape.KindRaw, tape.KindPaste:

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Gaurav-Gosain/tuitest"
+	"github.com/Gaurav-Gosain/tuitest/tape"
 )
 
 // Signal aliases, so the table below reads as intent rather than as syscall
@@ -145,5 +146,28 @@ func TestExitStatusCrashedDistinguishesRealCrashes(t *testing.T) {
 				t.Fatalf("Crashed() = %v, want %v for %+v", got, tc.want, tc.st)
 			}
 		})
+	}
+}
+
+// A resize to the size the terminal already has changes nothing: the kernel
+// only sends SIGWINCH when the window size actually changes, so the program is
+// never told and has nothing to answer. Counting it as unanswered input handed
+// the hang detector evidence that did not exist, so three ignored no-op
+// resizes were enough to call a healthy idle program hung.
+func TestNoOpResizeIsNotUnansweredInput(t *testing.T) {
+	t.Parallel()
+	m := &monitor{wantCols: 80, wantRows: 24}
+
+	m.noteCommand(tape.Command{Kind: tape.KindResize, Cols: 80, Rows: 24})
+	if m.inputsSinceOutput != 0 {
+		t.Fatalf("a resize to the current size counted as %d unanswered inputs", m.inputsSinceOutput)
+	}
+
+	m.noteCommand(tape.Command{Kind: tape.KindResize, Cols: 40, Rows: 12})
+	if m.inputsSinceOutput != 1 {
+		t.Fatalf("a real resize counted as %d unanswered inputs, want 1", m.inputsSinceOutput)
+	}
+	if m.wantCols != 40 || m.wantRows != 12 {
+		t.Fatalf("the requested size is %dx%d after resizing to 40x12", m.wantCols, m.wantRows)
 	}
 }
