@@ -249,7 +249,7 @@ labelled, because a flaky finding is worth less than a solid one.
 ## Reproductions
 
 ```
-# crash: program killed by aborted
+# crash: program killed by SIGABRT
 # found by tuitest fuzz at iteration 6, whose own seed is 13064056694810536104:
 # --seed 13064056694810536104 --iterations 1 with the same generation flags regenerates the unminimised input
 # minimised from 31 commands to 3

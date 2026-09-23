@@ -452,7 +452,7 @@ than a bug. Both of these are documented with their limits in
 Every finding is minimised by delta debugging and written as an ordinary tape:
 
 ```
-# crash: program killed by aborted
+# crash: program killed by SIGABRT
 # found by tuitest fuzz at iteration 6, whose own seed is 13064056694810536104:
 # --seed 13064056694810536104 --iterations 1 with the same generation flags regenerates the unminimised input
 # minimised from 31 commands to 3

@@ -206,7 +206,7 @@ func ExampleTerminal_ExitStatus() {
 	st, _ := term.ExitStatus()
 	fmt.Println(st.Signaled, st.Crashed(), st)
 	// Output:
-	// true true killed by segmentation fault
+	// true true killed by SIGSEGV
 }
 
 // WaitForPrompt and WaitForCommand follow a shell through OSC 133 semantic
