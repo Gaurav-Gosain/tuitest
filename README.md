@@ -62,9 +62,10 @@ same reasons and print the same screens.
 - Resizes the PTY so the child receives a genuine `SIGWINCH`, and resizes the
   emulator grid to match in the same call.
 - Tears the child down by process group: the child is started under `setsid`
-  with the PTY as its controlling terminal, and `Close` signals the whole group
-  with SIGTERM then SIGKILL, so a multiplexer's daemon and its pane processes do
-  not survive the test.
+  with the PTY as its controlling terminal, and `Close` signals the whole group,
+  plus any descendant that left it with `setsid`, with SIGTERM then SIGKILL, so
+  a multiplexer's daemon and its pane processes do not survive the test. `Close`
+  returns an error naming anything that did, and `StartT` fails the test with it.
 - Reports whether the program restored the terminal. `TermState.Dirty()` is true
   when the alternate screen, mouse tracking (modes 9/1000/1001/1002/1003),
   bracketed paste, focus reporting, or a hidden cursor is left set on exit.

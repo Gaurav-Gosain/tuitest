@@ -124,7 +124,8 @@ flowchart LR
   EOF -- yes --> REAP[reap once<br/>record code + signal]
   REAP --> ONCLOSE[OnClose handler]
   ONCLOSE --> DONE[close done channel]
-  CLOSE[Process.Close] --> GRP[signal the group<br/>SIGTERM then SIGKILL]
+  CLOSE[Process.Close] --> TREE[snapshot descendants]
+  TREE --> GRP[signal the group and each descendant<br/>SIGTERM then SIGKILL]
   GRP --> PTYC[close the PTY]
 ```
 
@@ -140,6 +141,28 @@ own copy second, closing the same window from the other side.
 Teardown signals the process group rather than the process. That is the property
 that makes tuitest usable against a multiplexer: a plain `Process.Kill` would
 leave the daemon and every pane process running after the test.
+
+The group is not enough on its own, because a daemon calls `setsid` and leaves
+it. So while the child is still running, `Close` first snapshots every
+descendant by walking parent links, and signals each of them as well as the
+group. The process table comes from `/proc` on Linux, from the `kern.proc.all`
+sysctl on macOS, and from `ps` on the other Unixes. `Close` then waits for the
+pump to reap the child, not merely for the child to die, so output the program
+prints while shutting down still reaches the screen. It escalates to SIGKILL
+after two seconds, and returns an error naming any process still alive after
+that; `StartT` fails the test with it.
+
+Once the child has exited and been reaped, parent links no longer lead anywhere:
+its children were reparented to init. `Close` then signals the process group
+only, and only if the child's pid has not been reused. A descendant that both
+left the group and outlived the child cannot be found, and is not reported.
+
+Input sent after the child has exited behaves differently by platform. Linux
+accepts writes to a PTY whose program has gone until `Close` releases it. macOS
+fails them with EIO as soon as the program closes its end, before the pump has
+reaped it. `Terminal.write` and `Resize` wait up to a second for the reap in
+that case and return an error wrapping `ErrChildExited`, so the caller finds
+`ExitStatus` already reporting the exit when the error arrives.
 
 ## Errors
 

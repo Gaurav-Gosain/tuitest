@@ -24,6 +24,24 @@ since a Windows binary cannot exist to run it.
 Everything else needs a `/dev/ptmx` that can be opened. A container with a
 restricted `/dev` and no `/dev/pts` fails the doctor's PTY check with that hint.
 
+## Teardown
+
+**Teardown runs only if the test process lives to run it.** `StartT` closes the
+terminal from `t.Cleanup`, which runs when a test fails, calls `t.Fatal`, or
+panics in the test goroutine. It does not run when the test binary itself dies:
+`go test -timeout` expiring, a panic in some other goroutine, or Ctrl+C. The
+kernel then closes the PTY master and hangs up the terminal, which sends SIGHUP
+to the program, and that is all. A program that ignores SIGHUP, and any daemon
+it started with `setsid`, keeps running and has to be killed by hand. Give
+`go test` a `-timeout` longer than the slowest test's own waits, so that a hang
+fails a wait, and the cleanup runs, before the binary is killed.
+
+**A descendant that left the process group is only found while the child
+lives.** `Close` finds such a process by walking parent links from the child.
+Once the child has exited and been reaped, its children belong to init and only
+the process group is left to go on, so a daemon that called `setsid` and then
+outlived the program that started it is neither killed nor reported.
+
 ## What lives in memory
 
 | Thing | Size | Notes |

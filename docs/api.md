@@ -77,7 +77,15 @@ delivers a real paste. Programs take a different code path for pasted text than
 for typed text, and it is usually the less tested one.
 
 `Resize` changes the PTY window size, so the child receives a real `SIGWINCH`,
-and resizes the emulator grid in the same call.
+and resizes the emulator grid in the same call. A width or height outside
+1..65535 is refused with an error and changes nothing, since the kernel cannot
+store it; `WithSize` has the same range, and `Start` refuses anything outside
+it.
+
+Input to a program that has exited may fail, depending on the platform: macOS
+refuses writes to a PTY whose program has gone, Linux accepts them until
+`Close`. When it fails, the error wraps `ErrChildExited`, and `ExitStatus`
+already reports the exit.
 
 ## Waiting
 
@@ -258,8 +266,12 @@ degrades to exactly the plain snapshot.
 func (t *Terminal) Close() error
 ```
 
-`Close` tears down the whole process group and the PTY. It is idempotent and is
-registered automatically by `StartT`.
+`Close` tears down the whole process group, any descendant that left it with
+`setsid`, and the PTY. It sends SIGTERM, then SIGKILL after two seconds to
+anything still running. It returns an error naming any process that survived
+both, which `StartT`'s cleanup reports as a test failure. It is idempotent and
+is registered automatically by `StartT`. See [limits.md](limits.md#teardown)
+for what it cannot reach.
 
 ## A worked example
 
