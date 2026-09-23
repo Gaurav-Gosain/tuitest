@@ -235,6 +235,82 @@ func (t *Terminal) WaitStable(timeout time.Duration) error {
 	})
 }
 
+// WaitForStable blocks until cond holds on a screen whose content has not
+// changed for the stabilize interval (see WithStabilizeInterval), or until
+// timeout.
+//
+// It is for the case WaitFor handles badly: the text a test waits for is drawn
+// before the rest of the frame it belongs to. A program redraws from the top
+// down and the PTY delivers the frame in pieces, so the moment a marker near
+// the top appears, the rows below it can still hold the previous frame, and an
+// assertion on them made straight after WaitFor fails against a screen that is
+// correct a moment later. WaitForStable waits for the frame to finish as well.
+// It is also the way to read a value off the screen that is still moving, such
+// as a counter or a scroll position: wait for it to stop, then read it.
+//
+// Only the content of the cells counts as a change: text, colours and
+// attributes, and the size. Output that repaints the same content, and cursor
+// movement, do not restart the window. As with WaitStable, the window is not
+// considered to start before the last input tuitest sent, so a screen that
+// already satisfied cond before a keystroke is not reported until the program
+// has had the interval to react to it. A child that has exited cannot change
+// the screen again, so once it has, cond holding is enough.
+//
+// Programs that draw inside synchronized updates (mode 2026) are already never
+// seen half drawn, since the harness shows the previous frame until the update
+// closes, the way a real terminal does. WaitForStable still helps with the ones
+// that do not, and with a program that draws one logical frame in several
+// updates.
+func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) error {
+	quiet := t.stabilizeInterval()
+	var (
+		last  *screenSnapshot
+		since time.Time
+	)
+	return t.waitLoop("WaitForStable", fmt.Sprintf("a condition to hold on a screen unchanged for %s", quiet), timeout, false, func() bool {
+		s := t.viewLocked()
+		switch {
+		case last == nil:
+			// Nothing has been drawn since the last byte arrived, so the screen
+			// has looked like this at least since then.
+			since = t.lastWrite
+		case s != last && !sameContent(s, last):
+			since = time.Now()
+		}
+		last = s
+		if !cond(s) {
+			return false
+		}
+		if t.exited {
+			return true
+		}
+		from := since
+		if t.lastInput.After(from) {
+			from = t.lastInput
+		}
+		return time.Since(from) >= quiet
+	})
+}
+
+// sameContent reports whether two snapshots show the same cells.
+func sameContent(a, b *screenSnapshot) bool {
+	if a.cols != b.cols || a.rows != b.rows || len(a.cells) != len(b.cells) {
+		return false
+	}
+	for row := range a.cells {
+		ra, rb := a.cells[row], b.cells[row]
+		if len(ra) != len(rb) {
+			return false
+		}
+		for col := range ra {
+			if ra[col] != rb[col] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // WaitForOutput blocks until the child writes anything at all after the call
 // begins, or it exits, or timeout elapses.
 //
