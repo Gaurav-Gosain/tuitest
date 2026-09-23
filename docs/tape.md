@@ -76,6 +76,19 @@ such as `Key Shift+' +Shifted "`, still reads as it did. `tuitest record` quotes
 only when, it needs it, so a recording of `sh -c 'echo hi'` replays the same
 command. `Key` names are never quoted: `Key "` sends the double quote key.
 
+Every verb is used in at least one tape under
+[examples/tapes](../examples/tapes), and `go test ./examples/tapes/` runs them
+all, so those files are known to work.
+
+A relative `Spawn` program path is resolved from the directory `tuitest run` is
+started in, not from the tape's directory.
+
+`WaitPrompt` and `WaitCommand` wait for an OSC 133 marker newer than the wait
+itself. A marker the program emits before the tape reaches the wait is not
+counted, so `Key Enter` then `WaitCommand` is only reliable when the command
+takes longer than the step from one line to the next, which is usually but not
+always true. When the output is known, `Wait /text/` has no such gap.
+
 ## Set
 
 `Set` configures the terminal that the next `Spawn` creates, so every `Set` line

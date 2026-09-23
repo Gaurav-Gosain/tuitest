@@ -19,25 +19,100 @@ You bring a terminal program, any language, any framework, and a tape script or
 a Go test function. tuitest gives back a real pseudo-terminal to run it on, a VT
 emulator that turns its output into a grid of cells, waits that block on screen
 state instead of sleeping, and assertions that compare what a user would see.
-The importable library has four direct dependencies (`charmbracelet/ultraviolet`
-for the cell model, `charmbracelet/x/ansi` for color parsing,
-`charmbracelet/x/xpty` for PTY allocation, `charmbracelet/x/term` for the
-recorder's raw mode). The command line adds `spf13/cobra` and
-`charmbracelet/fang`, which appear in `go.mod` because the binary and the
-library share one module, but nothing outside `cmd/tuitest` and `internal/cli`
-imports them, so they never reach a consumer's binary. There is one binary and
-one importable package, and nothing to run alongside them.
-
-It is built to be taken apart. The emulator sits behind `internal/emu.Emulator`,
-a ten-method interface; PTY and process lifetime live in `internal/ptyproc` with
-no knowledge of screens; the tape language, the cobra command tree, and the
-fuzzer are each their own package layered on the same public `Terminal`.
 
 The command line and the Go package are two ways in, and neither is the lesser
 one. `tuitest run login.tape` tests a TUI with no Go anywhere; `tuitest.StartT`
-does the same thing from a test function when you want the program's own
-language. Both drive the same `Terminal`, so a tape and a Go test fail for the
-same reasons and print the same screens.
+does the same thing from a test function. Both drive the same `Terminal`, so a
+tape and a Go test fail for the same reasons and print the same screens.
+
+## Quick start
+
+You need a Unix-like OS that can open PTYs (`/dev/ptmx`) and Go 1.25 or newer
+to install. Windows deliberately fails to build; see
+[docs/limits.md](docs/limits.md).
+
+### From the command line
+
+```bash
+go install github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest
+
+# check this machine can run a TUI at all; exits 3 if not, so it gates CI
+tuitest doctor
+
+# look at what a program draws, asserting nothing
+printf 'hello from tuitest\n' > note.txt
+tuitest snap --size 60x8 -- less note.txt
+
+# write down what should happen as a tape
+cat > first.tape <<'EOF'
+Set Size 60 8
+Spawn less note.txt
+Wait /hello from tuitest/
+Key q
+ExpectExit 0
+EOF
+
+# run it: silent and exit 0 when every assertion holds,
+# the screen and a non-zero exit code when one does not
+tuitest run first.tape
+```
+
+From there the loop is `snap` to look, `record` or an editor to write a tape,
+`run` in CI, `replay` to watch a failing tape, and `fuzz` to go looking for
+trouble:
+
+```bash
+tuitest record -o login.tape -- ./myapp   # drive it by hand, Ctrl+] to stop
+tuitest replay login.tape                 # watch the tape run
+tuitest fuzz --duration 30s --corpus ./corpus -- ./myapp
+```
+
+[examples/tapes](examples/tapes) has a runnable tape for every verb of the
+language.
+
+### From Go
+
+```bash
+go get github.com/Gaurav-Gosain/tuitest
+```
+
+```go
+package myapp_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/Gaurav-Gosain/tuitest"
+)
+
+func TestGreeting(t *testing.T) {
+	// Any argv works; this one is a tiny program that asks for a name.
+	prog := []string{"sh", "-c", `printf 'name? '; read name; printf 'hello, %s\n' "$name"`}
+	term := tuitest.StartT(t, prog, tuitest.WithSize(40, 5))
+
+	if err := term.WaitForText("name?", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.SendKeys("gopher", tuitest.Enter); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitForText("hello, gopher", 5*time.Second); err != nil {
+		t.Fatal(err) // the error carries the screen as it was
+	}
+	term.AssertGolden(t, "greeting") // compares against testdata/greeting.golden
+}
+```
+
+`StartT` mirrors PTY traffic into `t.Log`, registers `Close` through
+`t.Cleanup`, and fails the test if the spawn itself fails. Record the golden
+once with `UPDATE_GOLDEN=1 go test ./...`, then review it as part of the diff.
+It holds `name? hello, gopher`: the PTY does not echo input, so the screen shows
+only what the program drew (see [docs/limits.md](docs/limits.md#fidelity-gaps)).
+
+The full Go surface is in [docs/api.md](docs/api.md), and every example in
+[example_test.go](example_test.go) runs under `go test` and is shown on
+[pkg.go.dev](https://pkg.go.dev/github.com/Gaurav-Gosain/tuitest).
 
 ## What it does
 
@@ -100,7 +175,7 @@ same reasons and print the same screens.
   `TERM`, size handling, emulator capabilities, and the conditions that make a
   suite flaky. It spawns nothing and writes nothing.
 - Exits with codes CI can branch on: 0 pass, 1 assertion failed, 2 bad usage or
-  malformed tape, 3 harness error, 4 wait timed out.
+  malformed tape, 3 harness error, 4 wait timed out, 5 snap saw an empty screen.
 
 ## Design goals
 
@@ -146,7 +221,7 @@ flowchart TB
 
   subgraph Low["internal"]
     PTY[ptyproc<br/>spawn, pump, resize, group teardown]
-    EMU[emu.Emulator<br/>ten-method interface]
+    EMU[emu.Emulator<br/>twelve-method interface]
     VT[vt<br/>vendored VT interpreter]
   end
 
@@ -166,6 +241,13 @@ Only the root package is public API; `internal/emu`, `internal/vt` and
 `internal/ptyproc` are not importable, which is deliberate. The emulator choice
 is not part of the contract, so replacing it is not a breaking change, and the
 `vt` copy can be re-synced from upstream without any downstream ceremony.
+
+The importable library has four direct dependencies (`charmbracelet/ultraviolet`
+for the cell model, `charmbracelet/x/ansi` for color parsing,
+`charmbracelet/x/xpty` for PTY allocation, `charmbracelet/x/term` for the
+recorder's raw mode). `spf13/cobra` and `charmbracelet/fang` are in `go.mod`
+for the command line, but nothing outside `cmd/tuitest` and `internal/cli`
+imports them, so they never reach a consumer's binary.
 
 `ptyproc` owns process and PTY lifetime and knows nothing about screens;
 `Terminal` owns screens and waits and knows nothing about `exec`. That split is
@@ -219,67 +301,6 @@ what I just sent", and `WaitForStable` for "wait until this is on screen and the
 frame has finished drawing"; prefer waiting on the content you expect whenever
 you know it.
 
-## Quick start
-
-```bash
-# install the command line tool (no Go needed afterwards to run tapes)
-go install github.com/Gaurav-Gosain/tuitest/cmd/tuitest@latest
-
-# check this machine can run a TUI at all; exits 3 if not, so it gates CI
-tuitest doctor
-
-# look at what a program actually draws, asserting nothing
-tuitest snap -- htop
-
-# write what you saw as a tape
-cat > login.tape <<'EOF'
-Set Size 60 10
-Spawn less README.md
-Wait /tuitest/
-Expect /headless testing harness/
-Key q
-ExpectExit 0
-EOF
-
-# run it: exits 0 when every assertion holds, prints the screen when one does not
-tuitest run login.tape
-```
-
-The loop is `snap` to look, `record` or an editor to write, `run` in CI,
-`replay` to debug, `fuzz` to go looking for trouble:
-
-```bash
-tuitest record -o login.tape -- ./myapp   # drive it by hand, Ctrl+] to stop
-tuitest replay login.tape                 # watch the tape run
-tuitest fuzz -duration 30s -corpus ./corpus -- ./myapp
-```
-
-From Go, `go get github.com/Gaurav-Gosain/tuitest` and:
-
-```go
-func TestGreeting(t *testing.T) {
-    term := tuitest.StartT(t, []string{"./myapp"}, tuitest.WithSize(80, 24))
-
-    if err := term.WaitForText("ready", 5*time.Second); err != nil {
-        t.Fatal(err)
-    }
-    term.SendKeys("hello", tuitest.Enter)
-    if err := term.WaitForText("you said hello", 3*time.Second); err != nil {
-        t.Fatal(err)
-    }
-    term.AssertGolden(t, "greeting") // testdata/greeting.golden
-}
-```
-
-`StartT` mirrors PTY traffic into `t.Log`, registers `Close` through
-`t.Cleanup`, and fails the test if the spawn itself fails. Record the golden
-once with `UPDATE_GOLDEN=1 go test ./...`, then review it as part of the diff.
-The full Go surface is in [docs/api.md](docs/api.md).
-
-Requirements: a Unix-like OS that can open PTYs (`/dev/ptmx`), and Go 1.25 or
-newer to install. Windows deliberately fails to build; see
-[docs/limits.md](docs/limits.md).
-
 ## What it looks like
 
 Every recording below drives the real binary against a real program: `less`
@@ -312,14 +333,14 @@ this page drives `lazygit` the same way. The tapes that produce them are in
 ## Command line
 
 ```
-tuitest run         play a tape script against a program            # exit 0/1/2/3/4
+tuitest run         play a tape script against a program            # exit 0 to 4
 tuitest record      drive a program by hand and write a tape        # Ctrl+] to stop
 tuitest replay      play a tape onto this terminal so you can watch # -step, -speed
 tuitest snap        spawn, wait for quiet, print the screen         # asserts nothing
 tuitest fuzz        drive with randomised input, report what breaks # writes tape repros
 tuitest doctor      report on the environment tests will run in     # spawns nothing
 tuitest completion  print a bash, zsh, fish or powershell script    # cobra generated
-tuitest version     print the tuitest version                       # set by -ldflags -X
+tuitest version     print the tuitest version                       # module or -ldflags version
 tuitest help        show help for a command                         # tuitest help run
 ```
 
@@ -327,8 +348,8 @@ Every command has its own help with examples (`tuitest help run`). Commands,
 help and completion are built on `spf13/cobra` and rendered by
 `charmbracelet/fang`; completion is resolved by calling the binary back rather
 than from a script baked at build time, so it cannot fall out of step with the
-commands. Flags take either spelling: `-size` and `--size` both work. `run`, `snap` and `doctor` accept
-`-json` and print one object to stdout: `run` reports `status`, a `kind` naming
+commands. Flags take either spelling: `-size` and `--size` both work. `run`,
+`snap` and `doctor` accept `-json` and print one object to stdout: `run` reports `status`, a `kind` naming
 the exit code, `durationMs`, and the full error text including the screen at the
 moment of failure.
 
@@ -346,10 +367,11 @@ Exit codes are the contract with CI, separating "your program is wrong" from
 | Code | Meaning |
 | ---- | ------- |
 | 0 | every assertion passed |
-| 1 | an assertion failed, or the program exited before the tape was done with it |
+| 1 | an assertion failed, the program exited before the tape was done with it, or `fuzz` found something |
 | 2 | bad usage, or a tape that would not parse |
-| 3 | harness error: no PTY, a program that would not start, an unreadable golden |
+| 3 | harness error: no PTY, a program that would not start, an unreadable tape or golden |
 | 4 | a wait timed out |
+| 5 | `snap` only: the program drew nothing |
 
 The full flag reference for every subcommand is in [docs/cli.md](docs/cli.md).
 
@@ -375,7 +397,8 @@ ExpectExit 0
 
 The 20 verbs are `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`,
 `WaitOutput`, `WaitPrompt`, `WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`,
-`Resize`, `Mouse`, `Paste`, `Raw`, `Focus`, `Hide`, `Show` and `Sleep`. `Wait`
+`Resize`, `Mouse`, `Paste`, `Raw`, `Focus`, `Hide`, `Show` and `Sleep`, and
+[examples/tapes](examples/tapes) has a runnable tape using each of them. `Wait`
 and `Expect` take a `/regex/` and a `+Screen` or `+Line` scope, and every verb
 that waits takes an `@timeout` such as `@5s`; an argument a verb does not take
 is a parse error. `Paste` and `Raw` take a Go-quoted string, which is what lets
@@ -495,15 +518,19 @@ ones most likely to matter:
   overwriting it.
 - **`Screen.Line` returns one physical row** and does not de-wrap, so text that
   soft-wrapped at the right margin does not match as one string.
+- **The PTY does not echo input or turn `Ctrl+c` into SIGINT.** A TUI never
+  notices, but a line-oriented program's typed input is not on screen, and
+  `Ctrl+c` does not interrupt it.
 - **Mouse mode 1005 (UTF-8 coordinates) is not decoded as itself.** It is
   indistinguishable from X10 by construction, so it is read as X10 and the
   coordinates on the `Mouse` line are wrong above column 95. The bytes still
   replay exactly, so this costs readability rather than fidelity.
-- **Two of the fuzzer's own tests are flaky under load.** They assert that a
+- **Two of the fuzzer's own tests can be flaky under load.** They assert that a
   minimised reproduction re-reproduced on the confirmation replay, which is a
   property the fuzzer does not guarantee: confirmation drives a real program
-  through a real PTY. They pass in isolation and fail intermittently when the
-  machine is busy. See [docs/limits.md](docs/limits.md).
+  through a real PTY. The macOS failures came from a harness bug that is fixed;
+  whether any remain on Linux has not been measured. See
+  [docs/limits.md](docs/limits.md).
 - **The fuzzer's two oracles are gated, and each gate costs coverage.** The
   replacement-character check goes quiet for a whole run once one malformed byte
   has been sent, which with the default generator is almost immediately.
@@ -548,8 +575,7 @@ Each seam is narrow on purpose:
   case, one printer case).
 - Drive the harness from your own runner (import the root package; `tape` and
   `fuzz` are both ordinary callers of `*Terminal`).
-- Add project-specific helpers alongside `tuiosx` (69 lines) rather than in the
-  core.
+- Add project-specific helpers alongside `tuiosx` rather than in the core.
 
 See [docs/architecture.md](docs/architecture.md) and
 [docs/extending.md](docs/extending.md).
@@ -562,16 +588,19 @@ go vet ./...
 go test -race ./...
 ```
 
-367 test cases across 163 test functions and 5 fuzz targets. The default suite is
-hermetic: it spawns a small Go echo-TUI fixture under `testdata/echotui`, a
-deliberately buggy fixture with individually selectable bugs under
-`testdata/buggytui`, and a plain `sh`. Nothing external is required.
+The default suite is hermetic: it spawns a small Go echo-TUI fixture under
+`testdata/echotui`, a deliberately buggy fixture with individually selectable
+bugs under `testdata/buggytui`, and a plain `sh`. Nothing external is required.
+CI runs the same commands on Linux and macOS; see
+[.github/workflows/test.yml](.github/workflows/test.yml).
 
-Everything that parses input tuitest does not control has a fuzz target
-(`FuzzParse`, `FuzzResolveKey`, `FuzzDiff`, `FuzzStyledEncode`,
-`FuzzEmulatorScreen`). Their seed corpora live in `testdata/fuzz`, so `go test`
-runs them as ordinary unit tests and they act as regression guards with no
-fuzzing session. To actually fuzz:
+Everything that parses input tuitest does not control has a fuzz target, among
+them `FuzzParse` and `FuzzResolveKey` for the tape language, the `FuzzDecode*`
+and `FuzzRecorder*` targets for recorded input, and `FuzzEmulatorScreen` and
+`FuzzEmulatorScript` for the emulator (`grep -r 'func Fuzz'` lists them all).
+Their seed corpora live in `testdata/fuzz` directories, so `go test` runs them
+as ordinary unit tests and they act as regression guards with no fuzzing
+session. To actually fuzz:
 
 ```bash
 go test -run '^$' -fuzz FuzzParse ./tape
