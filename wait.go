@@ -19,7 +19,8 @@ var (
 	// ErrTimeout is wrapped by every wait that runs out of time.
 	ErrTimeout = errors.New("tuitest: timed out")
 	// ErrChildExited is wrapped when the program under test exits before a
-	// wait's condition is met.
+	// wait's condition is met, and by input (Type, SendKeys, Paste, SendMouse,
+	// Resize) that failed because the program has exited.
 	ErrChildExited = errors.New("tuitest: child exited before the condition was met")
 	// ErrSemanticMarkers is wrapped by the OSC 133 waits when the terminal was
 	// started without WithSemanticMarkers.

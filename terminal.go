@@ -340,8 +340,57 @@ func (t *Terminal) Type(s string) error {
 func (t *Terminal) write(b []byte) error {
 	t.mirror(b)
 	t.markInput()
-	return t.proc.Write(b)
+	return t.inputErr("write", t.proc.Write(b))
 }
+
+// exitSettleGrace bounds how long a failed write or resize waits for the child
+// to be reaped before the error is returned as it stands. The pump reaps as
+// soon as it has drained the PTY, so a child that is really exiting is reaped
+// in well under this. A child that closed its terminal and kept running is
+// never reaped, and the bound is what keeps a write to it from blocking.
+const exitSettleGrace = time.Second
+
+// inputErr turns a failed write or resize into an error that says whether the
+// child has exited.
+//
+// On macOS a write to the PTY master fails with EIO as soon as the child has
+// closed its end of the terminal, which is before the pump has drained the
+// master and reaped it. Returned as it stands, the error arrives while
+// ExitStatus still reports a running child, and the caller cannot tell a
+// program that quit from a harness that broke. Waiting briefly for the reap
+// makes the two consistent, and wrapping ErrChildExited lets the caller branch
+// on it. Linux accepts writes to a master whose other end has closed, so there
+// the error only appears once Close has released the PTY.
+//
+// The pump never comes through here. It writes emulator responses with
+// proc.Write directly, and waiting for Done from the pump would wait on
+// itself.
+func (t *Terminal) inputErr(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-t.proc.Done():
+	case <-time.After(exitSettleGrace):
+		return err
+	}
+	st, _ := t.ExitStatus()
+	return &exitedInputError{op: op, status: st, err: err}
+}
+
+// exitedInputError is a write or resize that failed because the child has
+// exited. It wraps both ErrChildExited and the underlying I/O error.
+type exitedInputError struct {
+	op     string
+	status ExitStatus
+	err    error
+}
+
+func (e *exitedInputError) Error() string {
+	return "tuitest: " + e.op + " failed: the child has exited (" + e.status.String() + "): " + e.err.Error()
+}
+
+func (e *exitedInputError) Unwrap() []error { return []error{ErrChildExited, e.err} }
 
 // markInput timestamps the moment input was handed to the child.
 func (t *Terminal) markInput() {
@@ -358,7 +407,7 @@ func (t *Terminal) Resize(cols, rows int) error {
 	t.emu.Resize(cols, rows)
 	t.lastInput = time.Now()
 	t.mu.Unlock()
-	return t.proc.Resize(cols, rows)
+	return t.inputErr("resize", t.proc.Resize(cols, rows))
 }
 
 // Progress reports how many bytes the child has written so far and when the
