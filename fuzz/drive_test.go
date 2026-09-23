@@ -152,3 +152,28 @@ func TestInterruptedConfirmationIsNotReportedAsAFlake(t *testing.T) {
 		t.Errorf("the log should say the session was interrupted:\n%s", log)
 	}
 }
+
+// A progress line is due once per interval and not before the first one has
+// elapsed, so a short session prints none and a long one prints one every so
+// often rather than one per iteration.
+func TestProgressIsDueOncePerInterval(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1000, 0)
+	p := progress{every: 15 * time.Second, last: start}
+	steps := []struct {
+		at   time.Duration
+		want bool
+	}{
+		{0, false},
+		{14 * time.Second, false},
+		{15 * time.Second, true},
+		{16 * time.Second, false},
+		{29 * time.Second, false},
+		{31 * time.Second, true},
+	}
+	for _, s := range steps {
+		if got := p.due(start.Add(s.at)); got != s.want {
+			t.Fatalf("due at %s = %v, want %v", s.at, got, s.want)
+		}
+	}
+}

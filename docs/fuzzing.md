@@ -38,6 +38,11 @@ With `-corpus dir`, findings are saved there and replayed first on the next run,
 which turns them into a regression suite: a fix is confirmed when the corpus
 stops reproducing.
 
+A session reports each finding as it happens, and otherwise prints a progress
+line every 15 seconds (iterations so far, the rate, and the number of findings),
+so a long campaign that has found nothing can be told apart from a wedged one.
+`-q` silences both and leaves only the summary.
+
 ## What it sends
 
 Structured input, not byte noise.

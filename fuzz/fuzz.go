@@ -164,6 +164,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		defer cancel()
 	}
 
+	// A long campaign that finds nothing otherwise prints nothing between its
+	// first line and its summary, which is indistinguishable from a wedged
+	// one.
+	prog := progress{every: progressEvery, last: start}
+
 	for i := 0; ; i++ {
 		if opts.Iterations > 0 && i >= opts.Iterations {
 			break
@@ -173,6 +178,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if err := ctx.Err(); err != nil {
 			break
+		}
+		if now := time.Now(); prog.due(now) {
+			logf(opts.Out, "%d iterations in %s (%.1f/s), %d findings so far\n",
+				res.Iterations, now.Sub(start).Round(time.Second),
+				float64(res.Iterations)/now.Sub(start).Seconds(), len(res.Failures))
 		}
 
 		res.Iterations++
@@ -412,6 +422,24 @@ func settle(t *tuitest.Terminal, timeout time.Duration) {
 	// Give it a short grace period so the difference between "quit cleanly" and
 	// "still running" is decided by the program rather than by our timing.
 	_, _ = t.WaitExit(exitGrace)
+}
+
+// progressEvery is how often a running session reports how far it has got.
+const progressEvery = 15 * time.Second
+
+// progress decides when a progress line is due: once the interval has passed
+// since the session started or since the previous line.
+type progress struct {
+	every time.Duration
+	last  time.Time
+}
+
+func (p *progress) due(now time.Time) bool {
+	if p.every <= 0 || now.Sub(p.last) < p.every {
+		return false
+	}
+	p.last = now
+	return true
 }
 
 // exitsWithin reports whether the program has exited, or does so within
