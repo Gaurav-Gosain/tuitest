@@ -64,9 +64,15 @@ Ctrl+c,q` turns off whatever quits your program too early. An excluded key is
 matched on the bytes it sends, so `Ctrl+C` and `Ctrl+c` are the same key, and
 those bytes are also removed from generated text, paste and hostile payloads,
 which would otherwise deliver the key anyway (`q` arrives inside "the quick
-brown fox", and Ctrl+c is byte 0x03 inside a burst of control characters). A
-token that names no key, such as `ctrl+c` with a lower-case modifier, is an
-error rather than a silent no-op.
+brown fox", and Ctrl+c is byte 0x03 inside a burst of control characters).
+ESC is handled differently, because it also starts every escape sequence.
+Excluding `Esc` removes only a bare ESC from text, one at the end of a payload
+or followed by a control byte, which is the only kind a program reads as the
+Esc key. An ESC that starts a sequence stays, so hostile escape sequences are
+still sent with `Esc` excluded. Likewise an Alt key that is ESC plus a sequence
+introducer, such as `Alt+[`, is only dropped as a key. A token that names no
+key, such as `ctrl+c` with a lower-case modifier, is an error rather than a
+silent no-op.
 
 **Mouse**: clicks, wheel notches, and coherent drags (press, move, release with
 the same button), including coordinates outside the grid.

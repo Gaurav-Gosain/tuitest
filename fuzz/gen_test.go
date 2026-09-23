@@ -39,7 +39,9 @@ func sentBytes(t *testing.T, c tape.Command) string {
 //
 // A key is excluded when it sends exactly the excluded bytes, and text never
 // contains them. A key that merely starts with them is a different key: with
-// Esc excluded, Up still sends ESC [ A, which no program reads as Esc.
+// Esc excluded, Up still sends ESC [ A, which no program reads as Esc. Esc is
+// covered by TestExcludingEscKeepsEscapeSequences, since ESC in text is
+// usually the start of a sequence and not the key.
 func TestExcludedKeysAreNeverDelivered(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -48,7 +50,6 @@ func TestExcludedKeysAreNeverDelivered(t *testing.T) {
 	}{
 		{"Ctrl+c", "\x03"},
 		{"q", "q"},
-		{"Esc", "\x1b"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.token, func(t *testing.T) {
@@ -67,6 +68,68 @@ func TestExcludedKeysAreNeverDelivered(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Excluding Esc must not turn off escape-sequence fuzzing. ESC also starts
+// every sequence the hostile table sends, so removing every 0x1b from text
+// turned "\x1b[9999H" and the rest into plain printable text. Only a bare ESC,
+// one at the end of a payload or before a control byte, is read as the Esc
+// key; that one must never be sent, and every other ESC must survive.
+func TestExcludingEscKeepsEscapeSequences(t *testing.T) {
+	t.Parallel()
+	cfg := Config{ActionsPerRun: 200, ExcludeKeys: []string{"Esc"}}
+	sequences := 0
+	for seed := range uint64(40) {
+		for i, c := range newGenerator(cfg, seed).Run([]string{"prog"}) {
+			sent := sentBytes(t, c)
+			if c.Kind == tape.KindKey && sent != "\x1b" {
+				continue
+			}
+			for j := 0; j < len(sent); j++ {
+				if sent[j] != 0x1b {
+					continue
+				}
+				if j+1 == len(sent) || sent[j+1] < 0x20 {
+					t.Fatalf("seed %d, command %d sends a bare Esc with Esc excluded:\n%s",
+						seed, i, tape.Sprint([]tape.Command{c}))
+				}
+				if c.Kind == tape.KindRaw && strings.IndexByte("[]OP_^X", sent[j+1]) >= 0 {
+					sequences++
+				}
+			}
+		}
+	}
+	if sequences == 0 {
+		t.Fatal("excluding Esc removed every escape sequence from hostile payloads")
+	}
+}
+
+// An Alt key that is ESC plus a sequence introducer cannot be removed from
+// text without removing the sequences it introduces, so it is excluded as a
+// key only. Everything else is still removed from text.
+func TestWithoutExcludedKeepsSequenceStarts(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		exclude []string
+		in      string
+		want    string
+	}{
+		{[]string{"Esc"}, "\x1b[9999H", "\x1b[9999H"},
+		{[]string{"Esc"}, "\x1b]0;title\x07", "\x1b]0;title\x07"},
+		{[]string{"Esc"}, "a\x1b", "a"},
+		{[]string{"Esc"}, "\x1b\x1b[A", "\x1b[A"},
+		{[]string{"Esc"}, "\x1b\x03x", "\x03x"},
+		{[]string{"Esc"}, "\x1bx", "\x1bx"},
+		{[]string{"Alt+["}, "\x1b[A", "\x1b[A"},
+		{[]string{"Alt+x"}, "a\x1bxb", "ab"},
+		{[]string{"Ctrl+c"}, "\x1b[\x03A", "\x1b[A"},
+	}
+	for _, tc := range cases {
+		g := newGenerator(Config{ExcludeKeys: tc.exclude}, 0)
+		if got := g.withoutExcluded(tc.in); got != tc.want {
+			t.Errorf("excluding %v: %q became %q, want %q", tc.exclude, tc.in, got, tc.want)
+		}
 	}
 }
 

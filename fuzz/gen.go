@@ -91,7 +91,13 @@ type Config struct {
 	// bytes they send, so any spelling of the same key works. An excluded key
 	// is never generated as a key, and its bytes are removed from generated
 	// text, paste and hostile payloads, which would otherwise deliver it
-	// anyway. A token that names no key makes Run return an error.
+	// anyway. ESC is the exception, because it also starts every escape
+	// sequence: excluding Esc removes only a bare ESC, one at the end of a
+	// payload or followed by a control byte, and keeps every ESC that starts a
+	// sequence, so hostile escape sequences are still sent. For the same
+	// reason an Alt key that is ESC plus a sequence introducer ('[', ']', 'O',
+	// 'P', '_', '^', 'X') is only dropped as a key. A token that names no key
+	// makes Run return an error.
 	ExcludeKeys []string
 	// NoHostile disables malformed and oversized escape sequences, leaving only
 	// well-formed input.
@@ -130,8 +136,13 @@ type generator struct {
 	// removed, so an excluded key cannot reach the program inside a text or
 	// hostile payload either.
 	excluded map[string]bool
-	// strip is the same set, longest first, for removing from text.
+	// strip is the subset removed from text as substrings, longest first. It
+	// leaves out ESC and ESC plus an introducer, which cannot be removed
+	// without removing escape sequences too.
 	strip []string
+	// stripBareEsc is set when Esc is excluded. Text then loses each ESC
+	// that starts no sequence, see withoutBareEsc.
+	stripBareEsc bool
 }
 
 func newGenerator(cfg Config, seed uint64) *generator {
@@ -140,18 +151,62 @@ func newGenerator(cfg Config, seed uint64) *generator {
 	// here unresolved are skipped rather than excluding nothing silently.
 	encs, _ := excludedEncodings(cfg.ExcludeKeys)
 	excluded := make(map[string]bool, len(encs))
+	var strip []string
 	for _, e := range encs {
 		excluded[e] = true
+		if !startsSequence(e) {
+			strip = append(strip, e)
+		}
 	}
 	return &generator{
 		cfg: cfg,
 		// PCG seeded from the run seed: the same seed replays the same run.
-		rand:     rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
-		cols:     cfg.Cols,
-		rows:     cfg.Rows,
-		excluded: excluded,
-		strip:    encs,
+		rand:         rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
+		cols:         cfg.Cols,
+		rows:         cfg.Rows,
+		excluded:     excluded,
+		strip:        strip,
+		stripBareEsc: excluded["\x1b"],
 	}
+}
+
+// sequenceIntroducers are the bytes that, after ESC, open a multi-byte
+// sequence: CSI, OSC, SS3, DCS, APC, PM and SOS.
+const sequenceIntroducers = "[]OP_^X"
+
+// startsSequence reports whether an encoding is ESC alone or ESC plus a
+// sequence introducer. Removing such bytes from text would also remove the
+// start of every escape sequence in it, so they are excluded as keys only.
+func startsSequence(enc string) bool {
+	switch {
+	case enc == "\x1b":
+		return true
+	case len(enc) == 2 && enc[0] == 0x1b:
+		return strings.IndexByte(sequenceIntroducers, enc[1]) >= 0
+	}
+	return false
+}
+
+// withoutBareEsc removes each ESC that a terminal input decoder would read as
+// the Esc key: one at the end of the payload, or followed by a control byte
+// (another ESC included). An ESC followed by a printable byte starts an
+// escape sequence or is read as an Alt key, never as Esc, so it stays and
+// hostile sequences keep their ESC. One pass is enough: a removed ESC was
+// followed by a control byte or nothing, so the byte before it, if it was an
+// ESC, is followed by the same kind of byte and was removed too.
+func withoutBareEsc(s string) string {
+	if strings.IndexByte(s, 0x1b) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && (i+1 == len(s) || s[i+1] < 0x20) {
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // excludedEncodings resolves excluded key tokens to the bytes they send,
@@ -200,11 +255,17 @@ var keyEncodings = func() map[string]string {
 // Removal can join two halves into a new occurrence, so it repeats until
 // nothing is left to remove. With nothing excluded it returns s untouched.
 func (g *generator) withoutExcluded(s string) string {
-	for changed := len(g.strip) > 0; changed; {
+	for changed := len(g.strip) > 0 || g.stripBareEsc; changed; {
 		changed = false
 		for _, enc := range g.strip {
 			if strings.Contains(s, enc) {
 				s = strings.ReplaceAll(s, enc, "")
+				changed = true
+			}
+		}
+		if g.stripBareEsc {
+			if t := withoutBareEsc(s); t != s {
+				s = t
 				changed = true
 			}
 		}
