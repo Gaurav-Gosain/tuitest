@@ -12,6 +12,7 @@ The emulator is reached through one interface in
 ```go
 type Emulator interface {
 	Write(p []byte) (int, error)
+	TakeResponses() []byte
 	Resize(cols, rows int)
 	Size() (cols, rows int)
 	CellAt(col, row int) *uv.Cell
@@ -23,12 +24,15 @@ type Emulator interface {
 }
 ```
 
-Nine methods, and only the first five are needed for a working harness: the OSC
-133 trio can return zero values if the emulator does not track semantic markers
-(the corresponding waits then never fire, which is the same behaviour as a
-program that emits no markers), and `Modes` can return an empty map if it does
-not track private modes, at the cost of `TermState.Dirty()` always reporting
-clean.
+Ten methods, and only the first six are needed for a working harness.
+`TakeResponses` hands back the emulator's answers to the program's queries
+(cursor position, colours, device attributes) without blocking; it may return
+nil, but then a program that probes the terminal before drawing waits out its
+own timeout and may draw nothing. The OSC 133 trio can return zero values if
+the emulator does not track semantic markers (the corresponding waits then
+never fire, which is the same behaviour as a program that emits no markers),
+and `Modes` can return an empty map if it does not track private modes, at the
+cost of `TermState` never reporting a mode left set.
 
 The contract is that `Write` is called only from the pump goroutine while the
 `Terminal` lock is held, so an implementation needs no internal locking for the

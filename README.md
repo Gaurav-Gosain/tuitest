@@ -29,7 +29,7 @@ imports them, so they never reach a consumer's binary. There is one binary and
 one importable package, and nothing to run alongside them.
 
 It is built to be taken apart. The emulator sits behind `internal/emu.Emulator`,
-a nine-method interface; PTY and process lifetime live in `internal/ptyproc` with
+a ten-method interface; PTY and process lifetime live in `internal/ptyproc` with
 no knowledge of screens; the tape language, the cobra command tree, and the
 fuzzer are each their own package layered on the same public `Terminal`.
 
@@ -139,7 +139,7 @@ flowchart TB
 
   subgraph Low["internal"]
     PTY[ptyproc<br/>spawn, pump, resize, group teardown]
-    EMU[emu.Emulator<br/>nine-method interface]
+    EMU[emu.Emulator<br/>ten-method interface]
     VT[vt<br/>vendored VT interpreter]
   end
 
@@ -529,7 +529,7 @@ covers the harness primitives and produces golden text, not video.
 
 Each seam is narrow on purpose:
 
-- Swap the VT emulator (implement `internal/emu.Emulator`, nine methods).
+- Swap the VT emulator (implement `internal/emu.Emulator`, ten methods).
 - Add a CLI subcommand (one `*cobra.Command` added in `newRootCommand`; help,
   completion and typo suggestions follow automatically).
 - Add a tape verb (one `Kind`, one `Verb()` case, one parse case, one player
