@@ -10,6 +10,7 @@
 package tuitest
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -54,7 +55,8 @@ func defaultConfig() config {
 // Option configures a spawn.
 type Option func(*config)
 
-// WithSize sets the initial PTY size in cells.
+// WithSize sets the initial PTY size in cells. Both must be between 1 and
+// 65535, the range the kernel can store; Start refuses anything else.
 func WithSize(cols, rows int) Option {
 	return func(c *config) { c.cols, c.rows = cols, rows }
 }
@@ -139,6 +141,9 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if err := checkSize("WithSize", cfg.cols, cfg.rows); err != nil {
+		return nil, err
 	}
 
 	t := &Terminal{
@@ -399,10 +404,28 @@ func (t *Terminal) markInput() {
 	t.mu.Unlock()
 }
 
+// maxSize is the largest width or height a PTY can carry: the kernel keeps the
+// window size in 16-bit fields.
+const maxSize = 1<<16 - 1
+
+// checkSize refuses a size the emulator and the PTY would not agree on. Zero
+// and negative sizes have no meaning, and anything past maxSize is silently
+// truncated by the kernel while the emulator takes it as given, so the program
+// would draw for one size and the screen would be another.
+func checkSize(op string, cols, rows int) error {
+	if cols < 1 || rows < 1 || cols > maxSize || rows > maxSize {
+		return fmt.Errorf("tuitest: %s: size %dx%d is out of range; columns and rows must be between 1 and %d", op, cols, rows, maxSize)
+	}
+	return nil
+}
+
 // Resize changes the PTY window size and the emulator grid; the child receives
 // SIGWINCH. Like sending keys, a resize counts as input for WaitStable, since
 // the redraw it provokes has not arrived yet.
 func (t *Terminal) Resize(cols, rows int) error {
+	if err := checkSize("Resize", cols, rows); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	t.emu.Resize(cols, rows)
 	t.lastInput = time.Now()
