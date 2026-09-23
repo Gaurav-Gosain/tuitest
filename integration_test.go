@@ -264,7 +264,10 @@ func TestHeavyOutputStabilizes(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	term := tuitest.StartT(t, []string{"sh", "-c", "seq 1 20000"}, tuitest.WithSize(80, 24))
-	if err := term.WaitStable(20 * time.Second); err != nil {
+	// Generous because the race detector slows the emulator about fiftyfold:
+	// the run takes under half a second without it and around twenty with it
+	// on a busy machine, which is where a 20s budget used to flake.
+	if err := term.WaitStable(90 * time.Second); err != nil {
 		t.Fatalf("did not stabilize under heavy output: %v", err)
 	}
 	// After all output, the final visible line should reflect the end of the run.
