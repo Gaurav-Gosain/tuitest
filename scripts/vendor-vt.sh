@@ -60,7 +60,7 @@ done
 for f in "$dest"/*.go; do
 	b=$(basename "$f")
 	case "$b" in
-	doc.go | *_test.go) continue ;;
+	doc.go | tuitest_* | *_test.go) continue ;;
 	esac
 	echo "$files" | grep -qx "$b" || {
 		changed=$((changed + 1))

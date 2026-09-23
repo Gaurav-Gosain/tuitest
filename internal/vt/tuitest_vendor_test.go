@@ -68,8 +68,9 @@ func TestVendoredCopyMatchesUpstream(t *testing.T) {
 	checked := 0
 	for _, path := range local {
 		base := filepath.Base(path)
-		// doc.go and the tests belong to tuitest, not to upstream.
-		if base == "doc.go" || strings.HasSuffix(base, "_test.go") {
+		// doc.go, the tests and every tuitest_* file belong to tuitest, not
+		// to upstream.
+		if base == "doc.go" || strings.HasPrefix(base, "tuitest_") || strings.HasSuffix(base, "_test.go") {
 			continue
 		}
 		want, err := exec.Command("git", "-C", src, "show", rec["commit"]+":"+rec["path"]+"/"+base).Output()
