@@ -94,19 +94,27 @@ func shrinkUsing(ctx context.Context, opts Options, f *Failure, stillFails func(
 	}
 
 	// Pass two: simplify individual commands. Each command has a small ladder
-	// of strictly simpler forms; the first that still reproduces wins.
+	// of strictly simpler forms; the first that still reproduces wins, and the
+	// command goes round the ladder again from its new form. One step of the
+	// text ladder keeps an eighth of a payload at best, so stopping after one
+	// left most of a large payload in place. Every form is strictly simpler,
+	// so this ends even before the budget does.
 	for i := range best {
-		for _, simpler := range simplifications(best[i]) {
-			if ctx.Err() != nil || budget <= 0 {
-				return finish(f, best)
-			}
-			candidate := replaceAt(best, i, simpler)
-			if !spend() {
-				return finish(f, best)
-			}
-			if stillFails(candidate) {
-				best = candidate
-				break
+		for changed := true; changed; {
+			changed = false
+			for _, simpler := range simplifications(best[i]) {
+				if ctx.Err() != nil || budget <= 0 {
+					return finish(f, best)
+				}
+				candidate := replaceAt(best, i, simpler)
+				if !spend() {
+					return finish(f, best)
+				}
+				if stillFails(candidate) {
+					best = candidate
+					changed = true
+					break
+				}
 			}
 		}
 	}

@@ -139,3 +139,30 @@ func TestShrinkRespectsTheBudget(t *testing.T) {
 		t.Fatalf("minimisation made %d candidate replays, budget was 7", calls)
 	}
 }
+
+// The prefix ladder cuts a payload to an eighth at best in one step, and the
+// simplification pass used to take one step per command and stop, so a 4096
+// byte payload came back as 512 bytes when two were all the failure needed.
+// Simplification now repeats while it makes progress and budget remains.
+func TestShrinkSimplifiesAPayloadUntilItStopsShrinking(t *testing.T) {
+	t.Parallel()
+
+	cmds := []tape.Command{
+		{Kind: tape.KindSpawn, Argv: []string{"prog"}},
+		cmdRaw("\x1b[" + strings.Repeat("9", 4094)),
+	}
+	got := shrinkWith(cmds, 500, func(candidate []tape.Command) bool {
+		for _, c := range candidate {
+			if c.Kind == tape.KindRaw && strings.HasPrefix(c.Text, "\x1b[") {
+				return true
+			}
+		}
+		return false
+	})
+
+	for _, c := range got {
+		if c.Kind == tape.KindRaw && len(c.Text) > 4 {
+			t.Fatalf("payload stayed %d bytes: %q", len(c.Text), c.Text)
+		}
+	}
+}
