@@ -76,6 +76,10 @@ var degenerateSizes = [][2]int{
 // the program to repaint.
 const resizeRedrawWait = 200 * time.Millisecond
 
+// reactionWait bounds how long a generated run pauses for the program to react
+// before sending more input.
+const reactionWait = 250 * time.Millisecond
+
 // Config controls how input is generated.
 type Config struct {
 	// Cols and Rows are the size the program is spawned at.
@@ -271,10 +275,14 @@ func (g *generator) action() []tape.Command {
 	case actHostile:
 		return g.textCommand(tape.KindRaw, hostile(g.rand))
 	default:
-		// Wait for the program to react to what came before. WaitOutput rather
-		// than WaitStable: after a pause the screen is already stable, so
-		// WaitStable would return without the program having done anything.
-		return []tape.Command{{Kind: tape.KindWaitOutput}}
+		// Give the program a moment to react to what came before. WaitOutput
+		// returns on its first byte, so a program that is answering costs
+		// almost nothing here. The bound is short for the same reason as the
+		// resize wait: a program whose answer already arrived, or that had
+		// nothing to say, waits out the whole bound, and with the session's
+		// settle timeout that was two seconds a time, about a third of a
+		// campaign's wall clock against a responsive program.
+		return []tape.Command{{Kind: tape.KindWaitOutput, Timeout: reactionWait, HasTimeout: true}}
 	}
 }
 
