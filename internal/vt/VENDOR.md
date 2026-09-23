@@ -82,9 +82,9 @@ still only here. **Port each of them to tuios and then re-sync.**
   leave it where it stood. `conform_screen_test.go` carries the matching
   expectation.
 - `mode.go`: DECRQM answers out of the mode table, and upstream's table omits
-  2048 (in-band resize), which the emulator acts on. It is answered "not
-  recognized", so a program that probes before enabling takes its fallback
-  path.
+  three modes the emulator acts on: 47, 1016 (SGR pixel mouse) and 2048
+  (in-band resize). They are answered "not recognized", so a program that
+  probes before enabling takes its fallback path.
 - `handlers.go`: DECSED and DECSEL (`CSI ? Ps J` and `CSI ? Ps K`) are
   unregistered upstream, so they erase nothing. Nothing tracks DECSCA, so every
   cell is unprotected and a selective erase is a plain one. tuios's corpus

@@ -81,6 +81,8 @@ func TestRequestedModesAreRecognized(t *testing.T) {
 		{"focus events", "\x1b[?1004$p", "\x1b[?1004;2$y"},
 		{"unicode core", "\x1b[?2027$p", "\x1b[?2027;2$y"},
 		{"insert replace", "\x1b[4$p", "\x1b[4;2$y"},
+		{"sgr pixel mouse", "\x1b[?1016$p", "\x1b[?1016;2$y"},
+		{"original alternate screen", "\x1b[?47$p", "\x1b[?47;2$y"},
 		{"autowrap, which is on by default", "\x1b[?7$p", "\x1b[?7;1$y"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

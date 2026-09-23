@@ -32,6 +32,8 @@ var defaultModes = []struct {
 	{ansi.ModeMouseAnyEvent, ansi.ModeReset},       // ?1003
 	{ansi.ModeFocusEvent, ansi.ModeReset},          // ?1004
 	{ansi.ModeMouseExtSgr, ansi.ModeReset},         // ?1006
+	{ansi.ModeMouseExtSgrPixel, ansi.ModeReset},    // ?1016
+	{ansi.DECMode(47), ansi.ModeReset},             // ?47, the original alternate screen
 	{ansi.ModeAltScreen, ansi.ModeReset},           // ?1047
 	{ansi.ModeSaveCursor, ansi.ModeReset},          // ?1048
 	{ansi.ModeAltScreenSaveCursor, ansi.ModeReset}, // ?1049
