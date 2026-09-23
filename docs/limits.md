@@ -164,10 +164,11 @@ coverage-guided fuzzer would. If you control the source and it is in Go,
 
 **Only crash and dirty-exit reproductions carry an assertion.** Those end in
 `ExpectExit 0`, so the file is red until the bug is fixed. A hang, a screen
-inconsistency and memory growth are judged from outside the tape by watching the
-process, and any in-tape liveness probe would mean sending input the fuzzer did
-not send, so those files are transcripts and say so. Rerun `tuitest fuzz`
-against the corpus to check a fix for them.
+inconsistency, memory growth, a replacement character and a violated invariant
+are judged from outside the tape, by watching the process or by running a Go
+closure, and any in-tape probe would mean sending input the fuzzer did not send,
+so those files are transcripts and say so. Rerun `tuitest fuzz` against the
+corpus to check a fix for them.
 
 **The replacement-character check is only sound on well-formed input, and the
 generator does not send it.** Hostile bursts carry bare continuation bytes,
@@ -205,20 +206,24 @@ after minimisation, and one that does not reproduce is still reported but
 labelled in both the report and the tape header. A timing-dependent bug is worth
 knowing about; presenting it as solid would not be.
 
-**The fuzzer's own tests inherit that flakiness, and two of them are flaky
-today.** `TestFindsPanicAndMinimisesToTheTriggeringKey` and
+**The fuzzer's own tests can inherit that flakiness.**
+`TestFindsPanicAndMinimisesToTheTriggeringKey` and
 `TestFindsTerminalLeftInABadState` in
 `fuzz/fuzz_test.go` assert `Failure.Verified`, which means they assert that a
 minimised reproduction re-reproduced on the confirmation replay. That is exactly
-the property the paragraph above says is not guaranteed. Both pass in isolation
-and fail intermittently under load, because confirmation drives a real program
-through a real PTY and a loaded machine can miss the timing window: on a
-16-thread desktop, running the package six ways in parallel reproduces
-`the minimised reproduction did not reproduce on confirmation` within a handful
-of attempts, and a plain `go test ./...` hits it occasionally. Nothing is wrong
-with the fuzzer when this fires; the assertion is stricter than the behaviour it
-tests. A retry, or demoting the `Verified` check to a report rather than a
-failure, would fix it.
+the property the paragraph above says is not guaranteed, and both used to fail
+intermittently under load.
+
+Part of that was a harness bug, since fixed: a write that raced the program's
+exit was classified before the child had been reaped, so a program that had
+quit cleanly was reported as `crash: driving the program failed: write
+/dev/ptmx: input/output error`. A dirty-exit reproduction confirmed as a crash
+does not match, and is labelled unverified. On an 11-core macOS machine, twelve
+parallel copies of the two tests, four runs each, failed three times before the
+fix and not at all after it. Whether any flakiness remains on Linux has not been
+measured since. If it does, nothing is wrong with the fuzzer when it fires; the
+assertion is stricter than the behaviour it tests, and a retry, or demoting the
+`Verified` check to a report rather than a failure, would fix it.
 
 ## What this is not for
 
