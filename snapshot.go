@@ -135,6 +135,12 @@ func colorSpec(c Color) string {
 // AssertGolden compares the plain-text snapshot against testdata/<name>.golden,
 // failing the test on mismatch with a unified diff. When UPDATE_GOLDEN is set in
 // the environment or -update is passed, it rewrites the golden instead.
+//
+// It reads the screen once, as it is at the moment of the call, so wait for the
+// state first; WaitForStable is the wait that makes sure the frame has finished
+// drawing. Trailing newlines and CRLF line endings in the golden file are
+// ignored, so a golden saved by an editor or checked out on Windows still
+// matches.
 func (t *Terminal) AssertGolden(tb testing.TB, name string) {
 	tb.Helper()
 	assertGolden(tb, name, t.Snapshot())
@@ -162,7 +168,11 @@ func assertGolden(tb testing.TB, name, got string) {
 	if err != nil {
 		tb.Fatalf("tuitest: read golden %s: %v (set UPDATE_GOLDEN to create it)", path, err)
 	}
-	want := string(wantBytes)
+	// A snapshot never ends in a newline, and a golden file edited by hand
+	// usually does, because most editors add one on save; a checkout with
+	// autocrlf turns every newline into CRLF. Neither is a difference a test
+	// author means, so both are normalised away before comparing.
+	want := strings.TrimRight(strings.ReplaceAll(string(wantBytes), "\r\n", "\n"), "\n")
 	if want != got {
 		tb.Errorf("tuitest: golden %s mismatch:\n%s", path, unifiedDiff(want, got))
 	}
