@@ -213,7 +213,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// confirmation run's screen and detail replace the originals, because
 		// the ones captured before minimisation describe input the tape no
 		// longer contains and would contradict it.
-		if confirmed := drive(ctx, opts, failure.Commands); sameFailure(confirmed, failure) {
+		//
+		// An interrupted session cannot confirm anything: the replay returns
+		// no finding on a cancelled context, and reading that as "did not
+		// reproduce" would blame the program's timing for a Ctrl+C.
+		if ctx.Err() != nil {
+			logf(opts.Out, "  interrupted before the reduction was confirmed; it is reported unverified\n")
+		} else if confirmed := drive(ctx, opts, failure.Commands); sameFailure(confirmed, failure) {
 			failure.Verified = true
 			failure.Screen = confirmed.Screen
 			failure.Detail = confirmed.Detail

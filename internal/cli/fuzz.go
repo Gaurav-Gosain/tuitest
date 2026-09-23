@@ -193,7 +193,7 @@ func reportFuzz(env *Env, res *fuzz.Result, corpus string) {
 			fmt.Fprintf(env.Stdout, "    minimised %d commands to %d\n", f.Original, len(f.Commands))
 		}
 		if !f.Verified {
-			fmt.Fprintf(env.Stdout, "    warning: did not reproduce on confirmation, may be timing dependent\n")
+			fmt.Fprintf(env.Stdout, "    warning: not confirmed by a final replay (it did not reproduce, or the session was interrupted first)\n")
 		}
 		if corpus == "" {
 			// Without a corpus directory there is nowhere to write the tape, so

@@ -3,6 +3,7 @@ package fuzz
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,59 @@ func TestScreenModelIsJudgedAgainstTheSpawnedSize(t *testing.T) {
 	}
 	if f != nil && f.Kind == FailScreenInconsistent {
 		t.Fatalf("a tape that spawned at 100x30 was judged against the session's 80x24: %s", f.Detail)
+	}
+}
+
+// cancelOnWrite cancels a context the first time the session logs a finding,
+// which is the moment between finding a failure and confirming its reduction.
+type cancelOnWrite struct {
+	cancel context.CancelFunc
+	log    strings.Builder
+}
+
+func (w *cancelOnWrite) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "iteration ") {
+		w.cancel()
+	}
+	return w.log.Write(p)
+}
+
+// A session interrupted after it found a failure cannot confirm the reduction,
+// and it must not say the reduction failed to reproduce. The confirmation replay
+// returns nothing on a cancelled context, and the session used to read that as
+// "did not reproduce on confirmation; the failure may be timing dependent",
+// sending the reader after a flake that was really a Ctrl+C.
+func TestInterruptedConfirmationIsNotReportedAsAFlake(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := &cancelOnWrite{cancel: cancel}
+
+	res, err := Run(ctx, Options{
+		Argv:       []string{"/bin/sh", "-c", "exit 3"},
+		Seed:       1,
+		Iterations: 1,
+		Shrink:     true,
+		Out:        out,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Failures) != 1 {
+		t.Fatalf("want the one crash, got %d findings; log:\n%s", len(res.Failures), out.log.String())
+	}
+	if res.Failures[0].Verified {
+		t.Error("a reduction that was never replayed is marked verified")
+	}
+	log := out.log.String()
+	if strings.Contains(log, "timing dependent") {
+		t.Errorf("an interrupted session blamed the program's timing:\n%s", log)
+	}
+	if !strings.Contains(log, "interrupted") {
+		t.Errorf("the log should say the session was interrupted:\n%s", log)
 	}
 }

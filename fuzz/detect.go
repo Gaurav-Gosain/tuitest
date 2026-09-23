@@ -64,7 +64,8 @@ type Failure struct {
 	Onset int
 	// Verified records whether the minimised input reproduced on a final
 	// confirmation run. A repro that does not re-verify is still reported, but
-	// labelled, because a flaky finding is worth less than a solid one.
+	// labelled, because a flaky finding is worth less than a solid one. It is
+	// also false when the session was interrupted before that run.
 	Verified bool
 }
 

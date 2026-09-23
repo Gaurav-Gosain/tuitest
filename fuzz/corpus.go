@@ -43,7 +43,8 @@ func TapeFor(f *Failure) string {
 		fmt.Fprintf(&b, "# the invariant first failed after command %d below\n", f.Onset)
 	}
 	if !f.Verified {
-		b.WriteString("# warning: this reduction did not reproduce on confirmation, so the failure may be timing dependent\n")
+		b.WriteString("# warning: this reduction was not confirmed by a final replay: either it did not reproduce,\n")
+		b.WriteString("# so the failure may be timing dependent, or the session was interrupted before the replay\n")
 	}
 	b.WriteString("#\n")
 	b.WriteString("# replay with: tuitest run <this file>\n")
