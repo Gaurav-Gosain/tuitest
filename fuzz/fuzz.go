@@ -200,7 +200,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		failure.Seed = iterSeed
 		failure.Iteration = i
-		failure.Original = len(cmds)
+		// The original failing input is what ran before the failure was
+		// seen, not everything generated: commands after it were never sent.
+		failure.Original = len(failure.Commands)
 
 		if seen[failureKey(failure)] {
 			// Already have a reproduction for this kind; a second one of the

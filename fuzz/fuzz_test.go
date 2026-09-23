@@ -402,6 +402,12 @@ func TestReportedSeedRegeneratesTheFailingIteration(t *testing.T) {
 	if first.Iteration == 0 {
 		t.Fatal("the crash was found at iteration 0, where the session and iteration seeds coincide; pick a seed that finds it later")
 	}
+	// Nothing was minimised, so nothing may claim it was. Original used to be
+	// the generated length and Commands the prefix run before the failure, so
+	// a session with shrinking off reported "minimised 72 commands to 68".
+	if tape := fuzz.TapeFor(first); strings.Contains(tape, "# minimised from") {
+		t.Errorf("a session with shrinking off claims a minimisation:\n%s", tape)
+	}
 
 	again := baseOptions(t, "panic-on-key")
 	again.Seed = first.Seed

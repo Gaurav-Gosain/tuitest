@@ -56,9 +56,10 @@ type Failure struct {
 	// CorpusEntry is the file name of the corpus entry a replayed finding came
 	// from, and empty for a finding generated in this session.
 	CorpusEntry string
-	// Original records how many commands the original failing input had, so
-	// a report can show what minimisation achieved. It is zero for a finding
-	// replayed from the corpus, which was minimised on an earlier run.
+	// Original records how many commands the original failing input had, up
+	// to the one after which the failure was seen, so a report can show what
+	// minimisation achieved. It is zero for a finding replayed from the
+	// corpus, which was minimised on an earlier run.
 	Original int
 	// Invariant names the user-supplied invariant that failed, for
 	// FailInvariant. It is empty for every other kind.

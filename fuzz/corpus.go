@@ -41,7 +41,7 @@ func TapeFor(f *Failure) string {
 		fmt.Fprintf(&b, "# found by tuitest fuzz at iteration %d, whose own seed is %d:\n", f.Iteration, f.Seed)
 		fmt.Fprintf(&b, "# --seed %d --iterations 1 with the same generation flags regenerates the unminimised input\n", f.Seed)
 	}
-	if f.Original > 0 {
+	if f.Original > len(f.Commands) {
 		fmt.Fprintf(&b, "# minimised from %d commands to %d\n", f.Original, len(f.Commands))
 	}
 	if f.Kind == FailInvariant && f.Onset > 0 {

@@ -194,7 +194,7 @@ func reportFuzz(env *Env, res *fuzz.Result, corpus string) {
 			fmt.Fprintf(env.Stdout, "    found at iteration %d; to regenerate its unminimised input, rerun with --seed %d --iterations 1 and the same generation flags\n",
 				f.Iteration, f.Seed)
 		}
-		if f.Original > 0 {
+		if f.Original > len(f.Commands) {
 			fmt.Fprintf(env.Stdout, "    minimised %d commands to %d\n", f.Original, len(f.Commands))
 		}
 		if !f.Verified {
