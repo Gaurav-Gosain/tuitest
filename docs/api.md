@@ -61,7 +61,8 @@ a silent mismatch: `Enter`, `Tab`, `Esc`, `Space`, `Backspace`, `Delete`, `Up`,
 through `F12`. `Ctrl(r rune)` builds a control byte (`Ctrl('b')` is 0x02, and
 letters are case-insensitive) and `Alt(k any)` prefixes with ESC. `Ctrl` follows
 the xterm table for the other keys too: `Ctrl(' ')` and `Ctrl('2')` are NUL,
-`Ctrl('[')` is ESC, `Ctrl('?')` is DEL, and a rune with no control encoding is
+`Ctrl('[')` is ESC, `Ctrl('~')` is 0x1e, `Ctrl('/')` is 0x1f, `Ctrl('?')` is
+DEL, and a rune with no control encoding is
 sent as itself.
 
 `SendKeys` sends the arrow keys, `Home` and `End` the way a terminal does in the

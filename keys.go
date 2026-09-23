@@ -48,7 +48,8 @@ const (
 // It follows the xterm table rather than masking every rune to five bits, which
 // is what makes the non-letter chords come out right: Ctrl('@'), Ctrl(' ') and
 // Ctrl('2') are NUL, Ctrl('[') and Ctrl('3') are ESC, Ctrl('\\'), Ctrl(']'),
-// Ctrl('^') and Ctrl('_') are 0x1c to 0x1f as are Ctrl('4') to Ctrl('7'), and
+// Ctrl('^') and Ctrl('_') are 0x1c to 0x1f as are Ctrl('4') to Ctrl('7'),
+// Ctrl('~') is 0x1e like Ctrl('^'), Ctrl('/') is 0x1f like Ctrl('_'), and
 // Ctrl('?') and Ctrl('8') are DEL. A rune with no control encoding, such as a
 // digit other than 2 to 8 or anything outside ASCII, is sent unchanged, since
 // that is what a terminal without the kitty keyboard protocol sends for it.
@@ -64,6 +65,10 @@ func Ctrl(r rune) Key {
 		return Key([]byte{byte(r-'3') + 0x1b})
 	case r == '?' || r == '8':
 		return Key([]byte{0x7f})
+	case r == '/':
+		return Key([]byte{0x1f})
+	case r == '~':
+		return Key([]byte{0x1e})
 	default:
 		return Key(string(r))
 	}
