@@ -110,10 +110,12 @@ func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
 		// full-screen UI onto the primary screen and never puts the primary
 		// contents back. Neither 47 nor 1047 saves the cursor, so on the way
 		// back the cursor stays where the alternate screen left it rather than
-		// jumping to wherever the primary buffer was last written.
+		// jumping to wherever the primary buffer was last written. A reset
+		// while the primary screen is already up changes nothing, so a program
+		// that sends rmcup defensively does not move its own cursor.
 		if setting.IsSet() {
 			e.setAltScreenMode(true)
-		} else {
+		} else if e.scr == &e.scrs[1] {
 			pos := e.scrs[1].cur.Position
 			e.setAltScreenMode(false)
 			e.scr.setCursor(pos.X, pos.Y, false)

@@ -75,8 +75,8 @@ still only here. **Port each of them to tuios and then re-sync.**
 - `csi_mode.go`, `mode.go`: private mode 47, the original alternate screen and
   still smcup in older terminfo entries, is unhandled upstream, so a program
   using it draws over the primary screen and never gets it back. Here 47 is
-  handled with 1047, and leaving either restores the cursor the alternate
-  screen had.
+  handled with 1047. Leaving either restores the cursor the alternate screen
+  had, and a reset sent while the primary screen is already up does nothing.
 - `csi_mode.go`: switching to the alternate screen homes the cursor upstream.
   None of 47, 1047 or 1049 is defined to move it, and xterm, tmux and ghostty
   leave it where it stood. `conform_screen_test.go` carries the matching

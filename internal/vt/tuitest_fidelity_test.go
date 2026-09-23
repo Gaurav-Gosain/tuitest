@@ -132,6 +132,27 @@ func TestAltScreen47RestoresPrimary(t *testing.T) {
 	}
 }
 
+// Leaving 47 or 1047 carries the alternate screen's cursor back to the primary
+// one, because neither mode saves it. A program that sends that reset while the
+// primary screen is already up, as many do defensively at startup or exit, has
+// not left anything, so the cursor must stay where it is and not jump to
+// wherever an alternate screen last had it.
+func TestAltScreenResetOnPrimaryKeepsCursor(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"47", "1047"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			e := feed(t, 20, 6, "\x1b[?"+mode+"h\x1b[5;9Halt\x1b[?"+mode+"l"+
+				"\x1b[2;3Hmain\x1b[?"+mode+"lX")
+			if got, want := row(t, e, 1), "  mainX"; got != want {
+				t.Errorf("primary row: got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // CSI s saved the cursor but CSI u was not registered, so every save/restore
 // pair left the cursor wherever the program had last drawn.
 func TestSaveRestoreCursorSCO(t *testing.T) {
