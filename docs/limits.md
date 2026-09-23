@@ -120,6 +120,26 @@ written to be read and edited.
 
 ## Fidelity gaps
 
+**The PTY does not echo input or generate signals.** Before the child starts,
+tuitest clears `ECHO`, `ISIG`, `IEXTEN` and `IXON` on the PTY. Line editing
+(`ICANON`) and output processing are left as the kernel sets them. A TUI turns
+all of these off itself, so for a TUI nothing changes except that input sent
+before it finishes its terminal setup is no longer mangled. A line-oriented
+program is different:
+
+- What you type is not on the screen unless the program draws it. A shell
+  script that runs `read name` shows the prompt and then its answer, with no
+  `gopher` in between.
+- `Ctrl('c')` sends a 0x03 byte and does not send SIGINT, so it does not
+  interrupt `cat` or `sleep`. Signal the process yourself, or let `Close` tear
+  it down.
+- `^S` and `^Q` are ordinary bytes, not flow control.
+
+The reasoning is in
+[`internal/ptyproc/ptyproc_unix.go`](../internal/ptyproc/ptyproc_unix.go): with
+the kernel defaults, whether a `Ctrl+c` in a tape reaches the program or kills
+it depends on how fast the child was scheduled.
+
 **`Screen.Line` returns one physical row.** A soft-wrapped logical line is not
 de-wrapped, so text that wrapped across the right margin will not match as a
 single string. Match per row, use `Screen.Text` and account for the wrap, or

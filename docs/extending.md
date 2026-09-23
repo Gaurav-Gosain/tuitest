@@ -146,7 +146,7 @@ produce false positives.
 
 ## Add project-specific helpers
 
-[`tuiosx`](../tuiosx/tuiosx.go) is the worked example: 69 lines of tuios-specific
+[`tuiosx`](../tuiosx/tuiosx.go) is the worked example: one short file of tuios-specific
 conveniences (a leader-chord helper, a binary locator, a spawn helper that gives
 each instance its own temporary XDG directories) living in their own package.
 Nothing in the core depends on it and it can be deleted without touching the

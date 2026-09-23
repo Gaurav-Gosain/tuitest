@@ -4,7 +4,9 @@ Everything here is in the root package, `github.com/Gaurav-Gosain/tuitest`. The
 generated reference is on
 [pkg.go.dev](https://pkg.go.dev/github.com/Gaurav-Gosain/tuitest); this page is
 the narrative version, covering what each group is for and which of two similar
-calls to reach for.
+calls to reach for. The runnable examples in
+[`example_test.go`](../example_test.go) drive `sh`, run under `go test`, and
+show up on pkg.go.dev next to the functions they use.
 
 ## Spawning
 
@@ -54,6 +56,11 @@ func (t *Terminal) Resize(cols, rows int) error
 `SendKeys` accepts strings, runes, `Key` values, and slices of those. Plain text
 is sent literally; a `Key` carries its own escape sequence. `Type` never
 interprets key names, which matters when the text itself could look like one.
+
+The PTY does not echo input back and does not turn `Ctrl('c')` into SIGINT, so
+the screen shows only what the program draws and every byte reaches the program.
+A TUI draws its own input and handles 0x03 itself, so this only surprises you
+with a line-oriented program. See [limits.md](limits.md#fidelity-gaps).
 
 Named keys are typed constants, so a misspelling is a compile error rather than
 a silent mismatch: `Enter`, `Tab`, `Esc`, `Space`, `Backspace`, `Delete`, `Up`,
@@ -382,6 +389,9 @@ Run it once with `UPDATE_GOLDEN=1 go test ./...` to record
 `tuiosx` holds the tuios-specific conveniences: `Prefix` sends the leader chord
 (Ctrl+B) followed by a key, `Locate` finds the binary through `TUIOS_BIN` or
 `PATH`, and `StartTuios` spawns an instance with its own temporary XDG
-directories so parallel tests never collide on a shared daemon socket. It is 69
-lines and entirely optional; nothing in the core depends on it, and it can be
-deleted without touching the harness.
+directories so parallel tests never collide on a shared daemon socket. It is one
+short file and entirely optional; nothing in the core depends on it, and it can be
+deleted without touching the harness. `StartTuios` runs the standalone TUI
+(`TUIOS_NO_DAEMON=1`) and keeps the socket directory under `/tmp`, because the
+socket path under a macOS `t.TempDir` is longer than the 104 bytes a unix
+socket allows.
