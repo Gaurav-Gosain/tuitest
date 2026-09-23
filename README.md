@@ -336,7 +336,7 @@ Exit codes are the contract with CI, separating "your program is wrong" from
 | Code | Meaning |
 | ---- | ------- |
 | 0 | every assertion passed |
-| 1 | an assertion failed, or the program exited before a wait was satisfied |
+| 1 | an assertion failed, or the program exited before the tape was done with it |
 | 2 | bad usage, or a tape that would not parse |
 | 3 | harness error: no PTY, a program that would not start, an unreadable golden |
 | 4 | a wait timed out |

@@ -189,6 +189,7 @@ pre-rendering a diff, so `tuitest replay` can print them side by side while a
 headless run still gets the unified diff from `Error()`.
 
 `internal/cli.classify` maps these onto exit codes. The interesting judgement
-there is `ClosedError`: a program that exits before a wait is satisfied is
-counted as an assertion failure (exit 1), not a harness error (exit 3), because
-the harness did its job and the program did not do what the tape said it would.
+there is `ErrChildExited`: a program that exits before a wait is satisfied, or
+while the tape is still sending it input, is counted as an assertion failure
+(exit 1), not a harness error (exit 3), because the harness did its job and the
+program did not do what the tape said it would.

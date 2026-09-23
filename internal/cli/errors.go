@@ -51,8 +51,10 @@ func classify(err error) int {
 	if errors.As(err, &af) {
 		return ExitAssert
 	}
-	var ce *tuitest.ClosedError
-	if errors.As(err, &ce) {
+	// ErrChildExited covers ClosedError and also input that failed because the
+	// program had exited, which macOS reports at the write and Linux only at the
+	// next wait. Both mean the program quit before the tape was done with it.
+	if errors.Is(err, tuitest.ErrChildExited) {
 		return ExitAssert
 	}
 	return ExitHarness

@@ -21,7 +21,7 @@ invocation written against the older single-dash command line still works.
 | Code | Kind | Meaning |
 | ---- | ---- | ------- |
 | 0 | `ok` | every assertion passed |
-| 1 | `assertion` | `Expect`, `Snapshot` or `ExpectExit` did not hold, or the program exited before a wait was satisfied |
+| 1 | `assertion` | `Expect`, `Snapshot` or `ExpectExit` did not hold, or the program exited before a wait was satisfied or while input was still being sent to it |
 | 2 | `usage` | bad usage, or a tape that would not parse |
 | 3 | `harness` | no PTY, a program that would not start, an unreadable golden file |
 | 4 | `timeout` | a wait exceeded its deadline |

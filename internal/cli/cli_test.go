@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -252,6 +253,7 @@ func TestClassifyMapsErrorsToExitCodes(t *testing.T) {
 		{"timeout", &tuitest.TimeoutError{Op: "WaitFor"}, ExitTimeout},
 		{"assertion", &tape.AssertionError{Op: "Expect"}, ExitAssert},
 		{"child exited early", &tuitest.ClosedError{Op: "WaitFor"}, ExitAssert},
+		{"input to an exited child", fmt.Errorf("tuitest: write failed: %w", tuitest.ErrChildExited), ExitAssert},
 		{"anything else", errors.New("boom"), ExitHarness},
 		// The player wraps failures with the tape line, so classification has
 		// to see through the wrapper rather than only the outermost error.
@@ -334,6 +336,26 @@ func TestRunExitCodeMismatchIsAssertionFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "exit status 0") || !strings.Contains(stderr, "exit status 3") {
 		t.Errorf("message does not contrast wanted and actual status:\n%s", stderr)
+	}
+}
+
+// Typing into a program that has already exited is the program exiting early,
+// the same finding as a wait it never satisfied, and exits 1 on every platform.
+// Linux accepts the keystrokes and the wait that follows reports the exit;
+// macOS refuses the write itself, and that error used to fall through to the
+// harness exit code.
+//
+// Verified to fail on macOS: removing the ErrChildExited case from classify
+// makes this exit 3.
+func TestRunInputAfterTheProgramExitedIsAssertionFailure(t *testing.T) {
+	path := writeTape(t, "Set Size 40 10\nSpawn "+echoBin+
+		"\nWait /ECHOTUI/ @5s\nType boom\nKey Enter\nSleep 500ms\nType more\nKey Enter\nWait /never/ @2s\n")
+	code, _, stderr := runCLI(nil, "run", path)
+	if code != ExitAssert {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", code, ExitAssert, stderr)
+	}
+	if !strings.Contains(stderr, "exit") {
+		t.Errorf("message does not say the program exited:\n%s", stderr)
 	}
 }
 
