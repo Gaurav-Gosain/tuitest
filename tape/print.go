@@ -36,7 +36,11 @@ func (c Command) String() string {
 		b.WriteByte(' ')
 		b.WriteString(c.Text)
 	case KindKey:
-		writeTokens(&b, c.Keys)
+		// Key names are never quoted: "Key \"" names the double quote key.
+		for _, k := range c.Keys {
+			b.WriteByte(' ')
+			b.WriteString(k)
+		}
 		c.KeyAttrs.write(&b)
 	case KindWait, KindWaitStable, KindWaitPrompt, KindWaitCommand, KindWaitOutput, KindExpect:
 		writeWaitLike(&b, c)
@@ -77,10 +81,12 @@ func (c Command) String() string {
 	return b.String()
 }
 
+// writeTokens writes free-form arguments, quoting the ones that would not read
+// back as a single unchanged token.
 func writeTokens(b *strings.Builder, toks []string) {
 	for _, tok := range toks {
 		b.WriteByte(' ')
-		b.WriteString(tok)
+		b.WriteString(quoteArg(tok))
 	}
 }
 

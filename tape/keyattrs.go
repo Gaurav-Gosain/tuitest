@@ -2,7 +2,6 @@ package tape
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -61,13 +60,15 @@ func (a KeyAttrs) write(b *strings.Builder) {
 		b.WriteString(" +")
 		b.WriteString(a.Event.String())
 	}
+	// A layout character is written bare when it can be, and quoted when it is
+	// a space or anything else the tokenizer would split or drop.
 	if a.Shifted != "" {
 		b.WriteString(" +Shifted ")
-		b.WriteString(a.Shifted)
+		b.WriteString(quoteArg(a.Shifted))
 	}
 	if a.Base != "" {
 		b.WriteString(" +Base ")
-		b.WriteString(a.Base)
+		b.WriteString(quoteArg(a.Base))
 	}
 	if a.Text != "" {
 		b.WriteString(" +Text ")
@@ -104,11 +105,10 @@ func parseKeyAttr(a *KeyAttrs, toks []token, i int) (int, error) {
 		if i+1 >= len(toks) {
 			return 0, fmt.Errorf("+Text needs a quoted string")
 		}
-		s, err := strconv.Unquote(toks[i+1].text)
-		if err != nil {
+		if !toks[i+1].quoted {
 			return 0, fmt.Errorf("+Text needs a quoted string, got %s", toks[i+1].text)
 		}
-		a.Text = s
+		a.Text = toks[i+1].text
 		return i + 2, nil
 	}
 	return 0, fmt.Errorf("unknown key attribute %s", name)

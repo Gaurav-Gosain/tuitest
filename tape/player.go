@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -215,6 +216,15 @@ func (p *Player) applyOverrides() {
 }
 
 func (p *Player) applySet(c Command) error {
+	// A Command built in code never went through the parser, and the cases
+	// below index SetArgs, so it is validated by the same rules here.
+	toks := make([]token, 0, 1+len(c.SetArgs))
+	for _, s := range append([]string{c.SetKey}, c.SetArgs...) {
+		toks = append(toks, token{text: s})
+	}
+	if pe := validateSet(c, toks); pe != nil {
+		return errors.New(pe.Msg)
+	}
 	if p.tt != nil {
 		// Some settings only take effect at spawn; note that but still allow.
 		fmt.Fprintf(p.Out, "note: Set %s after Spawn only affects later behavior\n", c.SetKey)
@@ -419,6 +429,11 @@ func (p *Player) expectExit(c Command) error {
 }
 
 func (p *Player) snapshot(c Command) error {
+	// The parser already refuses such a name; this covers a Command built in
+	// code, which never went through it.
+	if err := checkSnapshotName(c.Name); err != nil {
+		return err
+	}
 	if p.hidden {
 		return nil
 	}
@@ -430,7 +445,9 @@ func (p *Player) snapshot(c Command) error {
 	}
 	path := filepath.Join(p.GoldenDir, c.Name+".golden")
 	if p.Update {
-		if err := os.MkdirAll(p.GoldenDir, 0o755); err != nil {
+		// The directory of the golden itself, since a name may group goldens
+		// into a subdirectory.
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
 		return os.WriteFile(path, []byte(got), 0o644) //nolint:gosec

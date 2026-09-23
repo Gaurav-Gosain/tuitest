@@ -1,13 +1,16 @@
 // Package tape implements the small VHS-inspired tape language for tuitest's
 // CLI and a player that drives a tuitest.Terminal. The grammar is line
-// oriented, one command per line, with '#' introducing a comment. It covers
-// exactly the harness primitives and is not a reuse of tuios's tape format.
+// oriented, one command per line, and a line whose first non-blank character
+// is '#' is a comment. It covers exactly the harness primitives and is not a
+// reuse of tuios's tape format.
 package tape
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -248,6 +251,77 @@ func perr(col int, format string, args ...any) *ParseError {
 type token struct {
 	text string
 	col  int
+	// quoted reports that the token was written as a Go-quoted string, in
+	// which case text holds the unquoted value.
+	quoted bool
+}
+
+// lexArgs splits s into tokens the way splitTokensAt does, except that a token
+// starting with a double quote, where quotable allows one, is read as a
+// Go-quoted string and may contain spaces. That is the only way to write an
+// argument with a space in it, such as the script of "Spawn sh -c", an
+// environment value, or the text a space key inserts. A nil quotable allows a
+// quoted token anywhere.
+//
+// Only the verbs whose arguments are free-form strings are lexed this way. A Key
+// line allows a quoted token only as the value of an attribute, so that "Key \""
+// still names the double quote key.
+func lexArgs(s string, base int, quotable func(prev []token) bool) ([]token, *ParseError) {
+	var toks []token
+	col := base
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			i += size
+			col++
+			continue
+		}
+		start, startCol := i, col
+		if r == '"' && (quotable == nil || quotable(toks)) {
+			lit, err := strconv.QuotedPrefix(s[i:])
+			if err != nil {
+				return nil, perr(startCol, "unterminated quoted argument (want a Go-quoted string such as \"a b\")")
+			}
+			// QuotedPrefix only accepts a literal that unquotes.
+			val, _ := strconv.Unquote(lit)
+			i += len(lit)
+			col += utf8.RuneCountInString(lit)
+			if i < len(s) {
+				if next, _ := utf8.DecodeRuneInString(s[i:]); !unicode.IsSpace(next) {
+					return nil, perr(col, "a quoted argument must be followed by a space or the end of the line")
+				}
+			}
+			toks = append(toks, token{text: val, col: startCol, quoted: true})
+			continue
+		}
+		for i < len(s) {
+			r, size = utf8.DecodeRuneInString(s[i:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			i += size
+			col++
+		}
+		toks = append(toks, token{text: s[start:i], col: startCol})
+	}
+	return toks, nil
+}
+
+// quoteArg renders one free-form argument so lexArgs reads it back unchanged.
+// A plain word stays bare, so ordinary tapes read as they always have; anything
+// the tokenizer would split, drop or misread is quoted.
+func quoteArg(s string) string {
+	if needsQuote(s) {
+		return Quote(s)
+	}
+	return s
+}
+
+func needsQuote(s string) bool {
+	if s == "" || s[0] == '"' || !utf8.ValidString(s) {
+		return true
+	}
+	return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) })
 }
 
 // splitTokens splits raw on whitespace, recording each token's 1-based rune
@@ -264,7 +338,7 @@ func splitTokensAt(raw string, base int) []token {
 	for i, r := range raw {
 		if unicode.IsSpace(r) {
 			if start >= 0 {
-				toks = append(toks, token{raw[start:i], startCol})
+				toks = append(toks, token{text: raw[start:i], col: startCol})
 				start = -1
 			}
 		} else if start < 0 {
@@ -273,7 +347,7 @@ func splitTokensAt(raw string, base int) []token {
 		col++
 	}
 	if start >= 0 {
-		toks = append(toks, token{raw[start:], startCol})
+		toks = append(toks, token{text: raw[start:], col: startCol})
 	}
 	return toks
 }
@@ -298,7 +372,7 @@ func Parse(r io.Reader) ([]Command, error) {
 func ParseNamed(r io.Reader, name string) ([]Command, error) {
 	var cmds []Command
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
@@ -306,6 +380,12 @@ func ParseNamed(r io.Reader, name string) ([]Command, error) {
 		// remain so a tape written with Windows line endings parses (and
 		// re-prints) identically to a Unix one.
 		raw := strings.TrimRight(sc.Text(), "\r")
+		if lineNo == 1 {
+			// Some Windows editors start a UTF-8 file with a byte order mark.
+			// Left in, it glues itself to the first verb and the first line
+			// fails as an unknown command that looks exactly like a known one.
+			raw = strings.TrimPrefix(raw, "\ufeff")
+		}
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -319,10 +399,20 @@ func ParseNamed(r io.Reader, name string) ([]Command, error) {
 		cmds = append(cmds, cmd)
 	}
 	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			// The scanner stopped on the line after the last one it
+			// returned, so that is the line to blame.
+			return nil, &ParseError{File: name, Line: lineNo + 1, Msg: fmt.Sprintf("line is longer than the %d byte limit", maxLineBytes)}
+		}
 		return nil, err
 	}
 	return cmds, nil
 }
+
+// maxLineBytes is the longest tape line Parse accepts. It bounds the memory a
+// single line can make the parser buffer, and is far above anything a person
+// writes or the recorder and fuzzer emit.
+const maxLineBytes = 1024 * 1024
 
 func parseLine(raw string) (Command, *ParseError) {
 	toks := splitTokens(raw)
@@ -336,20 +426,28 @@ func parseLine(raw string) (Command, *ParseError) {
 
 	switch verb.text {
 	case "Set":
-		if len(rest) < 1 {
+		args, pe := lexArgs(tail, tailCol, nil)
+		if pe != nil {
+			return c, pe
+		}
+		if len(args) < 1 {
 			return c, perr(verb.col, "Set needs a key")
 		}
 		c.Kind = KindSet
-		c.SetKey = rest[0].text
-		c.SetArgs = texts(rest[1:])
-		return c, validateSet(c, rest)
+		c.SetKey = args[0].text
+		c.SetArgs = texts(args[1:])
+		return c, validateSet(c, args)
 
 	case "Spawn":
-		if len(rest) == 0 {
+		args, pe := lexArgs(tail, tailCol, nil)
+		if pe != nil {
+			return c, pe
+		}
+		if len(args) == 0 {
 			return c, perr(verb.col, "Spawn needs a program")
 		}
 		c.Kind = KindSpawn
-		c.Argv = texts(rest)
+		c.Argv = texts(args)
 		return c, nil
 
 	case "Type":
@@ -363,7 +461,11 @@ func parseLine(raw string) (Command, *ParseError) {
 			return c, perr(verb.col, "Key needs at least one key name")
 		}
 		c.Kind = KindKey
-		keys, attrs, err := parseKeyLine(rest)
+		args, pe := lexArgs(tail, tailCol, afterValuedKeyAttr)
+		if pe != nil {
+			return c, pe
+		}
+		keys, attrs, err := parseKeyLine(args)
 		if err != nil {
 			return c, err
 		}
@@ -376,30 +478,26 @@ func parseLine(raw string) (Command, *ParseError) {
 		if len(rest) > 0 && rest[0].text == "Stable" {
 			c.Kind = KindWaitStable
 			inner, innerCol := verbTail(tail, rest[0])
-			return c, parseWaitLike(&c, inner, innerCol)
+			return c, parseWaitLike(&c, inner, innerCol, waitArgsFor(c.Kind))
 		}
 		c.Kind = KindWait
-		return c, parseWaitLike(&c, tail, tailCol)
+		if pe := parseWaitLike(&c, tail, tailCol, waitArgsFor(c.Kind)); pe != nil {
+			return c, pe
+		}
+		if !c.HasRegex {
+			// Accepting this and failing at run time would let a tape
+			// with a half-written Wait pass validation.
+			return c, perr(verb.col, "Wait needs a /regex/ (use WaitStable to wait for output to settle)")
+		}
+		return c, nil
 
-	case "WaitStable":
-		c.Kind = KindWaitStable
-		return c, parseWaitLike(&c, tail, tailCol)
-
-	case "WaitOutput":
-		c.Kind = KindWaitOutput
-		return c, parseWaitLike(&c, tail, tailCol)
-
-	case "WaitPrompt":
-		c.Kind = KindWaitPrompt
-		return c, parseWaitLike(&c, tail, tailCol)
-
-	case "WaitCommand":
-		c.Kind = KindWaitCommand
-		return c, parseWaitLike(&c, tail, tailCol)
+	case "WaitStable", "WaitOutput", "WaitPrompt", "WaitCommand":
+		c.Kind = verbKinds[verb.text]
+		return c, parseWaitLike(&c, tail, tailCol, waitArgsFor(c.Kind))
 
 	case "Expect":
 		c.Kind = KindExpect
-		if pe := parseWaitLike(&c, tail, tailCol); pe != nil {
+		if pe := parseWaitLike(&c, tail, tailCol, waitArgsFor(c.Kind)); pe != nil {
 			return c, pe
 		}
 		if !c.HasRegex {
@@ -425,6 +523,9 @@ func parseLine(raw string) (Command, *ParseError) {
 		}
 		c.Kind = KindSnapshot
 		c.Name = rest[0].text
+		if err := checkSnapshotName(c.Name); err != nil {
+			return c, perr(rest[0].col, "%v", err)
+		}
 		for _, tok := range rest[1:] {
 			if tok.text != "+Styled" {
 				return c, perr(tok.col, "unexpected token %q (Snapshot takes a name and an optional +Styled)", tok.text)
@@ -495,12 +596,11 @@ func parseLine(raw string) (Command, *ParseError) {
 		}
 		return c, nil
 
-	case "Hide":
-		c.Kind = KindHide
-		return c, nil
-
-	case "Show":
-		c.Kind = KindShow
+	case "Hide", "Show":
+		c.Kind = verbKinds[verb.text]
+		if len(rest) > 0 {
+			return c, perr(rest[0].col, "%s takes no arguments", verb.text)
+		}
 		return c, nil
 
 	case "Sleep":
@@ -705,20 +805,107 @@ func parseMouse(verb token, tokens []token) (tuitest.MouseEvent, *ParseError) {
 	return ev, nil
 }
 
+// verbKinds maps each canonical verb to its Kind, derived from Kind.Verb so
+// the two cannot disagree.
+var verbKinds = func() map[string]Kind {
+	out := make(map[string]Kind, kindCount)
+	for k := Kind(0); k < kindCount; k++ {
+		out[k.Verb()] = k
+	}
+	return out
+}()
+
+// afterValuedKeyAttr allows a quoted token on a Key line only where it is the
+// value of +Text, +Shifted or +Base.
+func afterValuedKeyAttr(prev []token) bool {
+	if len(prev) == 0 {
+		return false
+	}
+	switch prev[len(prev)-1].text {
+	case "+Text", "+Shifted", "+Base":
+		return !prev[len(prev)-1].quoted
+	}
+	return false
+}
+
+// checkSnapshotName rejects a Snapshot name that would read or write a golden
+// file outside the golden directory. A tape is untrusted input to the CLI, and
+// with -update a name such as ../../.bashrc would otherwise overwrite that file.
+// A name may still contain slashes, to group goldens into subdirectories.
+func checkSnapshotName(name string) error {
+	if !filepath.IsLocal(filepath.FromSlash(name)) {
+		return fmt.Errorf("Snapshot name %q must be a relative path inside the golden directory", name)
+	}
+	return nil
+}
+
+// waitArgs is the set of optional arguments a wait-like verb accepts.
+type waitArgs uint8
+
+const (
+	argRegex waitArgs = 1 << iota
+	argScope
+	argTimeout
+)
+
+// waitArgsFor says which arguments each wait-like verb takes. An argument a
+// verb would ignore is a parse error rather than a silent no-op: "WaitStable
+// /ready/" reads as a wait for text and would pass without any, and "Expect
+// /x/ @5s" reads as a wait and would not give the screen any time at all.
+func waitArgsFor(k Kind) waitArgs {
+	switch k {
+	case KindWait:
+		return argRegex | argScope | argTimeout
+	case KindExpect:
+		return argRegex | argScope
+	default:
+		return argTimeout
+	}
+}
+
+// want renders the accepted arguments for an error message.
+func (a waitArgs) want() string {
+	var parts []string
+	if a&argRegex != 0 {
+		parts = append(parts, "/regex/")
+	}
+	if a&argScope != 0 {
+		parts = append(parts, "+Screen", "+Line")
+	}
+	if a&argTimeout != 0 {
+		parts = append(parts, "@timeout")
+	}
+	switch len(parts) {
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " or " + parts[1]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + ", or " + parts[len(parts)-1]
+}
+
 // parseWaitLike parses the optional /regex/, +Scope, and @timeout arguments
-// shared by Wait, Expect, and the semantic waits. The regex runs from the first
-// '/' in the arguments to the last, so a pattern may contain spaces and
-// slashes; everything outside that span is whitespace-separated option tokens.
-// base is the column of args[0], so errors can still point at a real column.
-func parseWaitLike(c *Command, args string, base int) *ParseError {
+// shared by Wait, Expect, and the semantic waits, accepting only those allow
+// names. The regex runs from the first '/' in the arguments to the last, so a
+// pattern may contain spaces and slashes; everything outside that span is
+// whitespace-separated option tokens. base is the column of args[0], so errors
+// can still point at a real column.
+func parseWaitLike(c *Command, args string, base int, allow waitArgs) *ParseError {
+	verb := c.Kind.Verb()
 	before, after := args, ""
 	if i := strings.Index(args, "/"); i >= 0 {
 		j := strings.LastIndex(args, "/")
 		slashCol := base + utf8.RuneCountInString(args[:i])
+		if allow&argRegex == 0 {
+			return perr(slashCol, "%s does not take a /regex/ (it takes only %s; use Wait /regex/ to wait for text)", verb, allow.want())
+		}
 		if j == i {
 			return perr(slashCol, "unterminated /regex/ (missing the closing '/')")
 		}
 		body := args[i+1 : j]
+		if body == "" {
+			return perr(slashCol, "empty /regex/ matches every screen; put the text to match between the slashes")
+		}
 		re, err := regexp.Compile(body)
 		if err != nil {
 			return perr(slashCol, "regex %q: %v", body, err)
@@ -735,10 +922,14 @@ func parseWaitLike(c *Command, args string, base int) *ParseError {
 	}
 	for _, tok := range opts {
 		switch {
+		case (tok.text == "+Screen" || tok.text == "+Line") && allow&argScope == 0:
+			return perr(tok.col, "%s does not take %s (it takes only %s)", verb, tok.text, allow.want())
 		case tok.text == "+Screen":
 			c.Scope = tuitest.ScopeScreen
 		case tok.text == "+Line":
 			c.Scope = tuitest.ScopeLastLine
+		case strings.HasPrefix(tok.text, "@") && allow&argTimeout == 0:
+			return perr(tok.col, "%s does not wait, so it takes no @timeout; use Wait /regex/ to give the screen time to change", verb)
 		case strings.HasPrefix(tok.text, "@"):
 			d, err := parsePositiveDuration(strings.TrimPrefix(tok.text, "@"))
 			if err != nil {
@@ -747,7 +938,7 @@ func parseWaitLike(c *Command, args string, base int) *ParseError {
 			c.Timeout = d
 			c.HasTimeout = true
 		default:
-			return perr(tok.col, "unexpected token %q (want /regex/, +Screen, +Line, or @timeout)", tok.text)
+			return perr(tok.col, "unexpected token %q (want %s)", tok.text, allow.want())
 		}
 	}
 	return nil

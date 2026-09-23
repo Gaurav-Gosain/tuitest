@@ -77,9 +77,10 @@ func TestParseWaitStableWord(t *testing.T) {
 }
 
 // TestParseBareVerb covers the lines that carry a verb and nothing else. The
-// Type case used to slice past the end of the line and panic.
+// Type case used to slice past the end of the line and panic. A bare Wait is
+// a parse error rather than a command, see TestParseRejectsArgumentsAVerbIgnores.
 func TestParseBareVerb(t *testing.T) {
-	cmds, err := Parse(strings.NewReader("Type\nHide\nShow\nWait\n"))
+	cmds, err := Parse(strings.NewReader("Type\nHide\nShow\nWaitStable\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,6 @@ func TestParseRegexWithSpacesAndSlashes(t *testing.T) {
 		{"Wait /a b/", "a b"},
 		{"Wait /a  b/", "a  b"},
 		{"Wait /usr/local/bin/ +Line @3s", "usr/local/bin"},
-		{"Wait //", ""},
 		{"Expect /x/ +Screen", "x"},
 	}
 	for _, tc := range cases {
