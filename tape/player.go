@@ -263,6 +263,10 @@ func (p *Player) spawn(c Command) error {
 	opts := []tuitest.Option{
 		tuitest.WithSize(p.cols, p.rows),
 		tuitest.WithTerm(p.term),
+		// WaitPrompt and WaitCommand are verbs of the language, so the OSC
+		// 133 waits they map to must always be available. The option only
+		// gates the waits; the emulator tracks the markers either way.
+		tuitest.WithSemanticMarkers(),
 	}
 	if len(p.env) > 0 {
 		opts = append(opts, tuitest.WithEnv(p.env...))

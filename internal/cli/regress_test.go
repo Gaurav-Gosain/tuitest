@@ -63,6 +63,27 @@ func TestFuzzRejectsExcludeTokensThatAreNotKeys(t *testing.T) {
 	}
 }
 
+// WaitPrompt and WaitCommand are tape verbs, but the player never enabled the
+// OSC 133 tracking they need, so both always failed with "semantic markers are
+// not enabled" and exit 3. Verified to fail: without WithSemanticMarkers in
+// Player.spawn this exits 3.
+//
+// The script sleeps before each marker because both waits look for a marker
+// newer than the call, so one that lands before the wait starts is missed.
+func TestRunSemanticWaitsWork(t *testing.T) {
+	script := writeScript(t, `sleep 0.3
+printf '\033]133;A\007$ \033]133;B\007'
+read x
+sleep 0.3
+printf '\033]133;C\007ran\n\033]133;D;0\007'
+sleep 5
+`)
+	path := writeTape(t, "Set Size 40 5\nSpawn "+script+"\nWaitPrompt @5s\nKey Enter\nWaitCommand @5s\nExpect /ran/\n")
+	if code, _, stderr := runCLI(nil, "run", path); code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+}
+
 // The JSON error is the same text the plain output prints. It used to be the
 // raw error, which repeated the "tuitest: " prefix inside a line error.
 // Verified to fail: setting res.Error from err.Error() leaves the prefix in.
