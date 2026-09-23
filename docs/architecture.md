@@ -84,7 +84,9 @@ flowchart LR
   LOCK --> BCAST[cond.Broadcast]
   BCAST --> WAIT[waiting conditions re-evaluate]
   LOCK --> MIRROR[WithLog / WithOutputMirror]
-  WAIT --> SNAP[snapshotLocked<br/>immutable Screen copy]
+  LOCK --> RESPQ[answers to queries<br/>queued]
+  RESPQ --> RESP[responder goroutine<br/>writes them to the PTY]
+  WAIT --> SNAP[viewLocked<br/>immutable Screen copy]
 ```
 
 One goroutine reads the PTY master, and it is the only writer to the emulator.
@@ -93,10 +95,27 @@ state that waits also read. Waiting conditions are evaluated while holding the
 same lock the pump took, which is why a condition can never observe a torn grid,
 and why `Screen` values handed to a `WaitFor` callback are safe to keep.
 
-`snapshotLocked` copies the whole grid, so it is proportional to `cols * rows`.
-Conditions that do not need a grid, such as `WaitStable` and `WaitForOutput`,
-deliberately do not call it: during a heavy output burst they would otherwise
-rebuild the screen on every 32KB chunk.
+A snapshot copies the whole grid, so it is proportional to `cols * rows`: about
+a tenth of a millisecond and 400KB at 120x40. It is cached until the grid
+changes, so every reader of an unchanged screen shares one copy, and its text is
+rendered once, on first use. Conditions that do not need a grid, such as
+`WaitStable` and `WaitForOutput`, deliberately do not ask for one: during a heavy
+output burst they would otherwise rebuild the screen on every 32KB chunk.
+
+`viewLocked` is what every read goes through. It returns the live grid, except
+while the program has a synchronized update (mode 2026) open: the emulator
+reports the mode change from inside `Write`, before any byte of the new frame
+reaches the grid, and the grid as it stands then is kept and shown until the
+update closes, as a real terminal does. The hold ends after a second, or when
+the child exits.
+
+The pump never writes to the PTY. The emulator's answers to the program's
+queries (cursor position, device attributes, colours) are queued, and a
+separate goroutine writes them. Writing them from the pump used to deadlock a
+program that asked faster than it read: its input buffer filled, the pump
+blocked on the write and stopped reading output, and the program then blocked
+writing its output. Caller input takes the queued answers with it, ahead of
+itself, so the program still receives them in the order they were produced.
 
 `WithLog` mirrors both directions and is what `StartT` wires to `t.Log`.
 `WithOutputMirror` carries only what the program wrote, which is how `record`
@@ -157,14 +176,16 @@ its children were reparented to init. `Close` then signals the process group
 only, and only if the child's pid has not been reused. A descendant that both
 left the group and outlived the child cannot be found, and is not reported.
 
-Input sent after the child has exited behaves differently by platform. Linux
-accepts writes to a PTY whose program has gone until `Close` releases it. The
-bytes are discarded, since `Start` closed the parent's copy of the other end
-and nothing is left to read them, so the writes neither fail nor block. macOS
-fails them with EIO as soon as the program closes its end, before the pump has
-reaped it. `Terminal.write` and `Resize` wait up to a second for the reap in
-that case and return an error wrapping `ErrChildExited`, so the caller finds
-`ExitStatus` already reporting the exit when the error arrives.
+Input sent after the exit has been recorded is refused before it reaches the
+PTY, with an error wrapping `ErrChildExited` that names the exit code. Input
+that races the exit behaves differently by platform. Linux accepts writes to a
+PTY whose program has gone until `Close` releases it. The bytes are discarded,
+since `Start` closed the parent's copy of the other end and nothing is left to
+read them, so the writes neither fail nor block. macOS fails them with EIO as
+soon as the program closes its end, before the pump has reaped it.
+`Terminal.write` and `Resize` wait up to a second for the reap in that case and
+return an error wrapping `ErrChildExited`, so the caller finds `ExitStatus`
+already reporting the exit when the error arrives.
 
 ## Errors
 

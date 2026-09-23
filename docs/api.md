@@ -59,7 +59,24 @@ Named keys are typed constants, so a misspelling is a compile error rather than
 a silent mismatch: `Enter`, `Tab`, `Esc`, `Space`, `Backspace`, `Delete`, `Up`,
 `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, and `F1`
 through `F12`. `Ctrl(r rune)` builds a control byte (`Ctrl('b')` is 0x02, and
-letters are case-insensitive) and `Alt(k any)` prefixes with ESC.
+letters are case-insensitive) and `Alt(k any)` prefixes with ESC. `Ctrl` follows
+the xterm table for the other keys too: `Ctrl(' ')` and `Ctrl('2')` are NUL,
+`Ctrl('[')` is ESC, `Ctrl('?')` is DEL, and a rune with no control encoding is
+sent as itself.
+
+`SendKeys` sends the arrow keys, `Home` and `End` the way a terminal does in the
+program's current cursor key mode: `ESC [ A` normally, and `ESC O A` once the
+program has set DECCKM (mode 1). Full-screen programs built on terminfo set that
+mode at startup and match their input against the second form, so a harness
+that sent the first regardless would be pressing keys the program does not
+know.
+
+Sending input to a program that has exited returns an error wrapping
+`ErrChildExited`, the same sentinel a wait uses, with the exit code in its
+message. Input that races the exit can fail before the exit is recorded (macOS
+refuses writes to a PTY whose program has closed its end), and that error wraps
+`ErrChildExited` too, with `ExitStatus` already reporting the exit when it
+arrives. Linux accepts such a write and discards the bytes.
 
 `SendMouse` emits SGR (mode 1006) sequences with 1-based wire coordinates from
 the zero-based `Col`/`Row` you give it. It writes them unconditionally, so a
@@ -74,18 +91,16 @@ any-motion reporting instead.
 
 `Paste` wraps text in bracketed-paste markers (mode 2004), the way a terminal
 delivers a real paste. Programs take a different code path for pasted text than
-for typed text, and it is usually the less tested one.
+for typed text, and it is usually the less tested one. The markers are sent
+whether or not the program enabled the mode; a real terminal sends a paste to a
+program that did not as plain text, which is what `Type` does.
 
 `Resize` changes the PTY window size, so the child receives a real `SIGWINCH`,
-and resizes the emulator grid in the same call. A width or height outside
-1..65535 is refused with an error and changes nothing, since the kernel cannot
-store it; `WithSize` has the same range, and `Start` refuses anything outside
-it.
-
-Input to a program that has exited may fail, depending on the platform: macOS
-refuses writes to a PTY whose program has gone, while Linux accepts them and
-discards the bytes until `Close`. When it fails, the error wraps `ErrChildExited`, and `ExitStatus`
-already reports the exit.
+and resizes the emulator grid in the same call. A program that enabled in-band
+resize reports (mode 2048) also gets its report straight away. A width or
+height outside 1..65535 is refused with an error and changes nothing, since the
+kernel cannot store it; `WithSize` has the same range, and `Start` refuses
+anything outside it.
 
 ## Waiting
 
@@ -93,6 +108,7 @@ already reports the exit.
 func (t *Terminal) WaitForText(substr string, timeout time.Duration) error
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error
+func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) error
 func (t *Terminal) WaitForOutput(timeout time.Duration) error
 func (t *Terminal) WaitStable(timeout time.Duration) error
 func (t *Terminal) WaitExit(timeout time.Duration) (int, error)
@@ -111,11 +127,39 @@ begins, which is what you want after sending input: once the screen has settled,
 anything at all.
 
 `WaitStable` measures its quiet window from the later of the last output byte
-and the last input tuitest sent, and measures the first window from spawn, so it
-can neither report the pre-keystroke screen as stable nor report stability
-before the child has produced anything. It remains a heuristic: a program that
-takes longer than the interval to produce its first byte is reported stable too
-early. Wait for the content you expect whenever you know it.
+and the last input tuitest sent, and does not settle at all before the child's
+first byte, so it can neither report the pre-keystroke screen as stable nor
+return a blank screen from a program that is slow to start. It remains a
+heuristic: a program that takes longer than the interval to react to input is
+reported stable too early. Wait for the content you expect whenever you know it.
+
+`WaitForStable` is `WaitFor` plus a settle: it returns once the condition holds
+on a screen whose cells have not changed for the stabilize interval. A program
+draws a frame from the top down and the PTY hands it over in pieces, so the
+moment the text a test waits for appears, the rows below it can still hold the
+previous frame. Use it when the assertion that follows reads more of the screen
+than the condition checked, and to read a value that is still moving, such as a
+count or a scroll position, once it has stopped:
+
+```go
+// The overlay's first row is on screen; wait for the rest of it too.
+err := term.WaitForStable(func(s tuitest.Screen) bool {
+    return strings.Contains(s.Text(), "Toggle tiling")
+}, 5*time.Second)
+```
+
+Output that repaints the same content does not restart its window, and neither
+does cursor movement.
+
+### Synchronized output
+
+A program that wraps each frame in a synchronized update (DEC mode 2026) is
+asking the terminal not to show the frame until it is complete. Bubble Tea v2
+does this whenever the terminal says it supports the mode, and tuitest's
+terminal does. While an update is open, every read of the screen, the waits
+included, sees the last complete frame, exactly as on a real terminal. An update
+left open for more than a second is shown as it stands, and so is everything
+once the program exits.
 
 `WaitExit` waits for process exit rather than screen state. `Done` returns a
 channel closed after the child is reaped, which lets a caller select on program
@@ -181,7 +225,7 @@ func (t *Terminal) Pid() int
 ```
 
 `TermState` reports the modes a program has left set: the alternate screen
-(1047 or 1049), mouse tracking (9, 1000, 1001, 1002, 1003), bracketed paste
+(47, 1047 or 1049), mouse tracking (9, 1000, 1001, 1002, 1003), bracketed paste
 (2004), focus reporting (1004), and cursor visibility. `Mode(n int)` answers for
 any DEC private mode number. Called after the child exits, `Dirty()` answers
 "did this program restore the terminal?", which is a common and user-visible
@@ -203,6 +247,7 @@ detector is built on.
 
 ```go
 func (t *Terminal) Screen() Screen
+func Find(s Screen, substr string) (col, row int, ok bool)
 
 type Screen interface {
     Size() (cols, rows int)
@@ -216,7 +261,12 @@ type Screen interface {
 
 `Screen` is an immutable snapshot taken under the terminal's lock, so a
 condition callback may stash it without observing a torn write from the output
-pump. `Text` joins the rows with trailing blanks trimmed per line and trailing
+pump. It is reused until the grid changes, so reading it in a loop is cheap.
+
+`Find` returns the cell column and row where a string starts, which is the
+coordinate `SendMouse` takes. It is not the offset of the string in `Line`: a
+box-drawing border is three bytes in one cell and a CJK character is one rune in
+two cells, so an offset computed from the text lands beside the target. `Text` joins the rows with trailing blanks trimmed per line and trailing
 blank lines dropped. `Line` returns one physical row and does not de-wrap: a
 logical line that soft-wrapped at the right margin occupies several rows and
 will not match as one string.
@@ -224,8 +274,9 @@ will not match as one string.
 A `Cell` carries `Content`, `Rune`, `Width` (1 normal, 2 wide, 0 for a wide
 rune's continuation column), `Fg` and `Bg` as a `Color` (`ColorDefault`,
 `ColorIndexed` with an `Index`, or `ColorRGB` with `R`, `G`, `B`), and the
-`Bold`, `Italic`, `Underline`, `Reverse`, `Strikethrough` and `Blink`
-attributes. `Content` is the whole grapheme cluster, base rune plus any
+`Bold`, `Faint`, `Italic`, `Underline`, `Reverse`, `Strikethrough`, `Blink`
+and `Conceal` attributes. A concealed cell renders as blanks in `Line` and
+`Text`, as it does on screen. `Content` is the whole grapheme cluster, base rune plus any
 combining marks, joiners and modifiers, and is what `Line` and `Text` render
 and what a caller should match against. `Rune` is its first rune, so a cell
 holding `e` plus a combining acute reports `e` there.
@@ -242,14 +293,17 @@ func Diff(want, got string) string
 
 Goldens live in `testdata/<name>.golden`. They are rewritten when
 `UPDATE_GOLDEN` is set in the environment, or when the test binary defines an
-`-update` boolean flag and it is passed. Diffs are computed in-process with a
+`-update` boolean flag and it is passed. A trailing newline and CRLF line
+endings in a golden file are ignored, so one saved by an editor or checked out
+on Windows still matches. Diffs are computed in-process with a
 line LCS, so nothing shells out to system `diff`. `Diff` is exported so
 out-of-package golden runners, such as the tape player, can reuse the same
 encoding.
 
 In the styled encoding a run is `startcol-endcol tokens`, where tokens are a
-comma-separated subset of `b` (bold), `i` (italic), `u` (underline), `r`
-(reverse), `s` (strikethrough), `k` (blink), `w` (wide rune), `fg:<spec>` and
+comma-separated subset of `b` (bold), `f` (faint), `c` (concealed), `i`
+(italic), `u` (underline), `r` (reverse), `s` (strikethrough), `k` (blink), `w`
+(wide rune), `fg:<spec>` and
 `bg:<spec>`. A spec is an index `0-255` or `#RRGGBB`. A screen with no styling
 degrades to exactly the plain snapshot.
 

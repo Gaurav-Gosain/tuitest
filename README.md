@@ -50,12 +50,19 @@ same reasons and print the same screens.
 - Blocks on conditions rather than sleeping. `WaitForText`, `WaitForMatch`,
   `WaitFor` and `WaitForOutput` are woken by the output pump the moment new
   bytes are interpreted, with a 5ms poll as a backstop for wall-clock
-  conditions.
+  conditions. `WaitForStable` also waits for the frame the condition matched to
+  finish drawing.
+- Never shows a half-drawn frame from a program that uses synchronized output
+  (mode 2026, which every Bubble Tea v2 program does): while an update is open,
+  the screen the waits and `Screen` see is the last complete frame, as on a real
+  terminal.
 - Reports a wait failure as a `*TimeoutError` or `*ClosedError` carrying the
   full screen and the last 4KB of PTY traffic, so a CI log shows what was on
   screen instead of a bare "timeout".
 - Sends named keys as typed `Key` constants, so a misspelled key is a compile
-  error; `Ctrl('b')` builds a control byte and `Alt(k)` prefixes with ESC.
+  error; `Ctrl('b')` builds a control byte and `Alt(k)` prefixes with ESC. The
+  arrow keys, Home and End follow the program's cursor key mode (DECCKM), as
+  they do on a real terminal.
 - Sends mouse events as SGR (mode 1006) sequences, and pastes as bracketed
   paste (mode 2004), which is the code path a program handles differently from
   typed text and usually tests less.
@@ -199,15 +206,18 @@ and blocks on a `sync.Cond` that the output pump broadcasts after each chunk is
 interpreted; a 5ms timer re-broadcasts so wall-clock conditions such as
 `WaitStable` still make progress when the program is silent. Conditions build a
 screen snapshot only if they need one, so a cheap condition does not pay to
-rebuild the grid on every write during a heavy burst.
+rebuild the grid on every write during a heavy burst, and a snapshot is reused
+until the grid changes, so a wait on a quiet screen costs next to nothing.
 
 `WaitStable` is the one heuristic here, and it is easy to misuse. It measures its
 quiet window from the later of the last output byte and the last input tuitest
-sent, which stops it from reporting the pre-keystroke screen as stable, but a
-program that takes longer than the interval (150ms by default) to produce its
-first byte is still reported stable early. `WaitForOutput` is the primitive for
-"wait until the program reacts to what I just sent"; prefer waiting on the
-content you expect whenever you know it.
+sent, which stops it from reporting the pre-keystroke screen as stable, and it
+never settles before the program's first byte, but a program that takes longer
+than the interval (150ms by default) to react to input is still reported stable
+early. `WaitForOutput` is the primitive for "wait until the program reacts to
+what I just sent", and `WaitForStable` for "wait until this is on screen and the
+frame has finished drawing"; prefer waiting on the content you expect whenever
+you know it.
 
 ## Quick start
 
@@ -471,8 +481,8 @@ ones most likely to matter:
   something that looks supported and leaks every grandchild. Use WSL or a Unix
   runner.
 - **`WaitStable` is a heuristic** and always will be. A program slower than the
-  stabilize interval to produce its first byte is reported stable early. Wait on
-  content when you know it.
+  stabilize interval to react to input is reported stable early. Wait on content
+  when you know it.
 - **The VT emulator is a vendored copy** of tuios's interpreter, not a
   dependency, so it does not pick up upstream fixes automatically. The exact
   commit is in `internal/vt/UPSTREAM`, the policy in `internal/vt/VENDOR.md`,
@@ -480,9 +490,8 @@ ones most likely to matter:
   anything. Fixes go to tuios first; a file the copy has to change anyway is
   listed in `internal/vt/DIVERGENCE`, and the sync merges into it rather than
   overwriting it.
-- **`Screen.Line` returns one physical row** and does not de-wrap, and `Cell`
-  exposes only a cell's first rune, so combining marks are invisible to
-  assertions.
+- **`Screen.Line` returns one physical row** and does not de-wrap, so text that
+  soft-wrapped at the right margin does not match as one string.
 - **Mouse mode 1005 (UTF-8 coordinates) is not decoded as itself.** It is
   indistinguishable from X10 by construction, so it is read as X10 and the
   coordinates on the `Mouse` line are wrong above column 95. The bytes still

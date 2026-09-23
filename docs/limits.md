@@ -80,21 +80,32 @@ before it, so the work cannot be split. A program that emits far more than this
 feels PTY backpressure rather than losing data, so a heavy-output test needs a
 timeout sized for the volume, not for the harness.
 
-Waits themselves are free while idle. They block on a condition variable woken
-by the pump, so a suite's wall-clock time is the program's own latency plus at
-most the 5ms poll interval per wall-clock condition.
+Waits are close to free while idle. They block on a condition variable woken
+by the pump and re-check every 5ms, and a screen that has not changed since
+the last check is not copied again, so a suite's wall-clock time is the
+program's own latency plus at most the 5ms poll interval per wall-clock
+condition.
 
 ## Approximate, not exact
 
 **`WaitStable` is a heuristic and cannot be made exact.** It measures its quiet
 window from the later of the last output byte and the last input tuitest sent,
-and its first window from spawn, so it can neither report the pre-keystroke
-screen as stable nor report stability before the child has produced anything.
-But a program that takes longer than the interval (150ms by default) to produce
-its first byte is still reported stable too early, and no quiescence rule can
-distinguish that from a program with nothing to say. Wait for the content you
-expect with `WaitForText`, `WaitForMatch` or `WaitFor` whenever you know it, and
-reach for `WaitStable` only after heavy output with no specific end state.
+and does not settle before the child's first byte, so it can neither report the
+pre-keystroke screen as stable nor return a blank screen from a program that is
+slow to start. But a program that takes longer than the interval (150ms by
+default) to react to input is still reported stable too early, and no
+quiescence rule can distinguish that from a program with nothing to say. Wait
+for the content you expect with `WaitForText`, `WaitForMatch`, `WaitFor` or
+`WaitForStable` whenever you know it, and reach for `WaitStable` only after
+heavy output with no specific end state.
+
+**A write to a program that does not read its input blocks.** `SendKeys`,
+`Type` and `Paste` write to the PTY, and once the program's input buffer is full
+(about a kilobyte on macOS) the write waits for the program to read. A test that
+pastes a large block into a program that has stopped reading hangs until the
+`go test` timeout. The terminal's own answers to the program's queries do not
+have this problem: they are queued and written separately, so the output side
+keeps flowing.
 
 **Hang detection is the fuzzer's one heuristic.** There is no universal liveness
 probe for a TUI: no key is guaranteed to produce output, and the program does
