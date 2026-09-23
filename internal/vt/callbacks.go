@@ -33,10 +33,6 @@ type Callbacks struct {
 	// cursor visibility changes.
 	CursorVisibility func(visible bool)
 
-	// CursorStyle callback. When set, this function is called when the cursor
-	// style changes.
-	CursorStyle func(style CursorStyle, blink bool)
-
 	// CursorColor callback. When set, this function is called when the cursor
 	// color changes. Nil indicates the default terminal color.
 	CursorColor func(color color.Color)
@@ -75,4 +71,8 @@ type Callbacks struct {
 	// Notify callback. Called when a guest app requests a desktop notification
 	// via OSC 9, OSC 777, or OSC 99.
 	Notify func(title, body string)
+
+	// Progress callback. Called when a guest app reports its progress via the
+	// OSC 9;4 sequence. percent is 0 for the states that carry no percentage.
+	Progress func(state ProgressState, percent int)
 }

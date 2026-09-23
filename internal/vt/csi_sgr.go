@@ -7,9 +7,56 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// rgbSlot is one entry of Emulator.rgbCache. key is the colour's 24 bits
+// with bit 24 set, so the zero slot matches nothing.
+type rgbSlot struct {
+	key uint32
+	c   color.Color
+}
+
+// rgbColor returns the colour an SGR 38/48/58 with type 2 sets for r, g, b:
+// the color.RGBA ansi.ReadStyleColor builds. Putting that value in a
+// color.Color allocates, and a truecolor repaint sets a colour or two for
+// every cell, so the boxed value is kept in a small direct-mapped cache and
+// handed out again. The value is the same either way; only the allocation is
+// shared.
+func (e *Emulator) rgbColor(r, g, b uint8) color.Color {
+	if e.rgbCache == nil {
+		e.rgbCache = new([256]rgbSlot)
+	}
+	key := 1<<24 | uint32(r)<<16 | uint32(g)<<8 | uint32(b)
+	slot := &e.rgbCache[(uint32(r)*7+uint32(g)*13+uint32(b)*31)&0xff]
+	if slot.key != key {
+		slot.key = key
+		slot.c = color.RGBA{R: r, G: g, B: b, A: 0xff}
+	}
+	return slot.c
+}
+
+// rgbParams reports whether params starts with a direct RGB colour in one of
+// the two shapes programs send, 38;2;r;g;b and 38:2:r:g:b (or 48, 58), and
+// returns its components. These are exactly the shapes ansi.ReadStyleColor
+// reads as five parameters with the colour in params[2:5]; any other shape,
+// the colour-space forms included, is left to it.
+func rgbParams(params ansi.Params) (r, g, b uint8, ok bool) {
+	if len(params) < 5 || params[1].Param(0) != 2 || params[4].HasMore() {
+		return 0, 0, 0, false
+	}
+	colon := params[0].HasMore()
+	for _, p := range params[1:4] {
+		if p.HasMore() != colon {
+			return 0, 0, 0, false
+		}
+	}
+	return uint8(params[2].Param(0)), uint8(params[3].Param(0)), uint8(params[4].Param(0)), true //nolint:gosec
+}
+
 // parseThemedColor parses an indexed or RGB color from SGR params, using theme colors for indices 0-15.
 // Returns the color and the number of extra params consumed (to add to loop index).
 func (e *Emulator) parseThemedColor(params ansi.Params, i int) (color.Color, int) {
+	if r, g, b, ok := rgbParams(params[i:]); ok {
+		return e.rgbColor(r, g, b), 4
+	}
 	// Check if this is indexed color format (X;5;n) and if n is 0-15
 	if i+2 < len(params) {
 		next, _, _ := params.Param(i+1, -1)
@@ -31,14 +78,33 @@ func (e *Emulator) parseThemedColor(params ansi.Params, i int) (color.Color, int
 
 // handleSgr handles Select Graphic Rendition (SGR) escape sequences.
 //
-// It used to short-circuit to uv.ReadStyle whenever no theme colours were set,
-// which meant the careful reader below only ever ran under a theme. Everything
-// it fixes was therefore fixed on a path most callers never take: a stray
-// underline subparameter such as "4:7" fell through uv.ReadStyle as a separate
-// SGR 7 and turned the cell reverse, and SGR 21 was dropped. One reader keeps
-// the themed and unthemed cases from drifting apart again; the colours agree
-// because IndexedColor falls back to the plain palette entry with no theme set.
+// Every SGR goes through readStyleWithTheme, with or without a theme. Handing
+// the unthemed case to uv.ReadStyle meant the careful reader only ran under a
+// theme, and two bugs lived on the path most callers take: an underline
+// subparameter this terminal cannot name, such as "4:7", was left unconsumed
+// and read on as a bare SGR 7, turning the cell reverse, and SGR 21 was
+// dropped. The colours agree either way, because PaletteColor gives the plain
+// palette entry when no theme is set.
 func (e *Emulator) handleSgr(params ansi.Params) {
+	// An SGR that is one truecolor colour and nothing else is what a
+	// truecolor repaint sends for every cell. It is answered here without the
+	// loop below.
+	if len(params) == 5 {
+		if r, g, b, ok := rgbParams(params); ok {
+			switch params[0].Param(0) {
+			case 38:
+				e.scr.cur.Pen.Fg = e.rgbColor(r, g, b)
+				return
+			case 48:
+				e.scr.cur.Pen.Bg = e.rgbColor(r, g, b)
+				return
+			case 58:
+				e.scr.cur.Pen.UnderlineColor = e.rgbColor(r, g, b)
+				return
+			}
+		}
+	}
+
 	e.readStyleWithTheme(params, &e.scr.cur.Pen)
 }
 
@@ -82,10 +148,7 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 				case 5:
 					pen.Underline = ansi.UnderlineDashed
 				default:
-					// An underline style this terminal cannot name still asks
-					// for an underline, so draw the one it can. Leaving it
-					// unstyled would hide a decoration the program did ask for.
-					pen.Underline = ansi.UnderlineSingle
+					// Unknown underline style: no-op, but still consumed above.
 				}
 			} else {
 				pen.Underline = ansi.UnderlineSingle
@@ -120,8 +183,11 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 			pen.Attrs &^= uv.AttrConceal
 		case 29: // Not crossed out
 			pen.Attrs &^= uv.AttrStrikethrough
-		case 30, 31, 32, 33, 34, 35, 36, 37: // Set foreground - USE THEME COLORS
-			pen.Fg = e.IndexedColor(int(param - 30))
+		case 30, 31, 32, 33, 34, 35, 36, 37: // Set foreground
+			// PaletteColor, not IndexedColor: a slot no theme and no OSC 4 has
+			// claimed stays SGR 3x on the way out, so the host paints it from
+			// the user's own palette.
+			pen.Fg = e.PaletteColor(int(param - 30))
 		case 38: // Set foreground 256 or truecolor
 			if c, skip := e.parseThemedColor(params, i); c != nil {
 				pen.Fg = c
@@ -129,8 +195,8 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 			}
 		case 39: // Default foreground
 			pen.Fg = nil
-		case 40, 41, 42, 43, 44, 45, 46, 47: // Set background - USE THEME COLORS
-			pen.Bg = e.IndexedColor(int(param - 40))
+		case 40, 41, 42, 43, 44, 45, 46, 47: // Set background
+			pen.Bg = e.PaletteColor(int(param - 40))
 		case 48: // Set background 256 or truecolor
 			if c, skip := e.parseThemedColor(params, i); c != nil {
 				pen.Bg = c
@@ -145,10 +211,10 @@ func (e *Emulator) readStyleWithTheme(params ansi.Params, pen *uv.Style) {
 			}
 		case 59: // Default underline color
 			pen.UnderlineColor = nil
-		case 90, 91, 92, 93, 94, 95, 96, 97: // Set bright foreground - USE THEME COLORS
-			pen.Fg = e.IndexedColor(int(param - 90 + 8)) // 8-15 are bright colors
-		case 100, 101, 102, 103, 104, 105, 106, 107: // Set bright background - USE THEME COLORS
-			pen.Bg = e.IndexedColor(int(param - 100 + 8)) // 8-15 are bright colors
+		case 90, 91, 92, 93, 94, 95, 96, 97: // Set bright foreground
+			pen.Fg = e.PaletteColor(int(param - 90 + 8)) // 8-15 are bright colors
+		case 100, 101, 102, 103, 104, 105, 106, 107: // Set bright background
+			pen.Bg = e.PaletteColor(int(param - 100 + 8)) // 8-15 are bright colors
 		default:
 			// Delegate any scalar attribute code this switch does not
 			// special-case to the canonical uv reader, so the themed path

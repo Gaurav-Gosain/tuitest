@@ -1,9 +1,5 @@
 package vt
 
-import (
-	"time"
-)
-
 type KittyGraphicsFormat uint8
 
 const (
@@ -62,36 +58,6 @@ const (
 	KittyDeleteIntersectCell     KittyDeleteTarget = 'Q'
 )
 
-type KittyImage struct {
-	ID           uint32
-	Number       uint32
-	Width        int
-	Height       int
-	Format       KittyGraphicsFormat
-	Compression  KittyGraphicsCompression
-	Data         []byte
-	TransmitTime time.Time
-}
-
-type KittyPlacement struct {
-	ImageID      uint32
-	PlacementID  uint32
-	ScreenX      int
-	ScreenY      int
-	AbsoluteLine int
-	XOffset      int
-	YOffset      int
-	SourceX      int
-	SourceY      int
-	SourceWidth  int
-	SourceHeight int
-	Columns      int
-	Rows         int
-	ZIndex       int32
-	CursorMove   int
-	Virtual      bool
-}
-
 type KittyCommand struct {
 	Action       KittyGraphicsAction
 	Quiet        int
@@ -121,15 +87,10 @@ type KittyCommand struct {
 	Data         []byte
 	RawPayload   string // Original base64 payload (preserved for passthrough without re-encoding)
 	FilePath     string
-}
 
-type KittyPendingChunk struct {
-	ImageID     uint32
-	ImageNumber uint32
-	Format      KittyGraphicsFormat
-	Medium      KittyGraphicsMedium
-	Compression KittyGraphicsCompression
-	Width       int
-	Height      int
-	DataBuffer  []byte
+	// BackgroundColor is the Y key read as a 32-bit RGBA colour, which is what
+	// a=f means by it. YOffset holds the same key read as a placement offset;
+	// the two never apply to the same command, and a colour overflows int on a
+	// 32-bit build, so it needs its own width.
+	BackgroundColor uint32
 }

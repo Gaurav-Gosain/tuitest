@@ -5,11 +5,15 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// reportedCursorPosition is the cursor as a CPR reply spells it: one-based,
-// line before column, and relative to the scroll region when [ansi.DECOM] is
-// set. A program that asks where the cursor is is usually about to work out a
-// width or a prompt position from the answer, so a transposed or absolute
-// reply is worse than no reply at all: it is believed.
+// reportedCursorPosition returns the one-based line and column a cursor
+// position report should carry, in that order. CPR is CSI Pl ; Pc R, line
+// first.
+//
+// Under [ansi.DECOM] the numbers are relative to the scrolling region, because
+// that is the coordinate system the guest is addressing the cursor in: a
+// program that reads a report and feeds it straight back to CUP has to land
+// where it started. xterm subtracts both margins here for the same reason
+// (charproc.c, CASE_DSR).
 func (e *Emulator) reportedCursorPosition() (line, col int) {
 	x, y := e.scr.CursorPosition()
 	if e.isModeSet(ansi.DECOM) {
@@ -92,8 +96,7 @@ func (e *Emulator) setCursor(x, y int) {
 // setCursorPosition sets the cursor position. This respects [ansi.DECOM],
 // Origin Mode. This performs the same function as [ansi.CUP].
 func (e *Emulator) setCursorPosition(x, y int) {
-	mode, ok := e.modes[ansi.DECOM]
-	margins := ok && mode.IsSet()
+	margins := e.isModeSet(ansi.DECOM)
 	e.scr.setCursor(x, y, margins)
 	e.atPhantom = false
 }
@@ -104,8 +107,7 @@ func (e *Emulator) setCursorPosition(x, y int) {
 // Otherwise, the cursor is set to the leftmost column of the screen.
 // This performs the same function as [ansi.CR].
 func (e *Emulator) carriageReturn() {
-	mode, ok := e.modes[ansi.DECOM]
-	margins := ok && mode.IsSet()
+	margins := e.isModeSet(ansi.DECOM)
 	x, y := e.scr.CursorPosition()
 	if margins {
 		// y is the current absolute row; keep it absolute and only move X to
@@ -125,7 +127,7 @@ func (e *Emulator) carriageReturn() {
 // equivalent to typing the same character n times. This performs the same as
 // [ansi.REP].
 func (e *Emulator) repeatPreviousCharacter(n int) {
-	if e.lastChar == 0 {
+	if e.lastCluster == "" {
 		return
 	}
 	// n comes unclamped from a CSI param (up to ~2.1 billion); repeating
@@ -134,7 +136,19 @@ func (e *Emulator) repeatPreviousCharacter(n int) {
 	if maxN := e.Width() * e.Height(); maxN > 0 && n > maxN {
 		n = maxN
 	}
+	// Held in a local because the print path writes them back on every call,
+	// which is harmless while they stay the same and would not survive a
+	// future print path that rewrote the cluster.
+	//
+	// The repeats go through handlePrint rather than straight to
+	// handleGrapheme because repeats can merge with each other the way
+	// typed characters do: two repeated regional indicators are one flag,
+	// and stamping the cluster n times instead leaves adjacent cells that
+	// any re-parse of the row would join differently.
+	cluster := e.lastCluster
 	for range n {
-		e.handlePrint(e.lastChar)
+		for _, r := range cluster {
+			e.handlePrint(r)
+		}
 	}
 }

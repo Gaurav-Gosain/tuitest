@@ -360,14 +360,16 @@ func TestDoubleUnderline(t *testing.T) {
 // An underline subparameter the terminal does not recognise was left
 // unconsumed, so "4:7" was read on as a bare SGR 7 and turned the cell reverse:
 // a stray byte in a program's output silently inverted its colours.
+//
+// What the unknown style itself draws is a judgement call. This copy used to
+// draw a single underline; tuios draws none and pins that in
+// TestThemedSGR_UnderlineSubparamNoLeak. The copy follows tuios, so only the
+// leak is asserted here.
 func TestUnknownUnderlineSubparameterIsNotReverse(t *testing.T) {
 	t.Parallel()
 
 	e := feed(t, 10, 2, "\x1b[2J\x1b[H\x1b[4:7mD")
 	if e.CellAt(0, 0).Style.Attrs&uv.AttrReverse != 0 {
 		t.Error("SGR 4:7 set reverse video")
-	}
-	if got := e.CellAt(0, 0).Style.Underline; got == ansi.UnderlineNone {
-		t.Errorf("SGR 4:7: underline style %v, want an underline", got)
 	}
 }

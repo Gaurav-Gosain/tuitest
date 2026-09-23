@@ -477,8 +477,9 @@ ones most likely to matter:
   dependency, so it does not pick up upstream fixes automatically. The exact
   commit is in `internal/vt/UPSTREAM`, the policy in `internal/vt/VENDOR.md`,
   and `scripts/vendor-vt.sh -n /path/to/tuios` reports drift without changing
-  anything. Fixes go to tuios first; a change made only in the copy is lost at
-  the next sync.
+  anything. Fixes go to tuios first; a file the copy has to change anyway is
+  listed in `internal/vt/DIVERGENCE`, and the sync merges into it rather than
+  overwriting it.
 - **`Screen.Line` returns one physical row** and does not de-wrap, and `Cell`
   exposes only a cell's first rune, so combining marks are invisible to
   assertions.

@@ -7,16 +7,45 @@ import (
 	"image/color"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
 // handleOsc handles an OSC escape sequence.
 func (e *Emulator) handleOsc(cmd int, data []byte) {
-	e.flushGrapheme() // Flush any pending grapheme before handling OSC sequences.
+	// No grapheme flush: an OSC neither prints nor moves the cursor, so the
+	// cluster in flight stays open across it, as ghostty keeps it.
 	if !e.handlers.handleOsc(cmd, data) {
 		e.logf("unhandled sequence: OSC %q", data)
 	}
+}
+
+// sanitiseTitle drops anything from a title that is not valid UTF-8.
+//
+// A title is chrome: it is drawn in a rail row, a window frame and a session
+// listing, and it is serialised into JSON. An invalid byte survives all of
+// that as a replacement character, which draws as a tofu box and marshals as
+// U+FFFD, so one bad byte from a guest turns into a black diamond in three
+// places at once.
+//
+// Dropped rather than replaced. There is nothing useful to put in its place,
+// and a title that is one character shorter is better than a title with a box
+// in it.
+func sanitiseTitle(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var out strings.Builder
+	out.Grow(len(b))
+	for len(b) > 0 {
+		r, size := utf8.DecodeRune(b)
+		if r != utf8.RuneError || size > 1 {
+			out.WriteRune(r)
+		}
+		b = b[size:]
+	}
+	return out.String()
 }
 
 func (e *Emulator) handleTitle(cmd int, data []byte) {
@@ -28,7 +57,7 @@ func (e *Emulator) handleTitle(cmd int, data []byte) {
 	}
 	switch cmd {
 	case 0: // Set window title and icon name
-		name := string(parts[1])
+		name := sanitiseTitle(parts[1])
 		e.iconName, e.title = name, name
 		if e.cb.Title != nil {
 			e.cb.Title(name)
@@ -37,13 +66,13 @@ func (e *Emulator) handleTitle(cmd int, data []byte) {
 			e.cb.IconName(name)
 		}
 	case 1: // Set icon name
-		name := string(parts[1])
+		name := sanitiseTitle(parts[1])
 		e.iconName = name
 		if e.cb.IconName != nil {
 			e.cb.IconName(name)
 		}
 	case 2: // Set window title
-		name := string(parts[1])
+		name := sanitiseTitle(parts[1])
 		e.title = name
 		if e.cb.Title != nil {
 			e.cb.Title(name)
@@ -243,14 +272,10 @@ func (e *Emulator) handlePaletteColor(data []byte) {
 		return
 	}
 
-	// Parse color index
-	idx := 0
-	for _, b := range parts[1] {
-		if b >= '0' && b <= '9' {
-			idx = idx*10 + int(b-'0')
-		}
-	}
-	if idx < 0 || idx > 255 {
+	// Parse color index. A malformed one is dropped rather than rounded down
+	// to slot 0, which would have the guest repaint black by accident.
+	idx, ok := parsePaletteIndex(parts[1])
+	if !ok {
 		return
 	}
 
@@ -268,6 +293,47 @@ func (e *Emulator) handlePaletteColor(data []byte) {
 		// Set: update the palette entry
 		e.SetIndexedColor(idx, c)
 	}
+}
+
+// handleResetPaletteColor handles OSC 104, which puts palette slots back to
+// what they were before the guest touched them. Bare OSC 104 resets all of
+// them.
+//
+// What "before" means is the user's terminal, or the user's tuios theme when
+// one is active, so the reset clears the guest layer and leaves the theme
+// layer standing.
+func (e *Emulator) handleResetPaletteColor(data []byte) {
+	parts := bytes.Split(data, []byte{';'})
+	if len(parts) < 2 {
+		e.colors = [256]color.Color{}
+		e.refreshPaletteClaims()
+		return
+	}
+	for _, p := range parts[1:] {
+		if idx, ok := parsePaletteIndex(p); ok {
+			e.colors[idx] = nil
+		}
+	}
+	e.refreshPaletteClaims()
+}
+
+// parsePaletteIndex reads a palette index, rejecting anything that is not a
+// plain number in range rather than silently landing on slot 0.
+func parsePaletteIndex(b []byte) (int, bool) {
+	if len(b) == 0 || len(b) > 3 {
+		return 0, false
+	}
+	idx := 0
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		idx = idx*10 + int(c-'0')
+	}
+	if idx > 255 {
+		return 0, false
+	}
+	return idx, true
 }
 
 func (e *Emulator) handleClipboard(data []byte) {
@@ -290,7 +356,7 @@ func (e *Emulator) handleClipboard(data []byte) {
 			response := "\x1b]52;" + selection + ";" + encoded + "\x1b\\"
 			_, _ = io.WriteString(e.pipe, response)
 		} else {
-			// No callback - respond empty
+			// No callback: respond empty
 			response := "\x1b]52;" + selection + ";\x1b\\"
 			_, _ = io.WriteString(e.pipe, response)
 		}
@@ -306,15 +372,25 @@ func (e *Emulator) handleClipboard(data []byte) {
 	}
 }
 
+// handleHyperlink handles OSC 8: "8;<params>;<uri>".
+//
+// The parameters come first and the URI second, which is the opposite of what
+// this used to store: every hyperlink came out with its parameters in the URL
+// field, so a plain link, which has no parameters, got an empty URL and a link
+// carrying an id got the id as its address.
+//
+// The split is limited to three parts because a URI may contain semicolons, in
+// a query string or a matrix parameter. Splitting on all of them made any such
+// link parse to four parts and be dropped.
 func (e *Emulator) handleHyperlink(cmd int, data []byte) {
-	parts := bytes.Split(data, []byte{';'})
+	parts := bytes.SplitN(data, []byte{';'}, 3)
 	if len(parts) != 3 || cmd != 8 {
 		// Invalid, ignore
 		return
 	}
 
-	e.scr.cur.Link.URL = string(parts[1])
-	e.scr.cur.Link.Params = string(parts[2])
+	e.scr.cur.Link.Params = string(parts[1])
+	e.scr.cur.Link.URL = string(parts[2])
 }
 
 // handleNotify9 handles OSC 9 (iTerm2 desktop notification): "9;<msg>".
@@ -324,8 +400,13 @@ func (e *Emulator) handleNotify9(data []byte) bool {
 		return true
 	}
 	msg := parts[1]
-	// OSC 9;4 is the ConEmu progress-report sequence, not a notification.
-	if strings.HasPrefix(msg, "4;") || strings.HasPrefix(msg, "4\a") {
+	// OSC 9;4 is the ConEmu progress-report sequence, not a notification: the
+	// program is describing its own progress rather than asking for a desktop
+	// alert, so it goes to the progress callback and never to Notify.
+	if isProgressPayload(msg) {
+		if state, percent, ok := parseProgress(msg); ok && e.cb.Progress != nil {
+			e.cb.Progress(state, percent)
+		}
 		return true
 	}
 	if e.cb.Notify != nil {

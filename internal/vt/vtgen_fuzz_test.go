@@ -1,18 +1,17 @@
-package vt
+package vt_test
 
 // Fuzzing the emulator with generated terminal input rather than random bytes.
 //
-// Every assertion tuitest makes about a program under test is read off this
-// emulator, so a sequence it mishandles is a suite that goes green on a screen
-// the program never drew. The existing byte-level targets are worth having, but
-// they spend nearly their whole budget in the parser's ground state: almost no
-// random byte string is a sequence, so almost nothing downstream of the parser
-// is ever reached. These targets draw from fuzz/vtgen, which builds real
-// sequences carrying hostile parameters, and check invariants after every step
-// rather than only watching for a panic.
+// The existing FuzzEmulatorWrite targets feed the parser raw bytes, which is
+// worth having but spends nearly its whole budget in the parser's ground state:
+// almost no random byte string is a sequence, so almost nothing downstream of
+// the parser is ever reached. These targets draw from internal/fuzz/vtgen,
+// which builds real sequences carrying hostile parameters, and check invariants
+// after every step rather than only watching for a panic.
 //
-// The tests live in package vt rather than vt_test so they can read the scroll
-// region off the active screen, which is not part of the emulator's surface.
+// The generator lives in internal/fuzz/vtgen because the shipped binary must
+// not link it, which cmd/tuios/imports_test.go asserts. A test file may import
+// it freely: `go list -deps` on the binary does not follow test imports.
 
 import (
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/Gaurav-Gosain/tuitest/fuzz/vtgen"
+	"github.com/Gaurav-Gosain/tuitest/internal/vt"
 )
 
 // replay runs a script into a fresh emulator and returns the first invariant it
@@ -32,36 +32,35 @@ func replay(s vtgen.Script) (broken string) {
 		}
 	}()
 
-	e := NewEmulator(80, 24)
+	emu := vt.NewEmulator(80, 24)
 	for i, seq := range s {
 		if seq.Kind == "resize" {
-			e.Resize(seq.Cols, seq.Rows)
-		} else if _, err := e.WriteString(seq.Bytes); err != nil {
+			emu.Resize(seq.Cols, seq.Rows)
+		} else if _, err := emu.WriteString(seq.Bytes); err != nil {
 			return fmt.Sprintf("step %d: write returned %v", i+1, err)
 		}
-		if bad := invariants(e); bad != "" {
+		if bad := invariants(emu); bad != "" {
 			return fmt.Sprintf("step %d (%s): %s", i+1, seq.Desc, bad)
 		}
 	}
 	// Rendering is where a bad cell width turns into a bad row, so the whole
 	// screen is read back once at the end.
-	_ = e.String()
-	_ = e.Render()
+	_ = emu.String()
+	_ = emu.Render()
 	return ""
 }
 
 // invariants are the things that must hold after any input at all. Each one is
-// a class of bug that reaches a consumer as a wrong assertion rather than as a
-// crash: a scroll region past the end of the screen panicked this emulator
-// until its margins were clamped, and a cell claiming more columns than the row
-// has left is a character drawn over whatever the harness reads next.
-func invariants(e *Emulator) string {
-	w, h := e.Width(), e.Height()
+// a class of bug that has actually shipped here: a scroll region past the end
+// of the screen was a daemon-wide panic, and a cell claiming more columns than
+// the row has left is a character drawn over the pane next door.
+func invariants(emu *vt.Emulator) string {
+	w, h := emu.Width(), emu.Height()
 	if w < 0 || h < 0 {
 		return fmt.Sprintf("the screen is %dx%d", w, h)
 	}
 
-	r := e.scr.ScrollRegion()
+	r := emu.ScrollRegion()
 	if r.Min.Y < 0 || r.Max.Y > h || r.Min.X < 0 || r.Max.X > w {
 		return fmt.Sprintf("the scroll region %v escapes a %dx%d screen", r, w, h)
 	}
@@ -69,14 +68,14 @@ func invariants(e *Emulator) string {
 		return fmt.Sprintf("the scroll region %v is empty", r)
 	}
 
-	p := e.CursorPosition()
+	p := emu.CursorPosition()
 	if p.X < 0 || p.Y < 0 || (w > 0 && p.X >= w) || (h > 0 && p.Y >= h) {
 		return fmt.Sprintf("the cursor is at %d,%d on a %dx%d screen", p.X, p.Y, w, h)
 	}
 
 	for y := range h {
 		for x := range w {
-			c := e.CellAt(x, y)
+			c := emu.CellAt(x, y)
 			if c == nil {
 				continue
 			}
@@ -103,42 +102,18 @@ func replaySplit(s vtgen.Script, seed uint64) (broken string) {
 		}
 	}()
 
-	e := NewEmulator(80, 24)
+	emu := vt.NewEmulator(80, 24)
 	for i, w := range s.SplitWrites(seed) {
-		if _, err := e.WriteString(w); err != nil {
+		if _, err := emu.WriteString(w); err != nil {
 			return fmt.Sprintf("write %d: %v", i+1, err)
 		}
-		if bad := invariants(e); bad != "" {
+		if bad := invariants(emu); bad != "" {
 			return fmt.Sprintf("write %d (%q): %s", i+1, w, bad)
 		}
 	}
-	_ = e.String()
-	_ = e.Render()
+	_ = emu.String()
+	_ = emu.Render()
 	return ""
-}
-
-// FuzzEmulatorScript is the coverage-guided target. A corpus entry decodes to a
-// script, so the mutator is steering which sequences get generated rather than
-// which bytes get rejected.
-func FuzzEmulatorScript(f *testing.F) {
-	for _, seed := range [][]byte{
-		{},
-		{0x01},
-		{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
-		[]byte("tuitest"),
-		[]byte("the quick brown fox jumps over the lazy dog"),
-	} {
-		f.Add(seed)
-	}
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		script := vtgen.FromBytes(data).Script(120)
-		if broken := replay(script); broken != "" {
-			small := vtgen.Shrink(script, func(s vtgen.Script) bool { return replay(s) != "" })
-			t.Fatalf("%s\n\nreduced from %d steps to %d:\n%s",
-				broken, len(script), len(small), small)
-		}
-	})
 }
 
 // FuzzEmulatorSplitWrites is the same generator arriving in pieces.
@@ -159,7 +134,8 @@ func FuzzEmulatorSplitWrites(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		script := vtgen.FromBytes(data).Script(120)
+		g := vtgen.FromBytes(data)
+		script := g.Script(120)
 		seed := uint64(len(data)) * 1099511628211
 		if broken := replaySplit(script, seed); broken != "" {
 			small := vtgen.Shrink(script, func(s vtgen.Script) bool {
@@ -171,19 +147,36 @@ func FuzzEmulatorSplitWrites(f *testing.F) {
 	})
 }
 
-// TestVTGenSweep is the deterministic half: a fixed set of seeds run on every
+// FuzzEmulatorScript is the coverage-guided target. A corpus entry decodes to a
+// script, so the mutator is steering which sequences get generated rather than
+// which bytes get rejected.
+func FuzzEmulatorScript(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0x01},
+		{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		[]byte("tuios"),
+		[]byte("the quick brown fox jumps over the lazy dog"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		script := vtgen.FromBytes(data).Script(120)
+		if broken := replay(script); broken != "" {
+			small := vtgen.Shrink(script, func(s vtgen.Script) bool { return replay(s) != "" })
+			t.Fatalf("%s\n\nreduced from %d steps to %d:\n%s",
+				broken, len(script), len(small), small)
+		}
+	})
+}
+
+// TestVTGen_Sweep is the deterministic half: a fixed set of seeds run on every
 // `go test`, so the generator earns its keep in CI rather than only when
 // somebody remembers to start a fuzzing campaign. A failure names the seed,
 // which reproduces it exactly.
-func TestVTGenSweep(t *testing.T) {
-	t.Parallel()
-
-	// A hundred seeds costs a second or two, which is what a test that runs on
-	// every build can spend. Depth comes from the fuzz targets above, where a
-	// campaign runs for as long as somebody is willing to leave it running;
-	// this is here so a generator that stops generating cannot go unnoticed
-	// until then.
-	seeds, steps := 100, 150
+func TestVTGen_Sweep(t *testing.T) {
+	seeds, steps := 400, 150
 	if testing.Short() {
 		seeds, steps = 40, 60
 	}
@@ -194,45 +187,53 @@ func TestVTGenSweep(t *testing.T) {
 			small := vtgen.Shrink(script, func(s vtgen.Script) bool {
 				return replaySplit(s, seed) != ""
 			})
-			t.Fatalf("seed %d, split into reader-sized writes: %s\n\nreduced from %d steps to %d:\n%s",
+			t.Errorf("seed %d, split into reader-sized writes: %s\n\nreduced from %d steps to %d:\n%s",
 				seed, broken, len(script), len(small), small)
+			if t.Failed() {
+				return
+			}
 		}
 		if broken := replay(script); broken != "" {
 			small := vtgen.Shrink(script, func(s vtgen.Script) bool { return replay(s) != "" })
-			t.Fatalf("seed %d: %s\n\nreduced from %d steps to %d:\n%s",
+			t.Errorf("seed %d: %s\n\nreduced from %d steps to %d:\n%s",
 				seed, broken, len(script), len(small), small)
+			if t.Failed() {
+				return
+			}
 		}
 	}
 }
 
-// TestVTGenReachesTheInterestingStates is the check that the generator is
+// TestVTGen_ReachesTheInterestingStates is the check that the generator is
 // actually generating what it claims to. A generator that silently stopped
 // emitting DCS, or never picked a parameter past the end of the screen, would
 // leave every test above passing while covering nothing.
-func TestVTGenReachesTheInterestingStates(t *testing.T) {
-	t.Parallel()
-
+func TestVTGen_ReachesTheInterestingStates(t *testing.T) {
 	want := map[string]bool{
-		"resize":                false,
-		"DECSTBM":               false,
-		"parameter past 65535":  false,
-		"omitted parameter":     false,
-		"tmux passthrough":      false,
-		"screen passthrough":    false,
-		"OSC 8 hyperlink":       false,
-		"OSC 52 clipboard":      false,
-		"OSC 9;4 progress":      false,
-		"OSC 777":               false,
-		"truecolour":            false,
-		"underline colour":      false,
-		"alternate screen":      false,
-		"wide character":        false,
-		"combining mark":        false,
-		"zero-width joiner":     false,
-		"regional indicator":    false,
-		"invalid encoding":      false,
-		"kitty graphics":        false,
-		"DECALN":                false,
+		"resize":               false,
+		"DECSTBM":              false,
+		"parameter past 65535": false,
+		"omitted parameter":    false,
+		"tmux passthrough":     false,
+		"screen passthrough":   false,
+		"OSC 8 hyperlink":      false,
+		"OSC 52 clipboard":     false,
+		"OSC 9;4 progress":     false,
+		"OSC 777":              false,
+		"truecolour":           false,
+		"underline colour":     false,
+		"alternate screen":     false,
+		"wide character":       false,
+		"combining mark":       false,
+		"zero-width joiner":    false,
+		"regional indicator":   false,
+		"invalid encoding":     false,
+		"kitty graphics":       false,
+		"DECALN":               false,
+
+		// The classes added for this round. A generator that silently stopped
+		// producing them would leave every campaign below passing while
+		// covering nothing new.
 		"DECSLRM":               false,
 		"DECOM":                 false,
 		"single shift":          false,

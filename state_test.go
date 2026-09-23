@@ -114,6 +114,24 @@ func TestProgressCountsOutputBytes(t *testing.T) {
 	}
 }
 
+// Mode 47, the original alternate screen, is still smcup in older terminfo
+// entries, and TermState counts it as an alternate screen left behind. The
+// emulator only reported a fixed list of modes, which did not include 47, so a
+// program that left it set was reported clean.
+func TestTermStateSeesTheOriginalAlternateScreen(t *testing.T) {
+	t.Parallel()
+
+	term := tuitest.StartT(t, []string{shellPath(t), "-c", `printf '\033[?47hon the alternate screen'`},
+		tuitest.WithSize(40, 5))
+	if _, err := term.WaitExit(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	state := term.TermState()
+	if !state.AltScreen || !state.Mode(47) {
+		t.Fatalf("mode 47 left set, but TermState reports %q (Mode(47) = %v)", state.Describe(), state.Mode(47))
+	}
+}
+
 // A program that restores the terminal must be reported clean, and one that
 // does not must be reported dirty. Both directions matter: a check that only
 // ever says "dirty" is as useless as one that only ever says "clean".

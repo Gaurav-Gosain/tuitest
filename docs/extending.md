@@ -62,13 +62,16 @@ scripts/vendor-vt.sh /path/to/tuios <commit> # sync to a specific commit
 scripts/vendor-vt.sh -n /path/to/tuios       # report drift, change nothing
 ```
 
-The rule is that the copy is downstream, never upstream. Fix emulator bugs in
-tuios first, then re-sync; a change made only here is guaranteed to be lost at
-the next sync, and the script reports it as drift. `TestVendoredCopyMatchesUpstream`
-checks the copy against `internal/vt/UPSTREAM` when `TUITEST_TUIOS_SRC` points at
-a checkout. After a sync, run the suite and review any golden that moved as part
-of the sync commit: a golden that moves for a reason nobody can explain is the
-signal that the sync introduced a regression.
+The rule is that the copy is downstream. Fix emulator bugs in tuios first, then
+re-sync. A fix that has to land here first goes in a file listed in
+`internal/vt/DIVERGENCE`, which the sync merges upstream changes into instead of
+overwriting; an unlisted local change is overwritten and reported as drift.
+`TestVendoredCopyMatchesUpstream` checks the copy, tests included, against
+`internal/vt/UPSTREAM` when `TUITEST_TUIOS_SRC` points at a checkout. The
+tuios conformance corpus and fuzz targets come across with each sync. After a
+sync, run the suite and review any golden that moved as part of the sync
+commit: a golden that moves for a reason nobody can explain is the signal that
+the sync introduced a regression.
 
 ## Add a CLI subcommand
 

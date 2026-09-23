@@ -77,7 +77,7 @@ TUITEST_VT_REF=/path/to/ref go test -run TestVTDifferential .
 The test skips when the variable is unset or node is missing, so it never
 blocks a normal `go test ./...`. **It is a discovery tool, not the regression
 net**: every divergence it finds is copied down into an ordinary unit test in
-`internal/vt/fidelity_test.go` with the reference's answer hard-coded, so the
+`internal/vt/tuitest_fidelity_test.go` with the reference's answer hard-coded, so the
 fix stays enforced on a machine that has neither node nor the wasm.
 
 ## The corpus

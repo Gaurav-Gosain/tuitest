@@ -374,7 +374,7 @@ something a person can read and retype:
 
 Three bugs in tuitest's own emulator were found this way within the first five
 seeds, all the same shape: state a program set for the size it last saw, kept
-verbatim after that size changed. See `TestVTGenSweep` and the two fuzz targets
+verbatim after that size changed. See `TestVTGen_Sweep` and the two fuzz targets
 in `internal/vt`.
 
 ## Testing the fuzzer

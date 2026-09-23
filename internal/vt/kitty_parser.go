@@ -3,9 +3,6 @@ package vt
 import (
 	"bytes"
 	"encoding/base64"
-	"fmt"
-	"io"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -124,6 +121,9 @@ func parseKittyControlParams(control string, cmd *KittyCommand) {
 			cmd.XOffset, _ = strconv.Atoi(value)
 		case "Y":
 			cmd.YOffset, _ = strconv.Atoi(value)
+			if v, err := strconv.ParseUint(value, 10, 32); err == nil {
+				cmd.BackgroundColor = uint32(v)
+			}
 		case "c":
 			cmd.Columns, _ = strconv.Atoi(value)
 		case "r":
@@ -138,36 +138,6 @@ func parseKittyControlParams(control string, cmd *KittyCommand) {
 			cmd.Virtual = value == "1"
 		}
 	}
-}
-
-// LoadFileData reads a kitty t=f/t=t transmit file. The path is guest
-// controlled, so an unbounded os.ReadFile lets a hostile guest point at
-// /dev/zero (OOM), a FIFO (hang), or an arbitrary readable file. Reject
-// anything that is not a regular file and cap the read at the same size
-// used for an in-band transmission.
-func LoadFileData(filePath string) ([]byte, error) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("kitty file transmit: %s is not a regular file", filePath)
-	}
-
-	f, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, maxKittyTransmitBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxKittyTransmitBytes {
-		return nil, fmt.Errorf("kitty file transmit: %s exceeds %d byte limit", filePath, maxKittyTransmitBytes)
-	}
-	return data, nil
 }
 
 func BuildKittyResponse(ok bool, imageID uint32, message string) []byte {

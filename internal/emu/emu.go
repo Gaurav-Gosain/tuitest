@@ -94,7 +94,18 @@ func (a *adapter) count(t vt.SemanticMarkerType) int {
 	return n
 }
 
-func (a *adapter) Modes() map[int]bool { return a.e.GetModes() }
+// Modes keeps only the modes that are set. vt's GetModes also lists every mode
+// it knows that is reset, as false, because tuios serialises the whole table;
+// the contract here is the set ones only.
+func (a *adapter) Modes() map[int]bool {
+	modes := a.e.GetModes()
+	for mode, set := range modes {
+		if !set {
+			delete(modes, mode)
+		}
+	}
+	return modes
+}
 
 func (a *adapter) LastCommandExit() (int, bool) {
 	m := a.e.SemanticMarkers().Last(vt.MarkerCommandFinished)
