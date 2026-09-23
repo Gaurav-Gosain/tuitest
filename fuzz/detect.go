@@ -233,8 +233,16 @@ func (m *monitor) noteCommand(c tape.Command) {
 			m.inputsSinceOutput++
 		}
 		m.wantCols, m.wantRows = c.Cols, c.Rows
-	case tape.KindKey, tape.KindMouse:
+	case tape.KindKey:
 		m.inputsSinceOutput++
+	case tape.KindMouse:
+		// A real terminal only sends a mouse report the program asked for,
+		// so a report it did not ask for is input it is right to ignore, and
+		// counting it would hand the hang detector evidence that does not
+		// exist. A run ending on a drag is up to eight of them.
+		if m.mouseReported(c.Mouse.Action) {
+			m.inputsSinceOutput++
+		}
 	case tape.KindType, tape.KindRaw, tape.KindPaste:
 		// An empty payload writes no bytes, so the program had nothing to
 		// respond to and ignoring it proves nothing. Shrinking reduces payloads
@@ -243,6 +251,35 @@ func (m *monitor) noteCommand(c tape.Command) {
 		if c.Text != "" {
 			m.inputsSinceOutput++
 		}
+	}
+}
+
+// Mouse reporting modes, by the DEC private mode number that enables each.
+const (
+	modeMouseX10       = 9    // presses only
+	modeMouseNormal    = 1000 // presses and releases
+	modeMouseButtonEvt = 1002 // and motion with a button held
+	modeMouseAnyEvt    = 1003 // and all motion
+)
+
+// mouseReported reports whether the program has enabled a mouse mode under
+// which a terminal would deliver an event with this action. Without a terminal
+// to ask, as in tests that build a monitor by hand, every event counts, which
+// is what the hang detector did before it asked.
+func (m *monitor) mouseReported(action tuitest.MouseAction) bool {
+	if m.term == nil {
+		return true
+	}
+	st := m.term.TermState()
+	switch action {
+	case tuitest.MousePress:
+		return st.Mode(modeMouseX10) || st.Mode(modeMouseNormal) || st.Mode(modeMouseButtonEvt) || st.Mode(modeMouseAnyEvt)
+	case tuitest.MouseRelease:
+		return st.Mode(modeMouseNormal) || st.Mode(modeMouseButtonEvt) || st.Mode(modeMouseAnyEvt)
+	case tuitest.MouseDrag:
+		return st.Mode(modeMouseButtonEvt) || st.Mode(modeMouseAnyEvt)
+	default:
+		return st.Mode(modeMouseAnyEvt)
 	}
 }
 

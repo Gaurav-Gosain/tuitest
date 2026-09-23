@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -92,6 +93,16 @@ var bug = flag.String("bug", bugNone,
 	"deliberate bug to exhibit: none, panic-on-key, hang-on-narrow, dirty-exit, "+
 		"mangle-unicode, lose-marker")
 
+// noMouse makes the fixture a program without mouse support: it never enables
+// mouse reporting, and it ignores mouse reports that arrive anyway, drawing
+// nothing for them, which is what such a program does with input it does not
+// understand. It is not a bug. It is the control for the hang detector, which
+// must not count input a real terminal would never have sent.
+var noMouse = flag.Bool("no-mouse", false, "do not enable mouse reporting, and ignore mouse reports")
+
+// sgrMouse matches one SGR mouse report.
+var sgrMouse = regexp.MustCompile(`\x1b\[<\d+;\d+;\d+[Mm]`)
+
 func main() {
 	flag.Parse()
 
@@ -103,12 +114,16 @@ func main() {
 	}
 	// restore puts the terminal back exactly as a well-behaved TUI would. The
 	// dirty-exit bug deliberately bypasses it.
+	mouseModesOn, mouseModesOff := mouseOn, mouseOff
+	if *noMouse {
+		mouseModesOn, mouseModesOff = "", ""
+	}
 	restore := func() {
 		_ = term.Restore(in.Fd(), state)
-		fmt.Print(mouseOff + cursorShow + altScreenOff)
+		fmt.Print(mouseModesOff + cursorShow + altScreenOff)
 	}
 
-	fmt.Print(altScreenOn + mouseOn + cursorHide)
+	fmt.Print(altScreenOn + mouseModesOn + cursorHide)
 
 	width, height := size(in)
 
@@ -183,6 +198,13 @@ func main() {
 				// The bug: F5 panics. restore is never reached, so the process
 				// dies with a non-zero status.
 				panic("buggytui: unhandled key F5")
+			}
+
+			if *noMouse {
+				chunk = sgrMouse.ReplaceAll(chunk, nil)
+				if len(chunk) == 0 {
+					continue
+				}
 			}
 
 			if containsQuit(chunk) {

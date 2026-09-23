@@ -127,6 +127,34 @@ func TestWellBehavedProgramProducesNoFindings(t *testing.T) {
 	}
 }
 
+// A program without mouse support never enables mouse reporting, so a real
+// terminal never sends it a mouse report, and it is right to ignore the ones
+// the fuzzer sends anyway. The hang detector used to count every one of them as
+// input the program failed to answer, and a run that ended on a drag (a press,
+// up to six moves and a release) handed it enough unanswered input to call a
+// healthy idle program hung.
+func TestProgramWithoutMouseSupportIsNotHung(t *testing.T) {
+	t.Parallel()
+
+	for _, seed := range []uint64{1, 2, 3, 7, 11, 13} {
+		t.Run("seed"+strconv.FormatUint(seed, 10), func(t *testing.T) {
+			t.Parallel()
+			opts := baseOptions(t, "none")
+			opts.Argv = append(opts.Argv, "-no-mouse")
+			opts.Seed = seed
+			opts.Iterations = 8
+			opts.StopOnFirst = false
+			opts.Shrink = false
+
+			res := runFuzz(t, opts)
+			if f := findFailure(res, fuzz.FailHang); f != nil {
+				t.Fatalf("a program that ignores mouse reports it never asked for was reported hung: %s\n%s",
+					f.Detail, tape.Sprint(f.Commands[max(0, len(f.Commands)-10):]))
+			}
+		})
+	}
+}
+
 // Verified to fail on broken code: making ExitStatus.Crashed always return
 // false makes the fuzzer miss the panic entirely and this test fails.
 func TestFindsPanicAndMinimisesToTheTriggeringKey(t *testing.T) {
