@@ -1,9 +1,14 @@
 # The tape language
 
-A tape is a line-oriented script, one command per line, with `#` introducing a
-comment. It covers exactly the harness primitives and nothing else: there is no
-control flow, no variables, and no way to compute anything, because a test whose
-expected screen depends on a computation is a test nobody can read.
+A tape is a line-oriented script, one command per line. A line whose first
+non-blank character is `#` is a comment. A `#` later in a line is not: it is
+part of the command, so `Type echo # hi` types the `#`. A tape covers exactly the
+harness primitives and nothing else: there is no control flow, no variables,
+and no way to compute anything, because a test whose expected screen depends on
+a computation is a test nobody can read.
+
+Lines may end in LF or CRLF, a UTF-8 byte order mark at the start of the file is
+ignored, and a line may be at most 1 MiB long.
 
 ```
 # login.tape
@@ -26,13 +31,13 @@ authoritative list.
 | `Spawn` | `argv...` | Start the program under test. |
 | `Type` | rest of line, verbatim | Send literal text, spacing preserved. |
 | `Key` | key tokens | Send named keys or chords. |
-| `Wait` | `[/re/] [+Screen\|+Line] [@dur]` | Block until the regex matches. |
+| `Wait` | `/re/ [+Screen\|+Line] [@dur]` | Block until the regex matches. |
 | `WaitStable` | `[@dur]` | Block until output goes quiet. |
 | `WaitOutput` | `[@dur]` | Block until the program writes something. |
 | `WaitPrompt` | `[@dur]` | Block until an OSC 133 prompt is drawn. |
 | `WaitCommand` | `[@dur]` | Block until an OSC 133 command finishes. |
 | `Expect` | `/re/ [+Screen\|+Line]` | Assert the regex matches now, without waiting. |
-| `ExpectExit` | `code` | Wait for exit and assert the status. |
+| `ExpectExit` | `code` | Wait for exit, up to `Set WaitTimeout`, and assert the status. |
 | `Snapshot` | `name [+Styled]` | Compare the screen against a golden file. |
 | `Resize` | `cols rows` | Change the terminal size mid-tape. |
 | `Mouse` | `action button col row [+mods] [+enc]` | Send one mouse event. |
@@ -45,6 +50,29 @@ authoritative list.
 
 `Wait Stable` is an accepted spelling of `WaitStable` and takes the same
 `@timeout`.
+
+A verb takes exactly the arguments shown. Anything else on the line is a parse
+error rather than something ignored, so `WaitStable /ready/` (which would pass
+without `ready` appearing), `Expect /x/ @5s` (which would not wait) and `Hide
+now` are all rejected.
+
+## Quoted arguments
+
+The arguments of `Spawn` and `Set`, and the values of the `+Text`, `+Shifted`
+and `+Base` key attributes, may be written as a Go-quoted string. That is the
+only way to write an argument containing a space:
+
+```
+Set Env "GREETING=hello world"
+Spawn sh -c "printf 'ready\n'; exec cat"
+Key Space +Text " "
+```
+
+A token is quoted only when it starts with `"`, and it must end at a space or
+the end of the line. A bare word is taken as written, including one with a
+quote inside it such as `a"b`. `tuitest record` quotes an argument when, and
+only when, it needs it, so a recording of `sh -c 'echo hi'` replays the same
+command. `Key` names are never quoted: `Key "` sends the double quote key.
 
 ## Set
 
@@ -67,13 +95,18 @@ than turned into a multi-gigabyte allocation. The same bound applies to
 
 ## Wait modifiers
 
-Wait-like verbs take up to three optional modifiers in any order after the verb:
+`Wait` and `Expect` take a `/regex/` and an optional scope, and every verb that
+waits takes an optional timeout. They go in any order after the verb:
 
 - `/regex/`, read from the first slash on the line to the last, so the pattern
-  may contain both spaces and slashes.
+  may contain both spaces and slashes. `Wait` and `Expect` require one, and it
+  may not be empty, since `//` matches every screen.
 - `+Screen` or `+Line`, selecting whether the match runs against the whole
-  screen or the last non-blank row. `+Screen` is the default.
-- `@duration`, such as `@5s`, overriding `Set WaitTimeout` for that line.
+  screen or the last non-blank row. `+Screen` is the default. Only `Wait` and
+  `Expect` take one.
+- `@duration`, such as `@5s`, overriding `Set WaitTimeout` for that line. Every
+  wait verb takes one. `Expect` does not, because it asserts immediately; use
+  `Wait` when the screen needs time to change.
 
 Choosing between the wait verbs is the one judgement a tape author has to make.
 `Wait /text/` is always the best option when you know what should appear.
@@ -144,7 +177,7 @@ sees nothing between the press and the release. Write `Drag` when a button is
 down.
 
 The button is `Left`, `Middle`, `Right`, `WheelUp`, `WheelDown`, `WheelLeft`,
-`WheelRight`, `Backward`, `Forward` or `None`. The coordinates are zero-based
+`WheelRight`, `Back`, `Forward` or `None`. The coordinates are zero-based
 cells, encoded 1-based on the wire. `+Ctrl`, `+Alt` and `+Shift` are optional
 and repeatable.
 
@@ -188,6 +221,12 @@ why a minimised reproduction is an ordinary tape any user can read and rerun.
 `Snapshot name +Styled` compares the styled encoding instead (see
 [api.md](api.md#snapshots-and-golden-files) for the format). `-golden-dir`
 changes the directory and `-update` rewrites the files.
+
+A name may contain `/` to group goldens into subdirectories, such as `Snapshot
+login/step-01`, and `-update` creates them. A name that would leave the golden
+directory, such as `../x` or an absolute path, is a parse error: a tape is
+untrusted input, and with `-update` such a name would overwrite a file anywhere
+on disk.
 
 `Hide` and `Show` bracket a region whose snapshots should not run, which is how
 you keep setup steps out of the golden set without deleting the commands that

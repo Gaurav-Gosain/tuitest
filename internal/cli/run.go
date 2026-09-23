@@ -45,7 +45,8 @@ for an assertion, 3 when the harness could not do its job, 4 for a wait that
 timed out. Nothing is written to the terminal on success, so a passing suite is
 silent.
 
-A tape is line oriented, one command per line, '#' starts a comment:
+A tape is line oriented, one command per line, and a line starting with '#' is
+a comment:
 
   Set Size 80 24
   Spawn ./myapp

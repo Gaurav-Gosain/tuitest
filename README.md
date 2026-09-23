@@ -82,7 +82,7 @@ same reasons and print the same screens.
 - Writes golden files in two encodings: plain text, and a styled encoding of
   each row's text followed by indented attribute runs, diffed in-process with a
   line LCS so nothing shells out to system `diff`.
-- Runs tape scripts, a line-oriented language of 19 verbs covering exactly the
+- Runs tape scripts, a line-oriented language of 20 verbs covering exactly the
   harness primitives, with parse errors reported by file, line, column, and a
   caret under the offending token.
 - Records a live session into a tape: it connects the program to your terminal,
@@ -355,7 +355,8 @@ The full flag reference for every subcommand is in [docs/cli.md](docs/cli.md).
 
 ## The tape language
 
-A tape is line oriented, one command per line, `#` starts a comment.
+A tape is line oriented, one command per line, and a line starting with `#` is a
+comment.
 
 ```
 Set Size 40 10
@@ -372,13 +373,15 @@ Raw "\x1b[1;2;3m"
 ExpectExit 0
 ```
 
-The 19 verbs are `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`,
+The 20 verbs are `Set`, `Spawn`, `Type`, `Key`, `Wait`, `WaitStable`,
 `WaitOutput`, `WaitPrompt`, `WaitCommand`, `Expect`, `ExpectExit`, `Snapshot`,
-`Resize`, `Mouse`, `Paste`, `Raw`, `Hide`, `Show` and `Sleep`. Wait-like
-commands take an optional `/regex/`, a `+Screen` or `+Line` scope, and an
-`@timeout` such as `@5s`. `Paste` and `Raw` take a Go-quoted string, which is
-what lets them carry arbitrary bytes including malformed UTF-8 and embedded
-escape sequences. The grammar, the `Set` keys, and the validation limits are in
+`Resize`, `Mouse`, `Paste`, `Raw`, `Focus`, `Hide`, `Show` and `Sleep`. `Wait`
+and `Expect` take a `/regex/` and a `+Screen` or `+Line` scope, and every verb
+that waits takes an `@timeout` such as `@5s`; an argument a verb does not take
+is a parse error. `Paste` and `Raw` take a Go-quoted string, which is what lets
+them carry arbitrary bytes including malformed UTF-8 and embedded escape
+sequences, and a `Spawn` or `Set` argument containing a space is written the
+same way. The grammar, the `Set` keys, and the validation limits are in
 [docs/tape.md](docs/tape.md).
 
 A recording never loses input. Every input sequence is decoded by a registered
