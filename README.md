@@ -417,7 +417,8 @@ Every finding is minimised by delta debugging and written as an ordinary tape:
 
 ```
 # crash: program killed by aborted
-# found by tuitest fuzz at seed 13064056694810536104, iteration 6
+# found by tuitest fuzz at iteration 6, whose own seed is 13064056694810536104:
+# --seed 13064056694810536104 --iterations 1 with the same generation flags regenerates the unminimised input
 # minimised from 31 commands to 3
 #
 # replay with: tuitest run <this file>
@@ -425,6 +426,10 @@ Every finding is minimised by delta debugging and written as an ordinary tape:
 Spawn htop
 Resize 1 1
 Raw "hel"
+
+# --- assertion (not replayed by tuitest fuzz) ---
+# The bug: this program should still exit cleanly after the input above.
+ExpectExit 0
 ```
 
 That is a real reproduction, minimised from 31 commands to 3: a buffer overflow

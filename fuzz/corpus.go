@@ -28,7 +28,12 @@ func TapeFor(f *Failure) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# %s: %s\n", f.Kind, f.Detail)
-	fmt.Fprintf(&b, "# found by tuitest fuzz at seed %d, iteration %d\n", f.Seed, f.Iteration)
+	// f.Seed is the iteration's own seed, so it is the one to rerun with, as
+	// iteration 0 of a one-iteration session. Printing it beside the iteration
+	// number as "seed S, iteration I" read as the session seed and sent the
+	// reader to wait for iteration I of a run that generates something else.
+	fmt.Fprintf(&b, "# found by tuitest fuzz at iteration %d, whose own seed is %d:\n", f.Iteration, f.Seed)
+	fmt.Fprintf(&b, "# --seed %d --iterations 1 with the same generation flags regenerates the unminimised input\n", f.Seed)
 	if f.Original > 0 {
 		fmt.Fprintf(&b, "# minimised from %d commands to %d\n", f.Original, len(f.Commands))
 	}

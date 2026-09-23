@@ -344,6 +344,39 @@ func TestSameSeedProducesTheSameSession(t *testing.T) {
 	}
 }
 
+// The reproduction header and the CLI tell a reader that --seed with the
+// failure's seed and --iterations 1 regenerates the failing input. This holds
+// that claim to the code: a finding from a later iteration must come back, with
+// the same unminimised input, as iteration 0 of a one-iteration session.
+func TestReportedSeedRegeneratesTheFailingIteration(t *testing.T) {
+	t.Parallel()
+
+	opts := baseOptions(t, "panic-on-key")
+	opts.Seed = 1
+	opts.Iterations = 40
+	opts.Shrink = false
+	first := findFailure(runFuzz(t, opts), fuzz.FailCrash)
+	if first == nil {
+		t.Fatal("expected the session to find the planted crash")
+	}
+	if first.Iteration == 0 {
+		t.Fatal("the crash was found at iteration 0, where the session and iteration seeds coincide; pick a seed that finds it later")
+	}
+
+	again := baseOptions(t, "panic-on-key")
+	again.Seed = first.Seed
+	again.Iterations = 1
+	again.Shrink = false
+	second := findFailure(runFuzz(t, again), fuzz.FailCrash)
+	if second == nil {
+		t.Fatalf("rerunning with the reported seed %d found nothing", first.Seed)
+	}
+	if second.Iteration != 0 || second.Original != first.Original {
+		t.Fatalf("rerun found iteration %d with %d generated commands, want iteration 0 with %d",
+			second.Iteration, second.Original, first.Original)
+	}
+}
+
 func containsKey(cmds []tape.Command, want string) bool {
 	for _, c := range cmds {
 		if c.Kind != tape.KindKey {

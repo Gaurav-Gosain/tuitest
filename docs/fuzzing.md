@@ -236,7 +236,8 @@ labelled, because a flaky finding is worth less than a solid one.
 
 ```
 # crash: program killed by aborted
-# found by tuitest fuzz at seed 13064056694810536104, iteration 6
+# found by tuitest fuzz at iteration 6, whose own seed is 13064056694810536104:
+# --seed 13064056694810536104 --iterations 1 with the same generation flags regenerates the unminimised input
 # minimised from 31 commands to 3
 #
 # replay with: tuitest run <this file>
@@ -244,20 +245,33 @@ labelled, because a flaky finding is worth less than a solid one.
 Spawn htop
 Resize 1 1
 Raw "hel"
+
+# --- assertion (not replayed by tuitest fuzz) ---
+# The bug: this program should still exit cleanly after the input above.
+ExpectExit 0
 ```
 
 That is a real reproduction, minimised from 31 commands to 3. It is a buffer
 overflow in htop 3.5.1, caught by glibc's fortify check.
+
+The seed in the header is the failing iteration's own seed, not the session's.
+Every iteration derives its seed from the session seed, so rerunning with the
+session seed reaches the same input only at the same iteration number, while
+`--seed` with the iteration's seed and `--iterations 1` reaches it at once.
+Both need the same `--cols`, `--rows`, `--actions`, `--exclude` and `--no-*`
+flags, since those change what is generated. The minimised tape needs none of
+this: `tuitest run` replays it as it stands.
 
 An invariant reproduction also carries the onset in its header, pointing at the
 command in the minimised tape after which the property first failed.
 
 Only crash and dirty-exit reproductions carry an assertion. Those end in
 `ExpectExit 0`, so the file is red until the bug is fixed. A hang, a screen
-inconsistency and memory growth are judged from outside the tape by watching the
-process, and any in-tape liveness probe would mean sending input the fuzzer did
-not send, so those files are transcripts and say so in their header. Rerun
-`tuitest fuzz` against the corpus to check a fix for them.
+inconsistency, memory growth, a replacement character and a violated invariant
+are judged from outside the tape, by watching the process or by running a Go
+closure, and any in-tape probe would mean sending input the fuzzer did not
+send, so those files are transcripts and say so where the assertion would be.
+Rerun `tuitest fuzz` against the corpus to check a fix for them.
 
 ## Limits
 
