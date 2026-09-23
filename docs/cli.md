@@ -21,10 +21,11 @@ invocation written against the older single-dash command line still works.
 | Code | Kind | Meaning |
 | ---- | ---- | ------- |
 | 0 | `ok` | every assertion passed |
-| 1 | `assertion` | `Expect`, `Snapshot` or `ExpectExit` did not hold, or the program exited before a wait was satisfied or while input was still being sent to it |
+| 1 | `assertion` | `Expect`, `Snapshot` or `ExpectExit` did not hold, the program exited before a wait was satisfied or while input was still being sent to it, or `fuzz` reported a finding |
 | 2 | `usage` | bad usage, or a tape that would not parse |
-| 3 | `harness` | no PTY, a program that would not start, an unreadable golden file |
+| 3 | `harness` | no PTY, a program that would not start, a tape or golden file that cannot be read, a failed `doctor` check |
 | 4 | `timeout` | a wait exceeded its deadline |
+| 5 | `blank` | `snap` only: the capture worked but the screen is empty |
 
 The split matters to a script: 1 means the program under test is wrong, 3 means
 tuitest could not do its job, and reacting to those the same way hides real
@@ -34,7 +35,11 @@ the operator abandons a stepped run, the conventional status for "interrupted".
 ## snap
 
 The fastest way to see what a TUI actually draws. It spawns the program, waits
-until it stops drawing, prints the screen, and exits, asserting nothing.
+until it stops drawing, prints the screen, and exits, asserting nothing. A
+program that never settles exits 4 and the timeout report on stderr carries its
+screen (`-json` puts it in `screen`); a
+program that drew nothing at all exits 5, since an empty capture almost always
+means it never started drawing.
 
 ```
 tuitest snap -- htop
@@ -187,7 +192,7 @@ tuitest fuzz -duration 5m -exclude Ctrl+c -- ./myapp
 | `-cols N`, `-rows N` | `80`, `24` | Initial terminal size. |
 | `-actions N` | `60` | Maximum input actions per iteration. |
 | `-corpus DIR` | | Where reproductions are written and replayed from. |
-| `-exclude LIST` | | Key tokens never to send, for example `Ctrl+c,q`. |
+| `-exclude LIST` | | Key tokens never to send, spelled as in a tape, for example `Ctrl+c,Esc`. Typed text is not filtered; see [fuzzing.md](fuzzing.md#what-it-sends). |
 | `-no-hostile` | off | Do not send malformed or oversized escape sequences. |
 | `-no-mouse`, `-no-resize` | off | Narrow the input space. |
 | `-no-shrink` | off | Do not minimise a failing input. |
@@ -201,7 +206,8 @@ tuitest fuzz -duration 5m -exclude Ctrl+c -- ./myapp
 | `-q` | off | Only print the summary. |
 
 At least one of `-iterations` and `-duration` must bound the run; setting both
-to zero is an error rather than an infinite loop. Ctrl+C ends a session cleanly,
+to zero is a usage error (exit 2) rather than an infinite loop. A run that finds
+something exits 1. Ctrl+C ends a session cleanly,
 so an interrupted run still reports and still keeps the corpus entries it found.
 Without `-corpus` there is nowhere to write a reproduction, so it is printed to
 stdout instead: a failure without a reproduction is not actionable.

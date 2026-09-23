@@ -71,8 +71,8 @@ not parsed as tuitest's.`,
   # reproduce a previous session exactly
   tuitest fuzz --seed 12345 -- ./myapp
 
-  # never send the keys that quit the program
-  tuitest fuzz --exclude Ctrl+c,q -- ./myapp
+  # never send the key chords that quit the program
+  tuitest fuzz --exclude Ctrl+c,Ctrl+q -- ./myapp
 
   # well-formed input only, no malformed escape sequences
   tuitest fuzz --no-hostile -- ./myapp`,
@@ -80,9 +80,16 @@ not parsed as tuitest's.`,
 			if len(argv) == 0 {
 				return usageErrorf(env, cmd, "fuzz needs a program to run")
 			}
+			// fuzz.Run rejects an unbounded run too, but its error would be
+			// classified as a harness failure (exit 3) when the mistake is in
+			// the command line.
+			if iterations <= 0 && duration <= 0 {
+				return usageErrorf(env, cmd, "--iterations and --duration are both 0, so the run would never end; set one of them")
+			}
 			// A key that does not resolve is a mistake on the command line,
 			// so it is reported as one before anything is spawned.
-			for _, tok := range splitList(exclude) {
+			excluded := splitList(exclude)
+			for _, tok := range excluded {
 				if _, err := tape.ResolveKey(tok); err != nil {
 					return usageErrorf(env, cmd, "--exclude %q: %v", tok, err)
 				}
@@ -97,7 +104,7 @@ not parsed as tuitest's.`,
 					Cols:          cols,
 					Rows:          rows,
 					ActionsPerRun: actions,
-					ExcludeKeys:   splitList(exclude),
+					ExcludeKeys:   excluded,
 					NoHostile:     noHostile,
 					NoMouse:       noMouse,
 					NoResize:      noResize,
@@ -155,7 +162,7 @@ not parsed as tuitest's.`,
 	f.IntVar(&rows, "rows", 24, "initial terminal height")
 	f.IntVar(&actions, "actions", 60, "maximum input actions per iteration")
 	f.StringVar(&corpus, "corpus", "", "directory for reproductions, replayed as regressions on the next run")
-	f.StringVar(&exclude, "exclude", "", "comma-separated key tokens never to send, for example Ctrl+c,q")
+	f.StringVar(&exclude, "exclude", "", "comma-separated Key tokens never to send, spelled as in a tape, for example Ctrl+c,Esc")
 	f.BoolVar(&noHostile, "no-hostile", false, "do not send malformed or oversized escape sequences")
 	f.BoolVar(&noMouse, "no-mouse", false, "do not send mouse events")
 	f.BoolVar(&noResize, "no-resize", false, "do not resize the terminal")

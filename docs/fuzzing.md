@@ -71,8 +71,8 @@ or followed by a control byte, which is the only kind a program reads as the
 Esc key. An ESC that starts a sequence stays, so hostile escape sequences are
 still sent with `Esc` excluded. Likewise an Alt key that is ESC plus a sequence
 introducer, such as `Alt+[`, is only dropped as a key. A token that names no
-key, such as `ctrl+c` with a lower-case modifier, is an error rather than a
-silent no-op.
+key, such as `ctrl+c` with a lower-case modifier, is rejected with exit 2
+rather than being a silent no-op.
 
 **Mouse**: clicks, wheel notches, and coherent drags (press, move, release with
 the same button), including coordinates outside the grid.

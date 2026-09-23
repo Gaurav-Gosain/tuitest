@@ -114,7 +114,9 @@ A flag beats the tape's own Set line for the same setting, which is what makes
 					DurationMs: time.Since(start).Milliseconds(),
 				}
 				if err != nil {
-					res.Error = err.Error()
+					// The same text the plain output prints, so a script
+					// parsing the JSON sees what a person reading stderr sees.
+					res.Error = render(err)
 				}
 				writeJSON(env.Stdout, res)
 				// The result object is the report; printing the error again on

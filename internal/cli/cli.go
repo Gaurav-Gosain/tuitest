@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/charmbracelet/fang"
@@ -160,10 +161,11 @@ inputs nobody thought to try.
 Exit codes are the contract with CI, and every command uses them:
 
   0  every assertion passed
-  1  an assertion failed
+  1  an assertion failed, or fuzz found something
   2  bad usage or a malformed tape
   3  harness error, such as no PTY or a program that would not start
-  4  a wait timed out`,
+  4  a wait timed out
+  5  snap captured an empty screen`,
 		Example: `  # check this machine can run a TUI at all, before anything else
   tuitest doctor
 
@@ -243,7 +245,7 @@ func Main(env *Env, args []string) int {
 	err := fang.Execute(
 		context.Background(),
 		root,
-		fang.WithVersion(fmt.Sprintf("%s\nCommit: %s\nBuilt: %s", Version, Commit, Date)),
+		fang.WithVersion(fmt.Sprintf("%s\nCommit: %s\nBuilt: %s", version(), Commit, Date)),
 		fang.WithErrorHandler(diagnosticErrorHandler),
 	)
 
@@ -379,8 +381,32 @@ and the build date.`,
   tuitest --version`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Fprintf(env.Stdout, "tuitest %s\n", Version)
+			fmt.Fprintf(env.Stdout, "tuitest %s\n", version())
 			return nil
 		},
 	}
+}
+
+// version returns the version to report: the one stamped in with -ldflags when
+// there is one, otherwise the module version the Go toolchain recorded.
+func version() string {
+	info, _ := debug.ReadBuildInfo()
+	return resolveVersion(Version, info)
+}
+
+// resolveVersion is version with its inputs made explicit, so it can be tested
+// without a binary built by "go install".
+//
+// A binary installed with "go install module@v1.2.3" carries v1.2.3 in its build
+// info and no -ldflags stamp, so without this fallback every installed binary
+// reported "dev". A plain "go build" in a checkout records "(devel)", which
+// says nothing more than "dev" does, so that is left alone.
+func resolveVersion(stamped string, info *debug.BuildInfo) string {
+	if stamped != "dev" || info == nil {
+		return stamped
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return stamped
 }

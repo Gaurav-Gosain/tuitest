@@ -47,9 +47,9 @@ think time is not part of a test. Sleep is only emitted with --idle-sleep.
 Use --snapshots to capture the screen behind each settle point and write the
 golden files at the same time, so the recording replays green immediately.
 
-Mouse input is not represented in the tape grammar. Mouse reports are passed
-through to the program but counted, and record warns that the tape is not a
-complete replay.`,
+Keys, mouse reports, pastes and focus events are decoded into Key, Mouse, Paste
+and Focus lines. Input no decoder recognises is kept as a Raw line with the exact
+bytes, so the tape always replays everything that was sent.`,
 		Example: `  # record a session into a tape
   tuitest record -o login.tape -- ./myapp
 
@@ -66,20 +66,19 @@ complete replay.`,
 				return usageErrorf(env, cmd, "record needs a program to run")
 			}
 
-			// -o is resolved before raw mode so a bad path fails before the
-			// screen is taken over.
-			if out != "" {
-				if dir := filepath.Dir(out); dir != "" {
-					if err := os.MkdirAll(dir, 0o755); err != nil {
-						return failWith(ExitHarness, err)
-					}
-				}
-			}
-
 			stdin := os.Stdin.Fd()
 			if !xterm.IsTerminal(stdin) {
 				return failWith(ExitHarness, errors.New(
 					"record needs a terminal on stdin; use tuitest run to play a tape back headlessly"))
+			}
+
+			// -o is resolved before raw mode so a bad path fails before the
+			// screen is taken over, and after the terminal check so a record
+			// that cannot start leaves no directory behind.
+			if out != "" {
+				if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+					return failWith(ExitHarness, err)
+				}
 			}
 
 			cc, rr := cols, rows
