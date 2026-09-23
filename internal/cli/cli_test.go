@@ -531,8 +531,11 @@ func TestSnapWaitsForASlowProgramToPaint(t *testing.T) {
 func TestSnapReportsTheScreenEvenWhenItNeverSettles(t *testing.T) {
 	sh := lookupShell(t)
 	// Paints once, then keeps writing forever so the quiet window never opens.
+	// The settle window is also longer than the timeout: on a loaded machine
+	// the 20ms loop can stall past the default 150ms window, and the capture
+	// then settles and succeeds, which made this test flaky.
 	code, stdout, _ := runCLI(nil,
-		"snap", "-size", "40x8", "-json", "-timeout", "1s",
+		"snap", "-size", "40x8", "-json", "-timeout", "1s", "-settle", "5s",
 		"--", sh, "-c", `printf 'ANIMATING\n'; while :; do printf '.'; sleep 0.02; done`)
 	if code == ExitOK {
 		t.Fatalf("a program that never settles should not report success")
