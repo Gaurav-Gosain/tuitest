@@ -568,7 +568,7 @@ covers the harness primitives and produces golden text, not video.
 
 Each seam is narrow on purpose:
 
-- Swap the VT emulator (implement `internal/emu.Emulator`, ten methods).
+- Swap the VT emulator (implement `internal/emu.Emulator`, twelve methods).
 - Add a CLI subcommand (one `*cobra.Command` added in `newRootCommand`; help,
   completion and typo suggestions follow automatically).
 - Add a tape verb (one `Kind`, one `Verb()` case, one parse case, one player

@@ -1,8 +1,8 @@
 # Architecture
 
-tuitest is one public package and five internal or auxiliary ones. Each has a
-single responsibility and a narrow seam to the next, so any one of them can be
-read, tested, or replaced without the others.
+tuitest is one public package and a handful of internal or auxiliary ones. Each
+has a single responsibility and a narrow seam to the next, so any one of them
+can be read, tested, or replaced without the others.
 
 ## Packages
 
@@ -15,6 +15,8 @@ read, tested, or replaced without the others.
 | [`tape`](../tape/parse.go) | The tape language: parser, player, recorder, printer, replay renderer |
 | [`internal/cli`](../internal/cli/cli.go) | The cobra command tree, flag parsing, exit codes, JSON output, diagnostics |
 | [`fuzz`](../fuzz/fuzz.go) | Input generation, failure detection, delta-debugging minimisation, corpus |
+| [`fuzz/vtgen`](../fuzz/vtgen/vtgen.go) | Generates the output side: terminal byte streams by grammar, for fuzzing a VT parser |
+| [`fixtures`](../fixtures/fakeshell.go) | In-process helpers for testing an output consumer: a fake shell and an escape-sequence builder |
 | [`tuiosx`](../tuiosx/tuiosx.go) | tuios-specific spawn and chord helpers; nothing in the core depends on it |
 
 ## Whole system
@@ -157,9 +159,11 @@ so a caller woken by `Done()` cannot observe a `Terminal` that has not yet been
 told the child is gone. `ExitCode` consults the process first and the terminal's
 own copy second, closing the same window from the other side.
 
-Teardown signals the process group rather than the process. That is the property
-that makes tuitest usable against a multiplexer: a plain `Process.Kill` would
-leave the daemon and every pane process running after the test.
+Teardown signals the process group rather than the process, and then every
+descendant that left the group, such as a daemon that called `setsid`. That is
+the property that makes tuitest usable against a multiplexer: a plain
+`Process.Kill` would leave the daemon and every pane process running after the
+test.
 
 The group is not enough on its own, because a daemon calls `setsid` and leaves
 it. So while the child is still running, `Close` first snapshots every

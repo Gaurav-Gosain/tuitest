@@ -21,18 +21,23 @@ type Emulator interface {
 	CommandFinishedCount() int
 	LastCommandExit() (code int, ok bool)
 	Modes() map[int]bool
+	ApplicationCursorKeys() bool
+	OnSync(fn func(open bool))
 }
 ```
 
-Ten methods, and only the first six are needed for a working harness.
-`TakeResponses` hands back the emulator's answers to the program's queries
-(cursor position, colours, device attributes) without blocking; it may return
-nil, but then a program that probes the terminal before drawing waits out its
-own timeout and may draw nothing. The OSC 133 trio can return zero values if
-the emulator does not track semantic markers (the corresponding waits then
-never fire, which is the same behaviour as a program that emits no markers),
-and `Modes` can return an empty map if it does not track private modes, at the
-cost of `TermState` never reporting a mode left set.
+Twelve methods, and only `Write` through `Cursor` are needed for a working
+harness. `TakeResponses` hands back the emulator's answers to the program's
+queries (cursor position, colours, device attributes) without blocking; it may
+return nil, but then a program that probes the terminal before drawing waits out
+its own timeout and may draw nothing. The OSC 133 trio can return zero values if
+the emulator does not track semantic markers (the corresponding waits then never
+fire, which is the same behaviour as a program that emits no markers), and
+`Modes` can return an empty map if it does not track private modes, at the cost
+of `TermState` never reporting a mode left set. `ApplicationCursorKeys` can
+return false, at the cost of sending the arrow keys in the normal form to a
+program that asked for the application form. `OnSync` can do nothing, in which
+case a frame drawn under synchronized output (mode 2026) can be read half drawn.
 
 The contract is that `Write` is called only from the pump goroutine while the
 `Terminal` lock is held, so an implementation needs no internal locking for the
@@ -41,11 +46,14 @@ adapter converts that to a blank cell; `Modes` returns only the modes currently
 set, keyed by DEC private mode number.
 
 Everything above this interface is written against it, and `emu.New` is the only
-place the concrete type is named:
+place the concrete type is named. It builds the vt emulator, hooks the mode
+callbacks and an OSC 133 handler into it, and returns the adapter:
 
 ```go
 func New(cols, rows int) Emulator {
-	return &adapter{e: vt.NewEmulator(cols, rows)}
+	a := &adapter{e: vt.NewEmulator(cols, rows), modes: map[int]bool{}, lastExit: -1}
+	// ... copy the default modes, register the callbacks and the OSC handler
+	return a
 }
 ```
 
