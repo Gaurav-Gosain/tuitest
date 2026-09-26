@@ -54,10 +54,17 @@ const (
 	// bugDirtyExit quits without leaving the alternate screen or disabling
 	// mouse reporting, wrecking the user's shell.
 	bugDirtyExit = "dirty-exit"
-	// bugMangleUnicode echoes input through a fixed-size window that cuts a
-	// multi-byte rune in half, so well-formed text comes back with U+FFFD in
-	// it. This is the textbook shape of the bug: a read buffer sized in bytes
-	// and a decode step that assumes it holds whole runes.
+	// bugMangleUnicode types input into a text field through a fixed-size
+	// buffer that cuts a multi-byte rune in half, so well-formed text comes
+	// back with U+FFFD in it. This is the textbook shape of the bug: a buffer
+	// sized in bytes and a decode step that assumes it holds whole runes.
+	//
+	// The buffer is cut at fixed offsets in the input stream, and the field
+	// keeps what it has decoded, so whether the bug shows depends only on the
+	// bytes sent. Cutting each read instead, as this fixture once did, made
+	// the bug depend on how the kernel happened to split the input between
+	// reads, which changes with machine load, and made the test that finds it
+	// fail intermittently.
 	bugMangleUnicode = "mangle-unicode"
 	// bugLoseMarker drops the marker for good once F9 has been pressed, the
 	// shape of a mode toggle that hides part of the interface and forgets to
@@ -80,10 +87,15 @@ const (
 // can survive.
 const marker = "*"
 
-// mangleWindow is the byte length bugMangleUnicode truncates input to. It is
-// not a multiple of the width of any of the generator's multi-byte fragments,
-// so a run of them lands mid-rune.
+// mangleWindow is the size of the buffer bugMangleUnicode decodes input
+// through. It is not a multiple of the width of any of the generator's
+// multi-byte fragments, so a run of them lands mid-rune.
 const mangleWindow = 8
+
+// fieldRunes is how many runes bugMangleUnicode's text field holds. Once it is
+// full it takes no more, so a replacement character that reached it stays on
+// screen for the rest of the run.
+const fieldRunes = 40
 
 // keyF9 is the escape sequence tuitest sends for F9, which latches
 // bugLoseMarker.
@@ -120,10 +132,10 @@ func main() {
 	}
 	restore := func() {
 		_ = term.Restore(in.Fd(), state)
-		fmt.Print(mouseModesOff + cursorShow + altScreenOff)
+		emit(mouseModesOff + cursorShow + altScreenOff)
 	}
 
-	fmt.Print(altScreenOn + mouseModesOn + cursorHide)
+	emit(altScreenOn + mouseModesOn + cursorHide)
 
 	width, height := size(in)
 
@@ -152,6 +164,7 @@ func main() {
 	signal.Notify(winch, syscall.SIGWINCH)
 
 	draw(width, height, "ready")
+	writeAck(width, height)
 
 	for {
 		// The narrow check happens here, at the top of the loop, rather than
@@ -181,20 +194,22 @@ func main() {
 		case <-winch:
 			width, height = size(in)
 			draw(width, height, fmt.Sprintf("resized to %dx%d", width, height))
+			writeAck(width, height)
 
 		case chunk, ok := <-input:
 			if !ok {
 				restore()
 				os.Exit(0)
 			}
+			inHandled += int64(len(chunk))
 
-			if *bug == bugLoseMarker && sawF9(chunk) {
+			if *bug == bugLoseMarker && watchF9.saw(chunk) {
 				// The bug: the marker is gone for the rest of the run, and
 				// nothing the user does brings it back.
 				markerLost = true
 			}
 
-			if *bug == bugPanicOnKey && strings.Contains(string(chunk), keyF5) {
+			if *bug == bugPanicOnKey && watchF5.saw(chunk) {
 				// The bug: F5 panics. restore is never reached, so the process
 				// dies with a non-zero status.
 				panic("buggytui: unhandled key F5")
@@ -203,6 +218,7 @@ func main() {
 			if *noMouse {
 				chunk = sgrMouse.ReplaceAll(chunk, nil)
 				if len(chunk) == 0 {
+					writeAck(width, height)
 					continue
 				}
 			}
@@ -217,25 +233,81 @@ func main() {
 				os.Exit(0)
 			}
 
+			if *bug == bugMangleUnicode {
+				typeInto(chunk)
+			}
 			draw(width, height, describe(chunk))
+			writeAck(width, height)
 		}
 	}
 }
 
-// sawF9 reports whether F9 has arrived, matching across read boundaries. A
-// terminal read can split an escape sequence anywhere, so testing each chunk on
-// its own would miss the key whenever the split lands inside it and make
-// bugLoseMarker look timing dependent when it is not.
-func sawF9(chunk []byte) bool {
-	f9tail = append(f9tail, chunk...)
-	if n := len(f9tail); n > len(keyF9) {
-		f9tail = f9tail[n-len(keyF9):]
-	}
-	return strings.Contains(string(f9tail), keyF9)
+// ack names a file the fixture rewrites after handling each event, so a test can
+// tell exactly when the fixture has caught up with its input instead of
+// guessing from a quiet window. See writeAck.
+var ack = flag.String("ack", "", "file to rewrite with \"pid in out cols rows\" after each handled event")
+
+// inHandled and outWritten are the byte counts writeAck reports: input the
+// event loop has handled, and output written to the terminal.
+var inHandled, outWritten int64
+
+// emit writes to the terminal and counts what it wrote.
+func emit(s string) {
+	n, _ := os.Stdout.WriteString(s)
+	outWritten += int64(n)
 }
 
-// f9tail holds the last few input bytes, enough to span one key sequence.
-var f9tail []byte
+// writeAck records how far the fixture has got: its pid, so an acknowledgement
+// left by an earlier run of the fixture is never mistaken for this one's, the
+// input bytes handled and the output bytes written so far, and the size it last
+// drew at. It is written after the output it describes, so a reader that has
+// received that much output is looking at the frame the fixture drew for that
+// much input. The rename makes the update atomic, so a reader never sees half
+// of it.
+func writeAck(width, height int) {
+	if *ack == "" {
+		return
+	}
+	tmp := *ack + ".tmp"
+	body := fmt.Sprintf("%d %d %d %d %d", os.Getpid(), inHandled, outWritten, width, height)
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, *ack)
+}
+
+// keyWatch reports whether one key sequence has arrived, matching across read
+// boundaries. A terminal read can split an escape sequence anywhere, so testing
+// each chunk on its own would miss the key whenever the split lands inside it
+// and make the bug it triggers look timing dependent when it is not.
+//
+// The search runs over the held tail and the whole chunk before anything is
+// trimmed. Trimming first, as this once did, kept only the chunk's last few
+// bytes, so a key followed by more input in the same read was never seen. The
+// kernel coalesces input into fewer, larger reads when the program is slow to
+// read, so the bug went quiet exactly when the machine was loaded.
+type keyWatch struct {
+	key  string
+	tail []byte // the last few input bytes, one short of a whole sequence
+}
+
+func (w *keyWatch) saw(chunk []byte) bool {
+	w.tail = append(w.tail, chunk...)
+	found := strings.Contains(string(w.tail), w.key)
+	// Keep one byte short of a whole sequence: enough to finish one that the
+	// next read completes, never a whole one to be found twice.
+	if keep := len(w.key) - 1; len(w.tail) > keep {
+		w.tail = append([]byte(nil), w.tail[len(w.tail)-keep:]...)
+	}
+	return found
+}
+
+// watchF9 and watchF5 track the keys that trigger bugLoseMarker and
+// bugPanicOnKey.
+var (
+	watchF9 = keyWatch{key: keyF9}
+	watchF5 = keyWatch{key: keyF5}
+)
 
 // markerLost is bugLoseMarker's latch. Once set it is never cleared, which is
 // what makes the bug a standing violation rather than a transient one and what
@@ -263,9 +335,6 @@ func containsQuit(b []byte) bool {
 // including invalid UTF-8, on purpose: the fixture's own input path must not be
 // the thing that breaks, or the tests would be measuring the wrong bug.
 func describe(b []byte) string {
-	if *bug == bugMangleUnicode {
-		return mangle(b)
-	}
 	var sb strings.Builder
 	for _, c := range b {
 		switch {
@@ -283,26 +352,35 @@ func describe(b []byte) string {
 	return sb.String()
 }
 
-// mangle is describe's broken twin: it truncates to a byte window and then
-// decodes, so a rune straddling the boundary is replaced. Ranging over the
-// string yields utf8.RuneError for the broken tail and WriteRune encodes it, so
-// what reaches the terminal is a well-formed U+FFFD rather than the raw bytes.
-// That is the point: the invalid bytes never leave the program, so nothing on
-// the wire looks wrong, and the only evidence is the character on screen.
-func mangle(b []byte) string {
-	if len(b) > mangleWindow {
-		b = b[:mangleWindow]
-	}
-	var sb strings.Builder
-	for _, r := range string(b) {
-		if r < 0x20 || r == 0x7f {
-			fmt.Fprintf(&sb, "<%02x>", r)
-			continue
+// typeInto is bugMangleUnicode's input path: it decodes the input stream in
+// mangleWindow-byte pieces, carrying the remainder of a read over to the next,
+// and appends each piece's runes to the field. Ranging over a piece that ends
+// mid-rune yields utf8.RuneError for the broken tail, and the field stores it,
+// so what reaches the terminal is a well-formed U+FFFD rather than the raw
+// bytes. That is the point: the invalid bytes never leave the program, so
+// nothing on the wire looks wrong, and the only evidence is the character on
+// screen. Control characters are left out, as a text field would.
+func typeInto(b []byte) {
+	pending = append(pending, b...)
+	for len(pending) >= mangleWindow {
+		for _, r := range string(pending[:mangleWindow]) {
+			if len(field) >= fieldRunes {
+				break
+			}
+			if r < 0x20 || r == 0x7f {
+				continue
+			}
+			field = append(field, r)
 		}
-		sb.WriteRune(r)
+		pending = pending[mangleWindow:]
 	}
-	return sb.String()
 }
+
+// pending holds input bytes not yet decoded, and field the text decoded so far.
+var (
+	pending []byte
+	field   []rune
+)
 
 // draw repaints the screen. Every event produces output, which is what gives
 // the fuzzer's hang detector a baseline of responsiveness to measure against.
@@ -320,12 +398,17 @@ func draw(width, height int, status string) {
 	writeLine(&sb, width, prefix+"bug: "+*bug)
 	writeLine(&sb, width, prefix+"last: "+status)
 	writeLine(&sb, width, prefix+"ctrl-c to quit")
+	lines := 4
+	if *bug == bugMangleUnicode {
+		writeLine(&sb, width, prefix+"text: "+string(field))
+		lines++
+	}
 	// Fill the rest of the screen so a resize visibly changes the output.
 	fill := prefix + strings.Repeat(".", min(max(width, 0), 40))
-	for i := 4; i < height; i++ {
+	for i := lines; i < height; i++ {
 		writeLine(&sb, width, fill)
 	}
-	fmt.Print(sb.String())
+	emit(sb.String())
 }
 
 // writeLine emits one row, truncated so it cannot exceed the terminal width.

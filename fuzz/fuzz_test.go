@@ -2,6 +2,7 @@ package fuzz_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuitest"
 	"github.com/Gaurav-Gosain/tuitest/fuzz"
 	"github.com/Gaurav-Gosain/tuitest/tape"
 )
@@ -66,6 +68,57 @@ func baseOptions(t *testing.T, bug string) fuzz.Options {
 	}
 }
 
+// acknowledged makes every settle in the session wait for the fixture to catch
+// up with its input, instead of for its output to go quiet.
+//
+// A quiet window is a guess about the program's speed. On a loaded machine the
+// fixture can go unscheduled for longer than the window, the settle returns on
+// the screen from before the last key was handled, and a session that sent the
+// triggering key finds nothing, or a shrink candidate that still triggers the
+// bug is judged not to, or the confirmation replay misses. Each of those failed
+// the finding tests intermittently under load. With -ack the fixture records
+// how much input it has handled and how much output it has written for it, and
+// the session waits until the input count matches Terminal.InputBytes, that
+// much output has reached the emulator, and the frame was drawn at the current
+// size. None of that depends on how fast the machine is.
+//
+// The fixture must answer every input event for this to hold, so it is not for
+// hang-on-narrow, which wedges and never acknowledges again. SettleTimeout is
+// raised because it now bounds a wait on the program's state rather than a
+// guess: it is only reached if the fixture never catches up, and a starved
+// fixture catches up eventually.
+func acknowledged(t *testing.T, opts fuzz.Options) fuzz.Options {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ack")
+	opts.Argv = append(append([]string(nil), opts.Argv...), "-ack", path)
+	opts.SettleTimeout = 15 * time.Second
+	opts.CaughtUp = func(term *tuitest.Terminal) bool {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		var pid, cols, rows int
+		var in, out int64
+		if _, err := fmt.Sscanf(string(body), "%d %d %d %d %d", &pid, &in, &out, &cols, &rows); err != nil {
+			return false
+		}
+		// An acknowledgement left by an earlier run of the fixture says
+		// nothing about this one.
+		if pid != term.Pid() {
+			return false
+		}
+		if in != term.InputBytes() {
+			return false
+		}
+		if got, _ := term.Progress(); got < out {
+			return false
+		}
+		c, r := term.Screen().Size()
+		return c == cols && r == rows
+	}
+	return opts
+}
+
 // runFuzz runs a session under a deadline derived from the test's own, so a
 // wedged fixture can never hang the suite.
 func runFuzz(t *testing.T, opts fuzz.Options) *fuzz.Result {
@@ -114,7 +167,7 @@ func TestWellBehavedProgramProducesNoFindings(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 7} {
 		t.Run("seed"+strconv.FormatUint(seed, 10), func(t *testing.T) {
 			t.Parallel()
-			opts := baseOptions(t, "none")
+			opts := acknowledged(t, baseOptions(t, "none"))
 			opts.Seed = seed
 			opts.Iterations = 8
 			opts.StopOnFirst = false
@@ -139,7 +192,7 @@ func TestProgramWithoutMouseSupportIsNotHung(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 7, 11, 13} {
 		t.Run("seed"+strconv.FormatUint(seed, 10), func(t *testing.T) {
 			t.Parallel()
-			opts := baseOptions(t, "none")
+			opts := acknowledged(t, baseOptions(t, "none"))
 			opts.Argv = append(opts.Argv, "-no-mouse")
 			opts.Seed = seed
 			opts.Iterations = 8
@@ -160,7 +213,7 @@ func TestProgramWithoutMouseSupportIsNotHung(t *testing.T) {
 func TestFindsPanicAndMinimisesToTheTriggeringKey(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "panic-on-key")
+	opts := acknowledged(t, baseOptions(t, "panic-on-key"))
 	opts.Seed = 1
 	// The bug is bound to one key out of a large space, so this needs enough
 	// iterations to be sure of sending it.
@@ -195,7 +248,7 @@ func TestFindsPanicAndMinimisesToTheTriggeringKey(t *testing.T) {
 func TestFindsTerminalLeftInABadState(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "dirty-exit")
+	opts := acknowledged(t, baseOptions(t, "dirty-exit"))
 	opts.Seed = 5
 	opts.Iterations = 30
 
@@ -253,7 +306,7 @@ func TestFindsHangAndMinimisesToTheTriggeringResize(t *testing.T) {
 func TestReproductionTapeParsesBack(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "panic-on-key")
+	opts := acknowledged(t, baseOptions(t, "panic-on-key"))
 	opts.Seed = 1
 	opts.Iterations = 40
 
@@ -306,7 +359,7 @@ func TestCorpusIsWrittenAndReplayedAsARegression(t *testing.T) {
 	// t.TempDir is removed automatically, so nothing is written outside it.
 	corpus := t.TempDir()
 
-	opts := baseOptions(t, "dirty-exit")
+	opts := acknowledged(t, baseOptions(t, "dirty-exit"))
 	opts.Seed = 5
 	opts.Iterations = 30
 	opts.Corpus = corpus
@@ -363,10 +416,12 @@ func TestCorpusIsWrittenAndReplayedAsARegression(t *testing.T) {
 func TestSameSeedProducesTheSameSession(t *testing.T) {
 	t.Parallel()
 
+	// One set of options for both sessions: the fixture's argv carries the
+	// acknowledgement file, and two paths would make the Spawn lines differ.
+	opts := acknowledged(t, baseOptions(t, "panic-on-key"))
+	opts.Seed = 99
+	opts.Iterations = 40
 	run := func() string {
-		opts := baseOptions(t, "panic-on-key")
-		opts.Seed = 99
-		opts.Iterations = 40
 		res := runFuzz(t, opts)
 		f := findFailure(res, fuzz.FailCrash)
 		if f == nil {
@@ -391,7 +446,7 @@ func TestSameSeedProducesTheSameSession(t *testing.T) {
 func TestReportedSeedRegeneratesTheFailingIteration(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "panic-on-key")
+	opts := acknowledged(t, baseOptions(t, "panic-on-key"))
 	opts.Seed = 1
 	opts.Iterations = 40
 	opts.Shrink = false
@@ -409,7 +464,7 @@ func TestReportedSeedRegeneratesTheFailingIteration(t *testing.T) {
 		t.Errorf("a session with shrinking off claims a minimisation:\n%s", tape)
 	}
 
-	again := baseOptions(t, "panic-on-key")
+	again := acknowledged(t, baseOptions(t, "panic-on-key"))
 	again.Seed = first.Seed
 	again.Iterations = 1
 	again.Shrink = false
@@ -550,7 +605,7 @@ func TestCrashReproductionIsARealRegressionTest(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	opts := baseOptions(t, "panic-on-key")
+	opts := acknowledged(t, baseOptions(t, "panic-on-key"))
 	opts.Seed = 1
 	opts.Iterations = 40
 	opts.Corpus = dir

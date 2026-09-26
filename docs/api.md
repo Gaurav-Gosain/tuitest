@@ -229,6 +229,7 @@ func (t *Terminal) TermState() TermState
 func (t *Terminal) ExitStatus() (ExitStatus, bool)
 func (t *Terminal) ExitCode() (code int, exited bool)
 func (t *Terminal) Progress() (bytes int64, last time.Time)
+func (t *Terminal) InputBytes() int64
 func (t *Terminal) Pid() int
 ```
 
@@ -250,6 +251,13 @@ as routine teardown or hangup rather than evidence.
 write landed. A caller that sends input and then sees neither counter move has
 evidence the program stopped responding; this is the primitive the fuzzer's hang
 detector is built on.
+
+`InputBytes` is the other direction: every byte written to the child's input,
+including the terminal's answers to its queries. A program that reports how
+much input it has handled can be compared against it to know, exactly rather
+than by a quiet window, that it has caught up with everything it was sent. It
+takes no lock, so it is safe inside a `WaitFor` condition. The fuzzer's
+`Options.CaughtUp` is built on it.
 
 ## Reading the screen
 

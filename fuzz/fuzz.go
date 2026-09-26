@@ -62,6 +62,21 @@ type Options struct {
 	Out io.Writer
 	// SettleTimeout bounds each individual wait inside an iteration.
 	SettleTimeout time.Duration
+	// CaughtUp, when set, decides when a settle is over. By default a settle
+	// waits for the program's output to go quiet for the stabilize interval,
+	// which is a guess: a program that takes longer than that to react, as any
+	// program can on a loaded machine, is judged on the screen from before its
+	// reaction, and a finding the input did produce is missed. A caller whose
+	// program can report how much input it has handled can replace the guess
+	// with a fact, typically by comparing that report with
+	// Terminal.InputBytes.
+	//
+	// Every settle, the one that ends each iteration and each WaitStable in a
+	// tape, then waits until CaughtUp returns true or the program exits,
+	// bounded by SettleTimeout. It is polled, never called with the terminal's
+	// lock held, and must be quick. Like Invariants it is a Go-API feature with
+	// no CLI equivalent.
+	CaughtUp func(t *tuitest.Terminal) bool
 }
 
 // DefaultOptions returns options that are safe to run against an unknown
@@ -306,6 +321,13 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 		}
 
 		err := p.Exec(c)
+		if isSettle(c) && opts.CaughtUp != nil && p.Terminal() != nil {
+			// The tape's own WaitStable made the same guess the end-of-run
+			// settle makes, and a caller-supplied condition overrules it here
+			// too, so a report made at this point is made on a screen the
+			// program has finished drawing.
+			waitCaughtUp(p.Terminal(), opts.CaughtUp, opts.SettleTimeout)
+		}
 
 		if mon == nil && p.Terminal() != nil {
 			// The grid is judged against the size the program was spawned at,
@@ -379,7 +401,7 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 	// had no chance to crash, hang, or exit in response to them. Without this
 	// wait the iteration would tear the program down before its reaction, and
 	// the detectors would grade a program that had not yet run.
-	settle(p.Terminal(), opts.SettleTimeout)
+	settle(p.Terminal(), opts.SettleTimeout, opts.CaughtUp)
 
 	if f := mon.check(); f != nil {
 		return withCommands(f, executed), nil
@@ -412,11 +434,16 @@ func driveReportingSpawn(ctx context.Context, opts Options, cmds []tape.Command)
 }
 
 // settle waits for the program to finish reacting to the input it was sent:
-// first for its output to go quiet, then, if it is on its way out, for it to
-// actually exit. Both waits are bounded, and neither failing is an error here.
-// The detectors, not this function, decide whether the outcome is a bug.
-func settle(t *tuitest.Terminal, timeout time.Duration) {
-	_ = t.WaitStable(timeout)
+// first for its output to go quiet, or for caughtUp to hold when the caller
+// supplied one, then, if it is on its way out, for it to actually exit. Both
+// waits are bounded, and neither failing is an error here. The detectors, not
+// this function, decide whether the outcome is a bug.
+func settle(t *tuitest.Terminal, timeout time.Duration, caughtUp func(*tuitest.Terminal) bool) {
+	if caughtUp != nil {
+		waitCaughtUp(t, caughtUp, timeout)
+	} else {
+		_ = t.WaitStable(timeout)
+	}
 	if _, exited := t.ExitStatus(); exited {
 		return
 	}
@@ -425,6 +452,28 @@ func settle(t *tuitest.Terminal, timeout time.Duration) {
 	// "still running" is decided by the program rather than by our timing.
 	_, _ = t.WaitExit(exitGrace)
 }
+
+// waitCaughtUp polls caughtUp until it holds, the program exits, or timeout
+// elapses. It polls rather than waiting on output because what the condition
+// reads, such as a count the program keeps elsewhere, need not arrive with any
+// output at all.
+func waitCaughtUp(t *tuitest.Terminal, caughtUp func(*tuitest.Terminal) bool, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	tick := time.NewTicker(caughtUpPoll)
+	defer tick.Stop()
+	for {
+		if _, exited := t.ExitStatus(); exited || caughtUp(t) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		<-tick.C
+	}
+}
+
+// caughtUpPoll is how often waitCaughtUp re-evaluates its condition.
+const caughtUpPoll = 5 * time.Millisecond
 
 // progressEvery is how often a running session reports how far it has got.
 const progressEvery = 15 * time.Second

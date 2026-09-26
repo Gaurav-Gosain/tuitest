@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,6 +136,10 @@ type Terminal struct {
 	respQ    []byte
 	respWake chan struct{}
 	inputMu  sync.Mutex
+	// inBytes counts every byte written to the child's input, the caller's and
+	// the answers alike. It is atomic rather than under mu so that a caller can
+	// read it from inside a wait condition, which runs with mu held.
+	inBytes atomic.Int64
 
 	// gen counts changes to the emulator grid. The snapshot cache is valid for
 	// as long as gen has not moved and the exit state it recorded still holds.
@@ -307,7 +312,9 @@ func (t *Terminal) respond(proc *ptyproc.Process) {
 	for {
 		t.inputMu.Lock()
 		if q := t.takeResponsesLocked(); len(q) > 0 {
-			_ = proc.Write(q)
+			if proc.Write(q) == nil {
+				t.inBytes.Add(int64(len(q)))
+			}
 		}
 		t.inputMu.Unlock()
 		select {
@@ -497,6 +504,9 @@ func (t *Terminal) write(b []byte) error {
 		b = append(q, b...)
 	}
 	err := t.proc.Write(b)
+	if err == nil {
+		t.inBytes.Add(int64(len(b)))
+	}
 	t.inputMu.Unlock()
 	// A write usually fails because the program has just exited: its end of
 	// the PTY is closed, so macOS answers EIO, but the pump has not yet read
@@ -636,6 +646,24 @@ func (t *Terminal) Progress() (bytes int64, last time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.outBytes, t.lastWrite
+}
+
+// InputBytes reports how many bytes have been written to the child's input so
+// far: everything sent with SendKeys, Type, Paste and SendMouse, and the answers
+// the terminal gave to the program's own queries, which the program reads from
+// the same stream.
+//
+// It is the input side of Progress, and it exists for the one question no
+// quiet window can answer: whether the program has caught up with its input. A
+// program that reports how many bytes it has read can be compared against this
+// count, and once the two agree the program has seen everything, however long
+// the machine took to schedule it. WaitStable can only guess, and a program
+// starved of CPU for longer than the stabilize interval defeats the guess.
+//
+// It does not take the terminal's lock, so it is safe to call from inside a
+// WaitFor condition.
+func (t *Terminal) InputBytes() int64 {
+	return t.inBytes.Load()
 }
 
 // ExitCode reports the child's exit code and whether it has exited.

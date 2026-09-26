@@ -31,9 +31,15 @@ func TestWriteRacingACleanExitIsNotACrash(t *testing.T) {
 
 	const script = `i=0; while [ $i -lt 400 ]; do printf '\033#8'; i=$((i+1)); done; exit 0`
 	argv := []string{"/bin/sh", "-c", script}
+	// SettleTimeout bounds how long a failed write waits for the reap, and the
+	// pump spends a second or more emulating the script's output on an idle
+	// machine, several times that on a loaded one. Past the bound the write
+	// error is classified as it stands, which is the false crash this test
+	// exists to rule out, so the bound is set far above any plausible drain
+	// time. It costs nothing: the wait returns as soon as the child is reaped.
 	opts := Options{
 		Argv:          argv,
-		SettleTimeout: 5 * time.Second,
+		SettleTimeout: time.Minute,
 		Limits:        DefaultLimits(),
 		Gen:           Config{Cols: 1000, Rows: 1000},
 	}.withDefaults()

@@ -54,7 +54,7 @@ func markerInvariant() fuzz.Invariant {
 func TestFindsViolatedInvariantAndMinimisesTowardIt(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "lose-marker")
+	opts := acknowledged(t, baseOptions(t, "lose-marker"))
 	opts.Seed = 11
 	// The latch is bound to one key out of a large space, so this needs enough
 	// iterations to be sure of sending it.
@@ -94,11 +94,9 @@ func TestFindsViolatedInvariantAndMinimisesTowardIt(t *testing.T) {
 		t.Errorf("Original=%d and minimised=%d: minimisation should have reduced the input",
 			f.Original, len(f.Commands))
 	}
-	// Confirmation is a real replay of a real program, so asserting it is only
-	// fair where the reproduction is small enough not to race the program's
-	// redraw. This one minimises to a Spawn and a single key, which it does
-	// reliably; the larger reproductions two other tests produce do not, and
-	// docs/limits.md says so.
+	// Confirmation is a real replay of a real program. It is deterministic
+	// here because every settle waits for the fixture's acknowledgement rather
+	// than for a quiet window; see acknowledged.
 	if !f.Verified {
 		t.Error("the minimised reproduction did not reproduce on confirmation")
 	}
@@ -127,7 +125,7 @@ func TestFindsViolatedInvariantAndMinimisesTowardIt(t *testing.T) {
 func TestFindsReplacementCharacterFromWellFormedInput(t *testing.T) {
 	t.Parallel()
 
-	opts := baseOptions(t, "mangle-unicode")
+	opts := acknowledged(t, baseOptions(t, "mangle-unicode"))
 	opts.Seed = 4
 	opts.Iterations = 20
 	opts.Limits.DetectReplacementChars = true
@@ -167,7 +165,7 @@ func TestOraclesStaySilentOnAWellBehavedProgram(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 7, 11, 13} {
 		t.Run("seed"+strconv.FormatUint(seed, 10), func(t *testing.T) {
 			t.Parallel()
-			opts := baseOptions(t, "none")
+			opts := acknowledged(t, baseOptions(t, "none"))
 			opts.Seed = seed
 			opts.Iterations = 8
 			opts.StopOnFirst = false

@@ -52,6 +52,7 @@ func shrink(ctx context.Context, opts Options, f *Failure) *Failure {
 func shrinkUsing(ctx context.Context, opts Options, f *Failure, stillFails func([]tape.Command) bool) *Failure {
 	budget := opts.ShrinkBudget
 	best := f.Commands
+	keepStart := waitsForStart(best)
 
 	spend := func() bool {
 		if budget <= 0 {
@@ -72,7 +73,7 @@ func shrinkUsing(ctx context.Context, opts Options, f *Failure, stillFails func(
 					return finish(f, best)
 				}
 				candidate := removeRange(best, i, i+chunk)
-				if !required(candidate) {
+				if !required(candidate, keepStart) {
 					i += chunk
 					continue
 				}
@@ -134,13 +135,29 @@ func finish(f *Failure, best []tape.Command) *Failure {
 // runnable at all. Removing the Spawn would make every later command fail for
 // an uninteresting reason, so those candidates are rejected without spending a
 // replay on them.
-func required(cmds []tape.Command) bool {
-	for _, c := range cmds {
+//
+// With keepStart, the wait straight after the Spawn is scaffolding too. It is
+// what holds input back until the program has drawn, and so, for a program that
+// sets up its terminal before drawing, until it has left the kernel's line
+// editing. Input sent before that is edited by the line discipline: an erase
+// byte deletes the byte before it, a kill byte the whole line. A candidate
+// without the wait therefore delivers different bytes depending on whether the
+// program won the race to raw mode, and its verdict depends on how busy the
+// machine is. Accepting or rejecting reductions on such verdicts made
+// minimisation itself nondeterministic, so the wait is never removed.
+func required(cmds []tape.Command, keepStart bool) bool {
+	for i, c := range cmds {
 		if c.Kind == tape.KindSpawn {
-			return true
+			return !keepStart || (i+1 < len(cmds) && cmds[i+1].Kind == tape.KindWaitOutput)
 		}
 	}
 	return false
+}
+
+// waitsForStart reports whether cmds wait for the program's first output
+// straight after spawning it, as every generated iteration does.
+func waitsForStart(cmds []tape.Command) bool {
+	return required(cmds, true)
 }
 
 func removeRange(cmds []tape.Command, from, to int) []tape.Command {

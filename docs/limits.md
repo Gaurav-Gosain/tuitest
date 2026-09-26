@@ -237,24 +237,36 @@ after minimisation, and one that does not reproduce is still reported but
 labelled in both the report and the tape header. A timing-dependent bug is worth
 knowing about; presenting it as solid would not be.
 
-**The fuzzer's own tests can inherit that flakiness.**
-`TestFindsPanicAndMinimisesToTheTriggeringKey` and
-`TestFindsTerminalLeftInABadState` in
-`fuzz/fuzz_test.go` assert `Failure.Verified`, which means they assert that a
-minimised reproduction re-reproduced on the confirmation replay. That is exactly
-the property the paragraph above says is not guaranteed, and both used to fail
-intermittently under load.
+**A settle is a guess unless you tell the fuzzer otherwise.** By default a
+settle waits for output to go quiet for the stabilize interval, and a program
+starved of CPU for longer than that is judged on the screen from before it
+reacted. On a loaded machine that makes a session miss a finding, keep a
+shrink candidate that no longer needs to be kept, or fail to confirm its own
+reproduction. `Options.CaughtUp` lets a program that can report how much input
+it has handled replace the guess; see
+[Knowing when the program has caught up](fuzzing.md#knowing-when-the-program-has-caught-up).
 
-Part of that was a harness bug, since fixed: a write that raced the program's
-exit was classified before the child had been reaped, so a program that had
-quit cleanly was reported as `crash: driving the program failed: write
-/dev/ptmx: input/output error`. A dirty-exit reproduction confirmed as a crash
-does not match, and is labelled unverified. On an 11-core macOS machine, twelve
-parallel copies of the two tests, four runs each, failed three times before the
-fix and not at all after it. Whether any flakiness remains on Linux has not been
-measured since. If it does, nothing is wrong with the fuzzer when it fires; the
-assertion is stricter than the behaviour it tests, and a retry, or demoting the
-`Verified` check to a report rather than a failure, would fix it.
+The fuzzer's own tests were bitten by exactly this. The finding tests asserted
+that a finding was made, minimised and verified, and under load they failed
+intermittently: on an 11-core macOS machine with 48 busy loops beside it,
+`TestFindsViolatedInvariantAndMinimisesTowardIt` failed 3 of 40 runs, and a run
+of the whole package failed 3 of 12, including
+`TestFindsReplacementCharacterFromWellFormedInput`. Three causes stacked up.
+Settles returned before the fixture had drawn; they now wait for `CaughtUp`,
+wired to the fixture's `-ack` report. The fixture's bugs depended on how the
+kernel split input between reads, which changes with load: F9 was missed when
+more input followed it in the same read, and the replacement character came
+from cutting each read; both now depend on the bytes alone. And the shrinker
+could drop the wait after `Spawn`, so a candidate's first input raced the
+fixture's switch to raw mode and was sometimes edited by the line discipline;
+that wait is now kept. After all three, the test passed 80 of 80 runs under
+the same load. The wedge test is the exception, since a wedged program never
+reports again, and its verdict rests on the hang detector's own time bound.
+
+An earlier part of the same problem was a harness bug, since fixed: a write
+that raced the program's exit was classified before the child had been reaped,
+so a program that had quit cleanly was reported as `crash: driving the program
+failed: write /dev/ptmx: input/output error`.
 
 ## What this is not for
 

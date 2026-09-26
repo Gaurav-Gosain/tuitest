@@ -211,6 +211,31 @@ under-guarded invariant produces false positives, and an over-guarded one goes
 vacuous on exactly the degenerate sizes the fuzzer favours and is checked on
 almost nothing.
 
+### Knowing when the program has caught up
+
+Every verdict the fuzzer reaches is made at a settle, and by default a settle is
+a guess: it waits for the program's output to go quiet for the stabilize
+interval (150ms). A program that takes longer than that to react to its last
+input, as any program can on a loaded machine, is judged on the screen from
+before its reaction. The finding the input produced is missed, a shrink
+candidate that still reproduces is judged not to, or the confirmation replay
+fails.
+
+`Options.CaughtUp` replaces the guess with a fact when the program can supply
+one. It is called with the `*tuitest.Terminal`, and every settle waits until it
+returns true or the program exits, bounded by `SettleTimeout`. The usual way to
+write it is to have the program report how many bytes of input it has handled,
+through a file, a socket or the screen, and compare that with
+`Terminal.InputBytes`, which counts every byte written to the program's input.
+When the two agree the program has seen everything it was sent, however long
+the machine took to schedule it. The fuzzer's own tests do this with the
+fixture's `-ack` flag; see `acknowledged` in `fuzz/fuzz_test.go`.
+
+It is a Go-API feature for the same reason invariants are. A program that
+wedges never catches up, so every settle after the wedge waits the full
+`SettleTimeout` before the hang check runs. The hang is still found, only more
+slowly.
+
 Hang detection is the one heuristic, and it is deliberately conservative. A
 program is allowed to ignore input, so silence alone proves nothing: the check
 requires several unanswered input events and then waits the full grace period
@@ -231,7 +256,10 @@ The first pass deletes chunks in decreasing sizes, the classic delta debugging
 shape: a fuzz run is mostly irrelevant input, so the cheapest big win is
 deleting half of it, and the pass narrows until it is removing single commands.
 The `Spawn` is protected, so minimisation cannot produce a tape that runs
-nothing.
+nothing, and so is the `WaitOutput` straight after it. Without that wait the
+first input can reach the program before it has left the kernel's line editing,
+where an erase or kill byte deletes what came before it, so whether a candidate
+reproduces would depend on which side won the race.
 
 The second pass simplifies the commands that survive, each of which has a small
 ladder of strictly simpler forms; the first form that still reproduces wins.
@@ -381,11 +409,14 @@ in `internal/vt`.
 
 The fuzzer is verified against `testdata/buggytui`, a fixture with individually
 selectable bugs: a panic on one key, a wedge at one column, an exit that leaves
-the alternate screen and mouse tracking on, an echo path that truncates input
-mid-rune and so draws U+FFFD from well-formed text, and a mode toggle that hides
-part of the interface and never restores it. The tests assert that it finds
-each, that it minimises a tape which replays it, that it stays silent on
-the same fixture's well-behaved mode across several seeds, and that a session
-reaps every process it spawns. The minimisation strategy is tested separately
+the alternate screen and mouse tracking on, a text field that decodes input
+through a buffer that cuts runes in half and so draws U+FFFD from well-formed
+text, and a mode toggle that hides part of the interface and never restores it.
+The tests assert that it finds each, that it minimises a tape which replays it,
+that it stays silent on the same fixture's well-behaved mode across several
+seeds, and that a session reaps every process it spawns. Every bug except the
+wedge is triggered by the bytes sent alone, never by how the kernel split them
+between reads, and the tests that drive those bugs run with `CaughtUp` wired to
+the fixture's `-ack` report, so no verdict depends on how fast the machine is. The minimisation strategy is tested separately
 against an injected predicate rather than a real program, so those tests do not
 depend on any program's timing.
