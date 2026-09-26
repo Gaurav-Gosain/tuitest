@@ -143,3 +143,60 @@ func TestProcessLiveTreatsAZombieAsGone(t *testing.T) {
 		t.Fatalf("the child was reaped behind the test's back: %v", err)
 	}
 }
+
+// TestExitedStatesAreGone pins which process states teardown counts as
+// exited. A process whose parent's wait has claimed it shows as X (EXIT_DEAD)
+// in /proc for the moment the kernel takes to remove it, and a teardown check
+// that reads it then must not name it as a survivor. The state is too brief
+// to catch with a real process, so this reads stat lines as /proc prints them.
+//
+// The ways this could fail, written down before the fix:
+//
+//  1. X reads as running, so a child being reaped is reported as a leak. This
+//     is the bug: it made tuios wrap StartT with a teardown of its own.
+//  2. Z stops reading as exited.
+//  3. A running state (R, S, D, T, t, I, and the older W, P and K) reads as
+//     exited, so a real survivor is missed. That is the worse direction.
+//  4. The state is read from the wrong field when the command name holds
+//     spaces, parentheses or a state letter of its own.
+//  5. The /proc table and processLive disagree, because they parse the line
+//     separately.
+func TestExitedStatesAreGone(t *testing.T) {
+	cases := []struct {
+		comm, state string
+		exited      bool
+	}{
+		{"sh", "Z", true},
+		{"sh", "X", true},
+		{"tuios", "R", false},
+		{"tuios", "S", false},
+		{"tuios", "D", false},
+		{"tuios", "T", false},
+		{"tuios", "t", false},
+		{"kworker/0:1", "I", false},
+		{"old", "W", false},
+		{"old", "P", false},
+		{"old", "K", false},
+		// Names that look like the rest of the line.
+		{"a) X 1 2 (b", "S", false},
+		{"x) R 1 (y", "X", true},
+		{"with space", "Z", true},
+	}
+	for _, c := range cases {
+		line := "4242 (" + c.comm + ") " + c.state + " 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 99 0 0\n"
+		fields := procStatFields(line)
+		if len(fields) < 3 || fields[0] != c.state || fields[1] != "1" || fields[2] != "4242" {
+			t.Errorf("stat line for (%s) %s read as %q", c.comm, c.state, fields)
+			continue
+		}
+		if got := exitedState(fields[0]); got != c.exited {
+			t.Errorf("state %s of (%s): exited = %v, want %v", c.state, c.comm, got, c.exited)
+		}
+	}
+	// ps prints the state letter with modifiers after it.
+	for state, exited := range map[string]bool{"Z+": true, "X": true, "Ss": false, "R+": false, "I<": false} {
+		if got := exitedState(state[:1]); got != exited {
+			t.Errorf("ps state %s: exited = %v, want %v", state, got, exited)
+		}
+	}
+}

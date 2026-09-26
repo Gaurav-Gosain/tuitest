@@ -35,10 +35,21 @@ func procTable() map[int]procInfo {
 	return procTablePS()
 }
 
-// procTableProc reads /proc, which exists on Linux. Each stat line is
+// procStatFields returns the fields of a /proc/<pid>/stat line after the
+// command name: state, ppid, pgrp and the rest. The line is
 // "pid (comm) state ppid pgrp ...", and comm is an arbitrary string that may
-// itself contain spaces and parentheses, so the fields are taken after the final
-// ')' rather than by splitting the whole line.
+// itself contain spaces and parentheses, so the fields are taken after the
+// final ')' rather than by splitting the whole line. It returns nil for a line
+// with no ')'.
+func procStatFields(stat string) []string {
+	close := strings.LastIndexByte(stat, ')')
+	if close < 0 {
+		return nil
+	}
+	return strings.Fields(stat[close+1:])
+}
+
+// procTableProc reads /proc, which exists on Linux.
 func procTableProc() map[int]procInfo {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -54,12 +65,7 @@ func procTableProc() map[int]procInfo {
 		if err != nil {
 			continue // the process exited while we were looking at it
 		}
-		s := string(b)
-		close := strings.LastIndexByte(s, ')')
-		if close < 0 || close+2 >= len(s) {
-			continue
-		}
-		fields := strings.Fields(s[close+1:])
+		fields := procStatFields(string(b))
 		if len(fields) < 3 {
 			continue
 		}
@@ -71,7 +77,7 @@ func procTableProc() map[int]procInfo {
 		if err != nil {
 			continue
 		}
-		table[pid] = procInfo{ppid: ppid, pgrp: pgrp, zombie: fields[0] == "Z"}
+		table[pid] = procInfo{ppid: ppid, pgrp: pgrp, zombie: exitedState(fields[0])}
 	}
 	return table
 }
@@ -102,7 +108,7 @@ func procTablePS() map[int]procInfo {
 		if err != nil {
 			continue
 		}
-		zombie := len(fields) > 3 && strings.HasPrefix(fields[3], "Z")
+		zombie := len(fields) > 3 && exitedState(fields[3][:1])
 		table[pid] = procInfo{ppid: ppid, pgrp: pgrp, zombie: zombie}
 	}
 	return table
@@ -266,20 +272,28 @@ var hasProcFS = sync.OnceValue(func() bool {
 	return err == nil
 })
 
-// processLive reports whether pid is running and not a zombie.
+// exitedState reports whether a process state letter, as /proc and ps print
+// it, belongs to a process that has already exited: Z, a zombie waiting for
+// its parent, or X, one whose parent's wait has claimed it and that the kernel
+// is removing. A process being reaped passes through X on its way out of the
+// table, so a check that counted it as running would name a dead process as a
+// survivor.
+func exitedState(state string) bool {
+	return state == "Z" || state == "X"
+}
+
+// processLive reports whether pid is running and has not exited.
 func processLive(pid int) bool {
 	if hasProcFS() {
 		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 		if err != nil {
 			return false // the process is gone
 		}
-		// State is the first field after the final ')', since the command name
-		// in between may contain spaces and parentheses.
-		s := string(b)
-		if close := strings.LastIndexByte(s, ')'); close >= 0 {
-			if fields := strings.Fields(s[close+1:]); len(fields) > 0 {
-				return fields[0] != "Z"
-			}
+		// X (EXIT_DEAD) is a process its parent's wait has already claimed
+		// and the kernel has not yet removed from the table, so it has exited
+		// just as a zombie has.
+		if fields := procStatFields(string(b)); len(fields) > 0 {
+			return !exitedState(fields[0])
 		}
 		return true
 	}
