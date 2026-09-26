@@ -33,10 +33,14 @@ func TestWriteErrorAfterExitReportsTheExit(t *testing.T) {
 	t.Parallel()
 	sh := shellPath(t)
 
+	// The loop below is bounded by a deadline rather than a number of
+	// attempts. Counting attempts bounded it by how fast the machine ran: each
+	// pause is a millisecond at best, and a shell starved of CPU could take
+	// longer than two thousand of them to exit.
 	const (
-		runs        = 50
-		maxAttempts = 2000
-		pause       = time.Millisecond
+		runs  = 50
+		limit = 30 * time.Second
+		pause = time.Millisecond
 	)
 	for i := range runs {
 		term, err := tuitest.Start([]string{sh, "-c", "exit 0"}, tuitest.WithSize(20, 5))
@@ -46,7 +50,7 @@ func TestWriteErrorAfterExitReportsTheExit(t *testing.T) {
 
 		var werr error
 		acceptedAfterExit := false
-		for range maxAttempts {
+		for deadline := time.Now().Add(limit); time.Now().Before(deadline); {
 			_, exitedBefore := term.ExitStatus()
 			if werr = term.Type("x"); werr != nil {
 				break
@@ -60,7 +64,7 @@ func TestWriteErrorAfterExitReportsTheExit(t *testing.T) {
 		if werr == nil {
 			_ = term.Close()
 			if !acceptedAfterExit {
-				t.Fatalf("run %d: the child neither exited nor refused input after %d writes", i, maxAttempts)
+				t.Fatalf("run %d: the child neither exited nor refused input within %s", i, limit)
 			}
 			// The platform accepts writes to a finished program.
 			continue

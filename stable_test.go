@@ -2,6 +2,7 @@ package tuitest
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -9,23 +10,33 @@ import (
 // TestWaitForStableWaitsForTheRestOfTheFrame is the case WaitFor gets wrong:
 // the marker is drawn before the rest of the frame, so a read made the moment
 // it appears misses the rows that follow.
+//
+// The rest of the frame is written as soon as the wait has seen the header,
+// rather than after a fixed sleep, so the writer cannot fall behind the wait's
+// window by being scheduled late. What remains is the gap between the signal
+// and the write, which the one-second window leaves ample room for.
 func TestWaitForStableWaitsForTheRestOfTheFrame(t *testing.T) {
-	const quiet = 300 * time.Millisecond
+	const quiet = time.Second
 	term := newIdleTerminal(quiet)
 
+	sawHeader := make(chan struct{})
+	var once sync.Once
 	go func() {
-		term.onData([]byte("header\r\n"))
-		time.Sleep(quiet / 4)
+		<-sawHeader
 		term.onData([]byte("body\r\n"))
-		time.Sleep(quiet / 4)
 		term.onData([]byte("footer"))
 	}()
+	term.onData([]byte("header\r\n"))
 
 	var seen Screen
 	err := term.WaitForStable(func(s Screen) bool {
 		seen = s
-		return strings.Contains(s.Text(), "header")
-	}, 5*time.Second)
+		ok := strings.Contains(s.Text(), "header")
+		if ok {
+			once.Do(func() { close(sawHeader) })
+		}
+		return ok
+	}, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

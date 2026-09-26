@@ -46,17 +46,21 @@ func TestWaitStableWaitsOutTheWindowAfterInput(t *testing.T) {
 // input pending, a terminal that has been quiet longer than the window is
 // stable straight away, so the fix above must not turn every WaitStable into a
 // fixed sleep.
+//
+// The window is long so that the bound has room for a test goroutine that is
+// descheduled on a loaded machine: a WaitStable that slept out the window would
+// still take all five seconds, and one that returns at once takes nowhere near.
 func TestWaitStableReturnsPromptlyWhenIdle(t *testing.T) {
-	const quiet = 200 * time.Millisecond
+	const quiet = 5 * time.Second
 	term := newIdleTerminal(quiet)
 
 	term.mu.Lock()
-	term.lastWrite = time.Now().Add(-time.Second)
-	term.lastInput = time.Now().Add(-time.Second)
+	term.lastWrite = time.Now().Add(-2 * quiet)
+	term.lastInput = time.Now().Add(-2 * quiet)
 	term.mu.Unlock()
 
 	start := time.Now()
-	if err := term.WaitStable(2 * time.Second); err != nil {
+	if err := term.WaitStable(2 * quiet); err != nil {
 		t.Fatalf("WaitStable: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed >= quiet {
@@ -64,30 +68,32 @@ func TestWaitStableReturnsPromptlyWhenIdle(t *testing.T) {
 	}
 }
 
-// TestWaitStableRestartsOnLateOutput checks that output arriving during the
-// window pushes the deadline out, which is what makes the wait mean "quiesced"
+// TestWaitStableRestartsOnLateOutput checks that output arriving after the
+// input pushes the deadline out, which is what makes the wait mean "quiesced"
 // rather than "a fixed delay after input".
+//
+// The output lands before the wait starts, half a window after the input, so
+// the order of events is fixed by the test rather than by a goroutine that has
+// to wake on time. Measured from the input the window would close after half
+// of it; measured from the output it takes the whole window. Only the lower
+// bound is asserted, and a loaded machine can only make the wait longer.
 func TestWaitStableRestartsOnLateOutput(t *testing.T) {
-	const quiet = 120 * time.Millisecond
+	const quiet = 200 * time.Millisecond
 	term := newIdleTerminal(quiet)
 
 	term.mu.Lock()
 	term.lastWrite = time.Now().Add(-time.Second)
-	term.lastInput = time.Now()
+	term.lastInput = time.Now().Add(-quiet / 2)
 	term.mu.Unlock()
 
-	go func() {
-		time.Sleep(quiet / 2)
-		term.onData([]byte("late output"))
-	}()
-
+	term.onData([]byte("late output"))
 	start := time.Now()
 	if err := term.WaitStable(2 * time.Second); err != nil {
 		t.Fatalf("WaitStable: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < quiet+quiet/2 {
-		t.Errorf("WaitStable returned after %s; output at %s should have restarted the %s window",
-			elapsed, quiet/2, quiet)
+	if elapsed := time.Since(start); elapsed < quiet*9/10 {
+		t.Errorf("WaitStable returned after %s; output after the input should have restarted the %s window",
+			elapsed, quiet)
 	}
 }
 

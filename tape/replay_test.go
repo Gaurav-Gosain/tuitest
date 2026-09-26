@@ -53,18 +53,21 @@ func TestReplayEchoesCommands(t *testing.T) {
 }
 
 // TestReplaySpeedScalesSleep checks that -speed actually shortens playback. The
-// tape sleeps for 400ms; at 8x it must finish far sooner, and the assertion is
-// deliberately loose so a slow machine does not make it flaky.
+// tape sleeps for 10s; at 100x it must finish far sooner.
 func TestReplaySpeedScalesSleep(t *testing.T) {
-	cmds := mustParse(t, "Sleep 400ms\n")
+	// A long sleep at a high speed, so the bound sits far from both the scaled
+	// duration (100ms) and the unscaled one (10s). A loaded machine can only
+	// make the scaled sleep overshoot by scheduling delay, which is nowhere
+	// near the seconds of headroom.
+	cmds := mustParse(t, "Sleep 10s\n")
 
 	start := time.Now()
-	r := &tape.Replayer{Render: io.Discard, Log: io.Discard, Speed: 8}
+	r := &tape.Replayer{Render: io.Discard, Log: io.Discard, Speed: 100}
 	if err := r.Run(cmds); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
-		t.Errorf("Sleep 400ms at 8x speed took %v, so the speed control did nothing", elapsed)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Sleep 10s at 100x speed took %v, so the speed control did nothing", elapsed)
 	}
 }
 

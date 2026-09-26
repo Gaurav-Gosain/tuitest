@@ -58,9 +58,9 @@ func TestWaitForOutputWaitsForAReaction(t *testing.T) {
 
 	term := tuitest.StartT(t, []string{buggyBinary(t), "-bug", "none"}, tuitest.WithSize(80, 10))
 
-	if err := term.WaitForOutput(5 * time.Second); err != nil {
-		t.Fatalf("waiting for the first frame: %v", err)
-	}
+	// WaitForText rather than WaitForOutput for the first frame: a frame that
+	// lands before WaitForOutput starts is not output it waits for, and on a
+	// loaded machine the wait could start after it.
 	if err := term.WaitForText("ctrl-c to quit", 5*time.Second); err != nil {
 		t.Fatalf("waiting for the banner: %v", err)
 	}
@@ -69,17 +69,39 @@ func TestWaitForOutputWaitsForAReaction(t *testing.T) {
 		t.Fatalf("waiting for quiet: %v", err)
 	}
 
-	before := term.Screen().Text()
+	// WaitForOutput counts only output that arrives after it starts, and the
+	// program can redraw between SendKeys returning and the wait starting. A
+	// wait that times out although the byte count moved lost that race; it is
+	// not the failure under test, which is a wait that returns with nothing
+	// drawn, so the keystroke is sent again.
+	for attempt := 1; ; attempt++ {
+		before := term.Screen().Text()
+		sent, _ := term.Progress()
 
-	if err := term.SendKeys(tuitest.Down); err != nil {
-		t.Fatal(err)
-	}
-	if err := term.WaitForOutput(5 * time.Second); err != nil {
-		t.Fatalf("the program should have redrawn after a keystroke: %v", err)
-	}
-
-	if after := term.Screen().Text(); after == before {
-		t.Fatalf("WaitForOutput returned but the screen never changed; it did not wait for the reaction\nscreen:\n%s", after)
+		// Alternate the key, so each attempt changes what the fixture draws.
+		key := tuitest.Down
+		if attempt%2 == 0 {
+			key = tuitest.Up
+		}
+		if err := term.SendKeys(key); err != nil {
+			t.Fatal(err)
+		}
+		err := term.WaitForOutput(5 * time.Second)
+		if now, _ := term.Progress(); err != nil && now > sent && attempt < 5 {
+			// The redraw landed before the wait began. Let it finish and
+			// try again.
+			if err := term.WaitStable(5 * time.Second); err != nil {
+				t.Fatalf("waiting for quiet: %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("the program should have redrawn after a keystroke: %v", err)
+		}
+		if after := term.Screen().Text(); after == before {
+			t.Fatalf("WaitForOutput returned but the screen never changed; it did not wait for the reaction\nscreen:\n%s", after)
+		}
+		return
 	}
 }
 
