@@ -228,6 +228,12 @@ func (s *Session) Run() ([]Command, error) {
 // session is usually the one that quits the program, and its farewell output
 // belongs in the tape.
 func (s *Session) finalSettle(tt *tuitest.Terminal, quiet, settleMax time.Duration) string {
+	// A child that has exited cannot change the screen again: the exit is only
+	// recorded once every byte it wrote has been drawn. Waiting out the quiet
+	// window would add nothing but the wait.
+	if _, exited := tt.ExitCode(); exited {
+		return tt.Snapshot()
+	}
 	last := tt.Snapshot()
 	quietSince := time.Now()
 	deadline := time.Now().Add(settleMax)

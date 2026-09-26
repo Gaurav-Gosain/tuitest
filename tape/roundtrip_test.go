@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 
 // scriptReader plays pre-baked input chunks with a pause before each, standing
 // in for a person typing at a terminal. The pause has to exceed the session's
-// quiet window so that each burst produces its own settle point.
+// quiet window so that each burst produces its own settle point. The tests that
+// use it assert only on how the input was decoded, which no settle can change.
 type scriptReader struct {
 	chunks []string
 	delay  time.Duration
@@ -30,19 +32,121 @@ func (r *scriptReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// promptReader plays pre-baked input chunks, standing in for a person typing
+// at a terminal who looks at the screen before each key: a chunk is only handed
+// over once the program has answered everything before it. echotui answers each
+// line with a fresh prompt, so before a chunk the output must hold one prompt
+// for the opening screen and one per line already sent.
+//
+// After the last chunk the reader does not end the stream. It blocks, as a
+// person who has typed their last key and is watching the program quit, and the
+// session ends because the program exited, not because the input did.
+type promptReader struct {
+	chunks []string
+	out    *outputLog
+	i      int
+	sent   int // lines sent so far
+	hold   <-chan struct{}
+}
+
+func (r *promptReader) Read(p []byte) (int, error) {
+	if r.i >= len(r.chunks) {
+		select {
+		case <-r.hold:
+		case <-time.After(scriptLimit):
+		}
+		return 0, io.EOF
+	}
+	// Returns false only at the limit, when the program has stopped answering;
+	// the chunk is sent anyway and the test fails on what the tape shows.
+	r.out.waitFor(func(s string) bool { return strings.Count(s, "> ") >= 1+r.sent })
+	// A pause between keys, as a person leaves, so the recording has time to
+	// see each one on its own. It sets no verdict: the settles below end on the
+	// next chunk, not on the clock.
+	time.Sleep(20 * time.Millisecond)
+	chunk := r.chunks[r.i]
+	r.sent += strings.Count(chunk, "\r")
+	n := copy(p, chunk)
+	r.i++
+	return n, nil
+}
+
+// outputLog collects what the program wrote, through the session's output
+// mirror, so the reader can wait on it. The mirror is fed after the emulator
+// has taken the same bytes, so once the log shows a reaction the screen the
+// recorder snapshots shows it too.
+type outputLog struct {
+	mu   sync.Mutex
+	cond *sync.Cond
+	buf  strings.Builder
+}
+
+func newOutputLog() *outputLog {
+	l := &outputLog{}
+	l.cond = sync.NewCond(&l.mu)
+	return l
+}
+
+func (l *outputLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	l.buf.Write(p)
+	l.cond.Broadcast()
+	l.mu.Unlock()
+	return len(p), nil
+}
+
+// waitFor blocks until cond holds on the output so far, or scriptLimit passes.
+func (l *outputLog) waitFor(cond func(string) bool) bool {
+	deadline := time.Now().Add(scriptLimit)
+	// A timer wakes the wait at the deadline, since a program that has stopped
+	// writing never broadcasts again.
+	stop := time.AfterFunc(scriptLimit, func() {
+		l.mu.Lock()
+		l.cond.Broadcast()
+		l.mu.Unlock()
+	})
+	defer stop.Stop()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for !cond(l.buf.String()) {
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		l.cond.Wait()
+	}
+	return true
+}
+
+// scriptLimit bounds every wait in a scripted recording. It is only reached if
+// the program stops answering, and the test then fails on what the tape shows.
+const scriptLimit = 30 * time.Second
+
 // recordFixture records a scripted session against the echotui fixture and
-// returns the tape source. It keeps the timing tight so the suite stays fast.
+// returns the tape source. The script must end with a line that makes echotui
+// exit.
+//
+// Every settle here ends on an event rather than a quiet window. Quiet and
+// SettleMax are far longer than any script, so a settle after a chunk ends
+// when the next chunk arrives, which the reader holds back until the program
+// has answered, or when the program exits. The recording used to run with a
+// 50ms quiet window, and on a loaded machine a settle ended before the program
+// had answered: the opening snapshot caught the banner without its prompt, and
+// a session whose input ended straight after "quit" was recorded before the
+// program had been reaped, without its ExpectExit.
 func recordFixture(t *testing.T, rec *tape.Recorder, chunks ...string) string {
 	t.Helper()
 
+	hold := make(chan struct{})
+	defer close(hold)
+	out := newOutputLog()
 	sess := &tape.Session{
 		Argv:      []string{echoBin},
-		In:        &scriptReader{chunks: chunks, delay: 150 * time.Millisecond},
-		Out:       io.Discard,
+		In:        &promptReader{chunks: chunks, out: out, hold: hold},
+		Out:       out,
 		Cols:      40,
 		Rows:      10,
-		Quiet:     50 * time.Millisecond,
-		SettleMax: 2 * time.Second,
+		Quiet:     scriptLimit,
+		SettleMax: scriptLimit,
 		Recorder:  rec,
 	}
 
@@ -94,7 +198,7 @@ func TestRecordReplayRoundTrip(t *testing.T) {
 func TestRecordReplayRoundTripWithSnapshots(t *testing.T) {
 	rec := tape.NewRecorder()
 	rec.CaptureSnapshots = true
-	source := recordFixture(t, rec, "hello", "\r")
+	source := recordFixture(t, rec, "hello", "\r", "quit", "\r")
 
 	if !strings.Contains(source, "Snapshot step-01") {
 		t.Fatalf("no snapshots in the recording:\n%s", source)
