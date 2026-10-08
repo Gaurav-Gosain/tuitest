@@ -60,3 +60,34 @@ jobs:
         # installed here. TERM is unset on a runner and nothing needs it: every
         # spawned program gets its own TERM from tuitest.
         run: go test -race -timeout 15m ./...
+
+  # The vendored emulator in internal/vt must match the tuios commit recorded
+  # in internal/vt/UPSTREAM. The drift tests skip without a tuios checkout, so
+  # this job checks out that commit and makes sure both tests ran.
+  vendor-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: read the recorded tuios commit
+        id: upstream
+        run: echo "commit=$(awk '$1 == "commit" { print $2 }' internal/vt/UPSTREAM)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: Gaurav-Gosain/tuios
+          ref: ${{ steps.upstream.outputs.commit }}
+          path: .tuios-src
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: drift tests
+        env:
+          TUITEST_TUIOS_SRC: ${{ github.workspace }}/.tuios-src
+        run: |
+          go test -count=1 -v -run 'TestVendored' ./internal/vt/ | tee drift.log
+          for name in TestVendoredCopyMatchesUpstream TestVendoredDependenciesMatchUpstream; do
+            if ! grep -q -- "--- PASS: $name" drift.log; then
+              echo "$name did not pass (it failed or skipped)"
+              exit 1
+            fi
+          done
