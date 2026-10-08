@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/x/xpty"
 )
@@ -35,9 +36,9 @@ func setSysProcAttr(*exec.Cmd) {}
 
 func neutraliseLineDiscipline(xpty.Pty) error { return nil }
 
-func terminateGroup(int, <-chan struct{}) error { return nil }
+func terminateGroup(int, <-chan struct{}, time.Duration) error { return nil }
 
-func terminateSurvivors(int) error { return nil }
+func terminateSurvivors(int, time.Duration) error { return nil }
 
 // SignalName falls back to the description, since Windows has no signal death
 // to name.

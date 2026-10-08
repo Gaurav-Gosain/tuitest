@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/x/xpty"
 )
@@ -21,7 +22,14 @@ type Config struct {
 	Dir  string   // working directory, empty for inherit
 	Cols int
 	Rows int
+	// KillGrace is how long Close waits for the child to exit after SIGTERM
+	// before it sends SIGKILL. Zero means DefaultKillGrace, and less than
+	// zero sends SIGKILL at once.
+	KillGrace time.Duration
 }
+
+// DefaultKillGrace is the KillGrace a zero Config gets.
+const DefaultKillGrace = 2 * time.Second
 
 // Handler receives lifecycle callbacks from the pump goroutine. Callbacks are
 // invoked from a single dedicated goroutine, never concurrently with each
@@ -47,8 +55,9 @@ type Status struct {
 
 // Process is a spawned child attached to a PTY.
 type Process struct {
-	pty xpty.Pty
-	cmd *exec.Cmd
+	pty   xpty.Pty
+	cmd   *exec.Cmd
+	grace time.Duration // see Config.KillGrace, already resolved
 
 	writeMu sync.Mutex // serializes writes to the PTY master
 
@@ -105,9 +114,17 @@ func Start(cfg Config, h Handler) (*Process, error) {
 		_ = u.Slave().Close()
 	}
 
+	grace := cfg.KillGrace
+	switch {
+	case grace == 0:
+		grace = DefaultKillGrace
+	case grace < 0:
+		grace = 0
+	}
 	p := &Process{
 		pty:    pty,
 		cmd:    cmd,
+		grace:  grace,
 		status: Status{Code: -1},
 		done:   make(chan struct{}),
 	}
@@ -263,9 +280,9 @@ func (p *Process) Close() error {
 		case pid <= 0:
 			// The child never started; there is nothing to tear down.
 		case !exited:
-			p.closeErr = terminateGroup(pid, p.done)
+			p.closeErr = terminateGroup(pid, p.done, p.grace)
 		default:
-			p.closeErr = terminateSurvivors(pid)
+			p.closeErr = terminateSurvivors(pid, p.grace)
 		}
 		// Close the PTY only after the process tree is gone, so the pump
 		// goroutine is not left spinning on a half-open descriptor. A failure

@@ -127,6 +127,11 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 	defer timer.Stop()
 
 	for {
+		// A panic is checked first: after it the screen no longer follows
+		// the program, so no condition on it means anything.
+		if err := t.panicErrorLocked(op); err != nil {
+			return err
+		}
 		if ready() {
 			return nil
 		}
@@ -167,8 +172,22 @@ func (t *Terminal) tailLogLocked() string {
 // returns an error wrapping ErrChildExited if the program exits before the
 // condition holds, or ErrTimeout if time runs out. The error message carries
 // the screen at that moment.
+//
+// The error describes the condition as "custom condition". Use WaitForDesc to
+// say what the condition waits for.
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error {
-	return t.waitLoop("WaitFor", "custom condition", timeout, false, func() bool {
+	return t.WaitForDesc("custom condition", cond, timeout)
+}
+
+// WaitForDesc is WaitFor with a description of the condition. The description
+// is the Want field of the error, and the error message says "waiting for"
+// desc, so write it to complete that phrase:
+//
+//	term.WaitForDesc("the status bar to show 3 windows", func(s tuitest.Screen) bool {
+//		return strings.Contains(s.Line(23), "3 windows")
+//	}, time.Second)
+func (t *Terminal) WaitForDesc(desc string, cond func(Screen) bool, timeout time.Duration) error {
+	return t.waitLoop("WaitFor", desc, timeout, false, func() bool {
 		return cond(t.viewLocked())
 	})
 }

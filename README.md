@@ -104,8 +104,9 @@ func TestGreeting(t *testing.T) {
 }
 ```
 
-`StartT` mirrors PTY traffic into `t.Log`, registers `Close` through
-`t.Cleanup`, and fails the test if the spawn itself fails. Record the golden
+`StartT` registers `Close` through `t.Cleanup`, fails the test if the spawn
+itself fails, and writes the last 32KB of PTY traffic to `t.Log` if the test
+fails. Record the golden
 once with `UPDATE_GOLDEN=1 go test ./...`, then review it as part of the diff.
 It holds `name? hello, gopher`: the PTY does not echo input, so the screen shows
 only what the program drew (see [docs/limits.md](docs/limits.md#fidelity-gaps)).
@@ -475,15 +476,16 @@ corpus stops reproducing. See [docs/fuzzing.md](docs/fuzzing.md).
 
 ## Performance
 
-Measured on an Intel i7-10700 (16 threads, Linux), 80-column grid, five runs of
-`go test -run '^$' -bench . -benchtime 3s .`, reproducible from `bench_test.go`
-in the root package. Ranges rather than single figures, because this was an
-otherwise-busy desktop and the spread is real.
+Measured on 2026-10-08 on an Intel i7-10700 (16 threads, Linux), 80-column
+grid, five runs of `go test -run '^$' -bench 'EmulatorPlainLines|EmulatorStyledLines' -benchtime 3s .`,
+reproducible from `bench_test.go` in the root package. The machine had a load
+average of about 29, so these figures are wall time under load and a lower
+bound. At a load average of about 5, plain lines ran at 51 to 53 MB/s.
 
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |
-| Plain 80-column text lines | 64,000 to 68,000 | 5.2 to 5.5 MB/s |
-| Same with an SGR change per line | 44,000 to 66,000 | 4.3 to 6.4 MB/s |
+| Plain 80-column text lines | 360,000 to 460,000 | 29 to 37 MB/s |
+| Same with an SGR change per line | 190,000 to 225,000 | 19 to 22 MB/s |
 
 The emulator is the only component in the read path that scales with output
 volume, and it is single-threaded by construction: a VT interpreter is a state

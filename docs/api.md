@@ -16,8 +16,12 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal
 ```
 
 `Start` is the plain constructor. `StartT` is the one to use under `go test`: it
-wires the debug log to `t.Log`, registers `Close` through `t.Cleanup`, and calls
-`t.Fatalf` if the spawn itself fails.
+registers `Close` through `t.Cleanup`, and calls `t.Fatalf` if the spawn itself
+fails. It keeps the last 32KB (`TestLogTail`) of PTY I/O and writes it to
+`t.Log` only when the test fails. A passing test logs nothing.
+`WithFullTestLog` copies every chunk to `t.Log` instead, and `WithLog` sends the
+log to your own writer. The test also fails when the terminal emulator panicked
+during it, even if no call returned the error.
 
 | Option | Effect |
 | --- | --- |
@@ -31,6 +35,9 @@ wires the debug log to `t.Log`, registers `Close` through `t.Cleanup`, and calls
 | `WithOutputMirror(w io.Writer)` | Copy only what the program wrote to `w`, as it arrives. |
 | `WithSemanticMarkers()` | Enable the OSC 133 waits. |
 | `WithStabilizeInterval(d time.Duration)` | Quiet window for `WaitStable`. Default 150ms. |
+| `WithWriteTimeout(d time.Duration)` | How long input waits for the program to read it. Default 10s (`DefaultWriteTimeout`). Zero or less removes the limit. |
+| `WithKillGrace(d time.Duration)` | How long `Close` waits after SIGTERM before SIGKILL. Default 2s. Zero or less sends SIGKILL at once. |
+| `WithFullTestLog()` | Make `StartT` copy all PTY I/O to `t.Log`, not only a tail on failure. |
 
 By default the child gets a minimal hermetic environment: `PATH` and `HOME` if
 the parent has them, `LANG=C.UTF-8`, and `TERM`. A developer's shell
@@ -116,6 +123,7 @@ anything outside it.
 func (t *Terminal) WaitForText(substr string, timeout time.Duration) error
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error
 func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error
+func (t *Terminal) WaitForDesc(desc string, cond func(Screen) bool, timeout time.Duration) error
 func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) error
 func (t *Terminal) WaitForOutput(timeout time.Duration) error
 func (t *Terminal) WaitStable(timeout time.Duration) error
@@ -126,6 +134,10 @@ func (t *Terminal) Done() <-chan struct{}
 `Scope` is `ScopeScreen` (the whole screen) or `ScopeLastLine` (the last
 non-blank row, useful for prompts). A timeout of zero or less is treated as one
 second.
+
+`WaitForDesc` is `WaitFor` with a description. The error of `WaitFor` says
+"waiting for custom condition". The error of `WaitForDesc` says "waiting for"
+and then your description, such as "the status bar to show 3 windows".
 
 `WaitStable` and `WaitForOutput` answer different questions and are easy to
 confuse. `WaitStable` waits for output to go quiet, which is what you want after
@@ -203,8 +215,21 @@ case errors.Is(err, tuitest.ErrChildExited):
 }
 ```
 
-The sentinels are `ErrTimeout`, `ErrChildExited`, and `ErrSemanticMarkers`, the
-last returned by the OSC 133 waits when `WithSemanticMarkers` was not passed.
+The sentinels are `ErrTimeout`, `ErrChildExited`, `ErrSemanticMarkers` and
+`ErrEmulatorPanic`. The OSC 133 waits return `ErrSemanticMarkers` when
+`WithSemanticMarkers` was not passed.
+
+Input that the program does not read times out too. When the program's input
+buffer is full, a write blocks. After the write timeout (`WithWriteTimeout`),
+the call returns a `*TimeoutError` with the screen. Part of the input can
+already be in the buffer, so the terminal then refuses all further input.
+
+If the terminal emulator panics while it reads the program's output, the
+terminal recovers. It keeps reading the output, so the program does not block,
+but the screen stops changing. Every later wait, input and `Resize` returns an
+`*EmulatorPanicError`, which unwraps to `ErrEmulatorPanic`. It holds the panic
+value, the stack, the chunk of output, and the last screen. A panic is a bug in
+tuitest, so please report it with those.
 
 ### Semantic (OSC 133) waits
 
@@ -337,8 +362,8 @@ func (t *Terminal) Close() error
 ```
 
 `Close` tears down the whole process group, any descendant that left it with
-`setsid`, and the PTY. It sends SIGTERM, then SIGKILL after two seconds to
-anything still running. It returns an error naming any process that survived
+`setsid`, and the PTY. It sends SIGTERM, then SIGKILL after two seconds
+(`WithKillGrace` changes this) to anything still running. It returns an error naming any process that survived
 both, which `StartT`'s cleanup reports as a test failure. It is idempotent and
 is registered automatically by `StartT`. See [limits.md](limits.md#teardown)
 for what it cannot reach.

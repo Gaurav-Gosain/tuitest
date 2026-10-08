@@ -85,7 +85,7 @@ func setSysProcAttr(cmd *exec.Cmd) {
 }
 
 // terminateGroup tears down the child and everything it spawned: SIGTERM
-// first, then SIGKILL to whatever is still running after a short grace period.
+// first, then SIGKILL to whatever is still running after grace.
 // It returns an error naming the processes that survived even SIGKILL, so a
 // caller can report a leak instead of silently assuming teardown worked.
 //
@@ -94,9 +94,7 @@ func setSysProcAttr(cmd *exec.Cmd) {
 // daemonizing program outlives every test that spawned it. The descendant tree
 // is therefore snapshotted first, while the parent links still lead back here,
 // and each member is signalled individually as well.
-func terminateGroup(pid int, done <-chan struct{}) error {
-	const grace = 2 * time.Second
-
+func terminateGroup(pid int, done <-chan struct{}, grace time.Duration) error {
 	tree := descendants(pid)
 
 	signalTree(pid, tree, syscall.SIGTERM)
@@ -104,7 +102,11 @@ func terminateGroup(pid int, done <-chan struct{}) error {
 
 	if left := liveProcs(append([]int{pid}, tree...)); len(left) > 0 {
 		signalTree(pid, tree, syscall.SIGKILL)
-		awaitGone(pid, tree, done, grace)
+		// SIGKILL cannot be ignored, so this wait is for the kernel and
+		// the pump, not for the program. It keeps the default length
+		// whatever grace the caller chose: a grace of zero would otherwise
+		// report a dying process as a survivor.
+		awaitGone(pid, tree, done, killWait)
 	}
 
 	if left := liveProcs(append([]int{pid}, tree...)); len(left) > 0 {
@@ -112,6 +114,9 @@ func terminateGroup(pid int, done <-chan struct{}) error {
 	}
 	return nil
 }
+
+// killWait bounds how long teardown waits for processes to go after SIGKILL.
+const killWait = 2 * time.Second
 
 // terminateSurvivors tears down whatever is left of the process group of a child
 // that has already been waited for.
@@ -128,9 +133,7 @@ func terminateGroup(pid int, done <-chan struct{}) error {
 // the group, its parent link died with the child, and nothing the harness can
 // observe ties it back here. Close names what it can and stays quiet about what
 // it genuinely cannot see.
-func terminateSurvivors(pgid int) error {
-	const grace = 2 * time.Second
-
+func terminateSurvivors(pgid int, grace time.Duration) error {
 	// The leader has been reaped, so its pid was released back to the kernel.
 	// If something is answering to that number now it is an unrelated process
 	// that happens to have been handed it, and on a machine that has wrapped
@@ -149,7 +152,7 @@ func terminateSurvivors(pgid int) error {
 
 	if left := liveProcs(groupMembers(pgid)); len(left) > 0 {
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		awaitGroupGone(pgid, grace)
+		awaitGroupGone(pgid, killWait)
 	}
 
 	if left := liveProcs(groupMembers(pgid)); len(left) > 0 {

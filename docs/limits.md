@@ -49,14 +49,15 @@ outlived the program that started it is neither killed nor reported.
 | Emulator grid | one `uv.Cell` per cell | 80x24 is 1,920 cells; 1000x1000 is a million |
 | Snapshot | one `Cell` per cell, copied | built per condition evaluation that needs one |
 | I/O tail ring | 4KB | fixed, for error messages |
+| `StartT` log tail | 32KB | fixed, written to `t.Log` when the test fails |
 | Pump buffer | 32KB | fixed, reused |
 | Scrollback | as the vendored VT allocates | not exposed through `Screen` |
 
 The rule of thumb: memory is `cols * rows` per live terminal plus a snapshot for
 each wait currently evaluating a grid condition, and everything else is
 constant. A tape's `Set Size` and `Resize` are bounded to 1..10000 per dimension
-precisely because the grid is allocated up front and a tape is untrusted input
-to the CLI.
+precisely because the grid is allocated up front, and a tape can come from
+someone else.
 
 Nothing is on disk except golden files and the fuzz corpus, and nothing is
 shared between terminals, so parallel tests scale with grid size rather than
@@ -64,15 +65,16 @@ contending.
 
 ## Throughput
 
-Measured on an Intel i7-10700 (16 threads, Linux), 80-column grid, five runs of
-`go test -run '^$' -bench . -benchtime 3s .`, from `bench_test.go`. Ranges
-rather than single figures, because this was an otherwise-busy desktop and the
-spread is real:
+Measured on 2026-10-08 on an Intel i7-10700 (16 threads, Linux), 80-column
+grid, five runs of `go test -run '^$' -bench 'EmulatorPlainLines|EmulatorStyledLines' -benchtime 3s .`,
+from `bench_test.go`. The machine had a load average of about 29, so these
+figures are wall time under load and a lower bound. On the same machine at a
+load average of about 5, plain lines ran at 51 to 53 MB/s.
 
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |
-| Plain 80-column text lines | 64,000 to 68,000 | 5.2 to 5.5 MB/s |
-| Same with an SGR change per line | 44,000 to 66,000 | 4.3 to 6.4 MB/s |
+| Plain 80-column text lines | 360,000 to 460,000 | 29 to 37 MB/s |
+| Same with an SGR change per line | 190,000 to 225,000 | 19 to 22 MB/s |
 
 Adding more concurrency cannot make this faster. A VT interpreter is a state
 machine over an ordered byte stream: cell N+1 depends on every escape sequence

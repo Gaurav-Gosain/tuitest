@@ -262,5 +262,5 @@ func (t *Terminal) SendMouse(ev MouseEvent) error {
 	if !ok {
 		return fmt.Errorf("tuitest: mouse event %+v has no representation in its wire encoding", ev)
 	}
-	return t.write([]byte(s))
+	return t.write("SendMouse", []byte(s))
 }

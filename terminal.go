@@ -10,6 +10,7 @@
 package tuitest
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -42,14 +43,31 @@ type config struct {
 	outMirror  io.Writer
 	semantic   bool
 	stabilize  time.Duration
+
+	// writeTimeout bounds how long input waits for the program to read it.
+	// Zero or less means no bound.
+	writeTimeout time.Duration
+	// killGrace is how long Close waits after SIGTERM before it sends
+	// SIGKILL. Zero means the default, and less than zero means no wait.
+	killGrace time.Duration
+
+	// testLog is the test StartT was called with, and fullTestLog asks for
+	// every chunk of I/O in its log instead of a tail on failure.
+	testLog     testing.TB
+	fullTestLog bool
+
+	// newEmu builds the emulator. Nil means emu.New. Tests replace it to
+	// make the emulator fail.
+	newEmu func(cols, rows int) emu.Emulator
 }
 
 func defaultConfig() config {
 	return config{
-		cols:      80,
-		rows:      24,
-		term:      "xterm-256color",
-		stabilize: DefaultStabilizeInterval,
+		cols:         80,
+		rows:         24,
+		term:         "xterm-256color",
+		stabilize:    DefaultStabilizeInterval,
+		writeTimeout: DefaultWriteTimeout,
 	}
 }
 
@@ -91,6 +109,39 @@ func WithTrueColor() Option {
 // WithLog mirrors all PTY I/O to w for debugging failing tests.
 func WithLog(w io.Writer) Option {
 	return func(c *config) { c.log = w }
+}
+
+// WithWriteTimeout sets how long input (SendKeys, Type, Paste, SendMouse) waits
+// for the program to read it. The default is DefaultWriteTimeout. Zero or less
+// removes the limit.
+//
+// A write that times out returns a *TimeoutError with the screen. Part of the
+// input can already be in the program's input buffer, possibly half an escape
+// sequence, so after a timeout the terminal refuses all further input. Raise
+// the limit for a large paste into a program that reads slowly.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(c *config) { c.writeTimeout = d }
+}
+
+// WithKillGrace sets how long Close waits for the program to exit after
+// SIGTERM before it sends SIGKILL. The default is two seconds. Zero or less
+// sends SIGKILL at once. A short grace makes Close fast for a program that
+// ignores SIGTERM.
+func WithKillGrace(d time.Duration) Option {
+	return func(c *config) {
+		if d <= 0 {
+			d = -1
+		}
+		c.killGrace = d
+	}
+}
+
+// WithFullTestLog makes StartT copy every chunk of PTY I/O to t.Log as it
+// arrives. Without it StartT keeps only the last TestLogTail bytes and logs
+// them when the test fails. A program that writes a lot then fills the log
+// with escape sequences, so use it only to debug one test.
+func WithFullTestLog() Option {
+	return func(c *config) { c.fullTestLog = true }
 }
 
 // WithSemanticMarkers enables OSC 133 tracking so the WaitForPrompt /
@@ -155,8 +206,15 @@ type Terminal struct {
 
 	log       io.Writer
 	logMu     sync.Mutex
+	logTail   *tailWriter // the log StartT keeps by default, or nil
 	outMirror io.Writer
 	tailBuf   []byte // ring of recent I/O for error dumps
+
+	// panicked is set once the emulator has panicked, and stalled once a
+	// write has timed out. Both are guarded by mu and never cleared. See
+	// failure.go.
+	panicked *emuPanic
+	stalled  *TimeoutError
 }
 
 const tailCap = 4 * 1024
@@ -173,11 +231,12 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 
 	t := newTerminal(cfg)
 	proc, err := ptyproc.Start(ptyproc.Config{
-		Argv: argv,
-		Env:  cfg.buildEnv(),
-		Dir:  cfg.dir,
-		Cols: cfg.cols,
-		Rows: cfg.rows,
+		Argv:      argv,
+		Env:       cfg.buildEnv(),
+		Dir:       cfg.dir,
+		Cols:      cfg.cols,
+		Rows:      cfg.rows,
+		KillGrace: cfg.killGrace,
 	}, ptyproc.Handler{
 		OnData:  t.onData,
 		OnClose: t.onClose,
@@ -196,10 +255,24 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 
 // newTerminal builds a Terminal with its emulator and no process attached.
 func newTerminal(cfg config) *Terminal {
+	newEmu := cfg.newEmu
+	if newEmu == nil {
+		newEmu = emu.New
+	}
+	var logTail *tailWriter
+	if cfg.log == nil && cfg.testLog != nil {
+		if cfg.fullTestLog {
+			cfg.log = testLogWriter{cfg.testLog}
+		} else {
+			logTail = newTailWriter(TestLogTail)
+			cfg.log = logTail
+		}
+	}
 	t := &Terminal{
 		cfg:       cfg,
-		emu:       emu.New(cfg.cols, cfg.rows),
+		emu:       newEmu(cfg.cols, cfg.rows),
 		log:       cfg.log,
+		logTail:   logTail,
 		outMirror: cfg.outMirror,
 		exitCode:  -1,
 		lastWrite: time.Now(), // measure the first quiet window from spawn
@@ -211,11 +284,21 @@ func newTerminal(cfg config) *Terminal {
 	return t
 }
 
-// StartT is the testing.TB-friendly constructor: it wires the debug log to
-// t.Log, registers Close via t.Cleanup, and fails the test on spawn error.
+// TestLogTail is how many bytes of PTY I/O StartT keeps for the test log.
+const TestLogTail = 32 * 1024
+
+// StartT is the testing.TB-friendly constructor: it registers Close via
+// t.Cleanup, fails the test on spawn error, and keeps a debug log for t.Log.
+//
+// The log holds the last TestLogTail bytes of PTY I/O in both directions, and
+// goes to t.Log only when the test fails. WithFullTestLog copies every chunk
+// to t.Log instead, and WithLog sends the log to a writer of your choice.
+//
+// The test also fails when the terminal emulator panicked during the test,
+// even if the test made no call that returned the error.
 func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 	tb.Helper()
-	opts = append([]Option{WithLog(testLogWriter{tb})}, opts...)
+	opts = append([]Option{func(c *config) { c.testLog = tb }}, opts...)
 	term, err := Start(argv, opts...)
 	if err != nil {
 		tb.Fatalf("tuitest: spawn %v: %v", argv, err)
@@ -227,8 +310,53 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 		if err := term.Close(); err != nil {
 			tb.Errorf("tuitest: %v", err)
 		}
+		// A test that never waited after the panic has not seen the error.
+		if !tb.Failed() {
+			term.mu.Lock()
+			err := term.panicErrorLocked("the test")
+			term.mu.Unlock()
+			if err != nil {
+				tb.Errorf("%v", err)
+			}
+		}
+		if tb.Failed() && term.logTail != nil {
+			if tail, total := term.logTail.contents(); total > 0 {
+				tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, tail)
+			}
+		}
 	})
 	return term
+}
+
+// tailWriter keeps the last bytes written to it.
+type tailWriter struct {
+	mu    sync.Mutex
+	limit int
+	buf   []byte
+	total int64
+}
+
+func newTailWriter(limit int) *tailWriter { return &tailWriter{limit: limit} }
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.total += int64(len(p))
+	if len(p) >= w.limit {
+		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
+		return len(p), nil
+	}
+	if over := len(w.buf) + len(p) - w.limit; over > 0 {
+		w.buf = append(w.buf[:0], w.buf[over:]...)
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+func (w *tailWriter) contents() ([]byte, int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf...), w.total
 }
 
 // testLogWriter adapts testing.TB.Log to io.Writer. testing serializes Log per
@@ -242,13 +370,16 @@ func (w testLogWriter) Write(p []byte) (int, error) {
 
 func (t *Terminal) onData(p []byte) {
 	t.mu.Lock()
-	_, _ = t.emu.Write(p)
-	t.gen++
+	// After a panic the output is still read, so the program does not block
+	// on a full PTY, but it no longer reaches the emulator, whose state is
+	// unknown. See EmulatorPanicError.
+	if t.panicked == nil {
+		t.feedLocked(p)
+	}
 	t.lastWrite = time.Now()
 	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
-	t.queueResponses(t.emu.TakeResponses())
 	t.mu.Unlock()
 	t.mirror(p)
 	// The pump is a single goroutine, so mirroring outside the lock still
@@ -389,6 +520,9 @@ func (t *Terminal) syncChangedLocked(open bool) {
 // and as soon as the child has exited, since nothing can close the update
 // after that and the final output is what a caller wants to see.
 func (t *Terminal) viewLocked() *screenSnapshot {
+	if t.panicked != nil {
+		return t.panicViewLocked()
+	}
 	if t.presented != nil && time.Since(t.syncSince) < syncHoldLimit {
 		if _, exited := t.exitLocked(); !exited {
 			return t.presented
@@ -478,7 +612,7 @@ func (t *Terminal) Screen() Screen {
 
 // Type sends literal text with no key-name interpretation (tmux send-keys -l).
 func (t *Terminal) Type(s string) error {
-	return t.write([]byte(s))
+	return t.write("Type", []byte(s))
 }
 
 // write mirrors input to the debug log, records that input was sent (which is
@@ -491,23 +625,23 @@ func (t *Terminal) Type(s string) error {
 // so writing them anyway can only fail, and how it fails depends on the
 // platform: macOS reports an I/O error, Linux may accept the bytes and drop
 // them.
-func (t *Terminal) write(b []byte) error {
+//
+// Input is refused too once the emulator has panicked, and once an earlier
+// write has timed out. See sendInputBounded.
+func (t *Terminal) write(op string, b []byte) error {
 	t.mirror(b)
 	t.markInput()
+	if err := t.unusableError(op); err != nil {
+		return err
+	}
 	if err := t.exitedError(); err != nil {
 		return err
 	}
-	// Answers the terminal owes the program go first: they were produced
-	// before this input was, and a real terminal delivers them in that order.
-	t.inputMu.Lock()
-	if q := t.takeResponsesLocked(); len(q) > 0 {
-		b = append(q, b...)
+	err := t.sendInputBounded(op, b)
+	var te *TimeoutError
+	if errors.As(err, &te) {
+		return err
 	}
-	err := t.proc.Write(b)
-	if err == nil {
-		t.inBytes.Add(int64(len(b)))
-	}
-	t.inputMu.Unlock()
 	// A write usually fails because the program has just exited: its end of
 	// the PTY is closed, so macOS answers EIO, but the pump has not yet read
 	// the end of file and recorded the exit. inputErr waits briefly for it so
@@ -614,6 +748,10 @@ func (t *Terminal) Resize(cols, rows int) error {
 		return err
 	}
 	t.mu.Lock()
+	if err := t.panicErrorLocked("Resize"); err != nil {
+		t.mu.Unlock()
+		return err
+	}
 	t.emu.Resize(cols, rows)
 	t.gen++
 	if t.presented != nil {

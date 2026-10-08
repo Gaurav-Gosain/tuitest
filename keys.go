@@ -155,7 +155,7 @@ const (
 // terminal sends a paste to such a program as plain text; to reproduce that,
 // use Type.
 func (t *Terminal) Paste(s string) error {
-	return t.write([]byte(pasteStart + s + pasteEnd))
+	return t.write("Paste", []byte(pasteStart+s+pasteEnd))
 }
 
 // SendKeys types a sequence of named keys, chords, runes, and strings. Plain
@@ -183,5 +183,5 @@ func (t *Terminal) SendKeys(items ...any) error {
 		}
 		buf = append(buf, s...)
 	}
-	return t.write(buf)
+	return t.write("SendKeys", buf)
 }

@@ -10,6 +10,10 @@ a computation is a test nobody can read.
 Lines may end in LF or CRLF, a UTF-8 byte order mark at the start of the file is
 ignored, and a line may be at most 1 MiB long.
 
+A tape runs programs. `Spawn` starts any command the tape names, with your
+permissions, and `Type` and `Key` send it any input. Running a tape is the same
+as running a shell script, so read a tape from someone else before you run it.
+
 ```
 # login.tape
 Set Size 60 10
@@ -103,10 +107,9 @@ belongs above the `Spawn` it affects.
 | `StabilizeInterval` | a duration | Quiet window for `WaitStable`. |
 
 Durations must parse as a positive Go duration (`5s`, `250ms`). The size bound
-exists because a tape is untrusted input to the CLI and the grid it names is
-allocated up front, so an absurd size has to be rejected at parse time rather
-than turned into a multi-gigabyte allocation. The same bound applies to
-`Resize`.
+exists because the grid a tape names is allocated up front, so an absurd size
+has to be rejected at parse time rather than turned into a multi-gigabyte
+allocation. The same bound applies to `Resize`.
 
 ## Wait modifiers
 
@@ -239,9 +242,8 @@ changes the directory and `-update` rewrites the files.
 
 A name may contain `/` to group goldens into subdirectories, such as `Snapshot
 login/step-01`, and `-update` creates them. A name that would leave the golden
-directory, such as `../x` or an absolute path, is a parse error: a tape is
-untrusted input, and with `-update` such a name would overwrite a file anywhere
-on disk.
+directory, such as `../x` or an absolute path, is a parse error: with `-update` such a name could overwrite
+any file on disk.
 
 `Hide` and `Show` bracket a region whose snapshots should not run, which is how
 you keep setup steps out of the golden set without deleting the commands that
