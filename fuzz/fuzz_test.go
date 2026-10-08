@@ -464,17 +464,33 @@ func TestReportedSeedRegeneratesTheFailingIteration(t *testing.T) {
 		t.Errorf("a session with shrinking off claims a minimisation:\n%s", tape)
 	}
 
-	again := acknowledged(t, baseOptions(t, "panic-on-key"))
+	// The same options with only the seed and the count changed. The fixture's
+	// argv carries the acknowledgement file, and a second path would make the
+	// Spawn lines of the two runs differ.
+	again := opts
 	again.Seed = first.Seed
 	again.Iterations = 1
-	again.Shrink = false
 	second := findFailure(runFuzz(t, again), fuzz.FailCrash)
 	if second == nil {
 		t.Fatalf("rerunning with the reported seed %d found nothing", first.Seed)
 	}
-	if second.Iteration != 0 || second.Original != first.Original {
+	// The seed promises the generated input, so that is what is compared: its
+	// length, and the text of every command both runs sent. The number of
+	// commands sent before the crash was seen is not compared. The program
+	// panics while later input is still being written, and how many of those
+	// writes land first depends on the scheduler. Comparing Original failed
+	// one CI run under -race with 62 commands against 61.
+	if second.Iteration != 0 || second.Generated != first.Generated {
 		t.Fatalf("rerun found iteration %d with %d generated commands, want iteration 0 with %d",
-			second.Iteration, second.Original, first.Original)
+			second.Iteration, second.Generated, first.Generated)
+	}
+	if first.Generated < len(first.Commands) || second.Generated < len(second.Commands) {
+		t.Fatalf("a finding sent more commands than were generated: %d of %d, and %d of %d",
+			len(first.Commands), first.Generated, len(second.Commands), second.Generated)
+	}
+	n := min(len(first.Commands), len(second.Commands))
+	if a, b := tape.Sprint(first.Commands[:n]), tape.Sprint(second.Commands[:n]); a != b {
+		t.Fatalf("rerunning with the reported seed sent different commands:\n--- first ---\n%s\n--- rerun ---\n%s", a, b)
 	}
 }
 

@@ -218,6 +218,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// The original failing input is what ran before the failure was
 		// seen, not everything generated: commands after it were never sent.
 		failure.Original = len(failure.Commands)
+		failure.Generated = len(cmds)
 
 		if seen[failureKey(failure)] {
 			// Already have a reproduction for this kind; a second one of the

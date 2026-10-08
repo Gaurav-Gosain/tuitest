@@ -61,6 +61,13 @@ type Failure struct {
 	// minimisation achieved. It is zero for a finding replayed from the
 	// corpus, which was minimised on an earlier run.
 	Original int
+	// Generated records how many commands the iteration's seed generated.
+	// It depends on the seed alone, so a rerun with Seed and one iteration
+	// generates the same number. Original does not: it counts the commands
+	// sent before the failure was seen, and when a crash is seen depends on
+	// how fast the machine ran the program. It is zero for a finding replayed
+	// from the corpus.
+	Generated int
 	// Invariant names the user-supplied invariant that failed, for
 	// FailInvariant. It is empty for every other kind.
 	Invariant string
