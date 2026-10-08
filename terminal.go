@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,14 +120,17 @@ func WithLog(w io.Writer) Option {
 // input can already be in the program's input buffer, possibly half an escape
 // sequence, so after a timeout the terminal refuses all further input. Raise
 // the limit for a large paste into a program that reads slowly.
+//
+// The write that timed out stays blocked, and keeps the PTY open, until the
+// test binary exits. Close still returns.
 func WithWriteTimeout(d time.Duration) Option {
 	return func(c *config) { c.writeTimeout = d }
 }
 
 // WithKillGrace sets how long Close waits for the program to exit after
 // SIGTERM before it sends SIGKILL. The default is two seconds. Zero or less
-// sends SIGKILL at once. A short grace makes Close fast for a program that
-// ignores SIGTERM.
+// sends SIGTERM and then SIGKILL with no wait. A short grace makes Close fast
+// for a program that ignores SIGTERM.
 func WithKillGrace(d time.Duration) Option {
 	return func(c *config) {
 		if d <= 0 {
@@ -137,7 +141,7 @@ func WithKillGrace(d time.Duration) Option {
 }
 
 // WithFullTestLog makes StartT copy every chunk of PTY I/O to t.Log as it
-// arrives. Without it StartT keeps only the last TestLogTail bytes and logs
+// arrives. Without it StartT keeps only the last StartTLogTail bytes and logs
 // them when the test fails. A program that writes a lot then fills the log
 // with escape sequences, so use it only to debug one test.
 func WithFullTestLog() Option {
@@ -264,7 +268,7 @@ func newTerminal(cfg config) *Terminal {
 		if cfg.fullTestLog {
 			cfg.log = testLogWriter{cfg.testLog}
 		} else {
-			logTail = newTailWriter(TestLogTail)
+			logTail = newTailWriter(StartTLogTail)
 			cfg.log = logTail
 		}
 	}
@@ -284,18 +288,19 @@ func newTerminal(cfg config) *Terminal {
 	return t
 }
 
-// TestLogTail is how many bytes of PTY I/O StartT keeps for the test log.
-const TestLogTail = 32 * 1024
+// StartTLogTail is how many bytes of PTY I/O StartT keeps for the test log.
+const StartTLogTail = 32 * 1024
 
 // StartT is the testing.TB-friendly constructor: it registers Close via
 // t.Cleanup, fails the test on spawn error, and keeps a debug log for t.Log.
 //
-// The log holds the last TestLogTail bytes of PTY I/O in both directions, and
+// The log holds the last StartTLogTail bytes of PTY I/O in both directions, and
 // goes to t.Log only when the test fails. WithFullTestLog copies every chunk
 // to t.Log instead, and WithLog sends the log to a writer of your choice.
 //
 // The test also fails when the terminal emulator panicked during the test,
-// even if the test made no call that returned the error.
+// even if the test made no call that returned the error. A test that makes the
+// emulator panic on purpose uses Start.
 func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 	tb.Helper()
 	opts = append([]Option{func(c *config) { c.testLog = tb }}, opts...)
@@ -321,7 +326,7 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 		}
 		if tb.Failed() && term.logTail != nil {
 			if tail, total := term.logTail.contents(); total > 0 {
-				tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, tail)
+				tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, logLines(tail))
 			}
 		}
 	})
@@ -359,12 +364,30 @@ func (w *tailWriter) contents() ([]byte, int64) {
 	return append([]byte(nil), w.buf...), w.total
 }
 
+// logLines formats PTY I/O for t.Log: one "pty: " line for each line of p,
+// with control bytes and invalid UTF-8 escaped as in a Go string literal. Raw,
+// the escape sequences would act on the terminal that shows the go test
+// output, and the tail can start in the middle of one.
+func logLines(p []byte) string {
+	lines := strings.Split(strings.TrimSuffix(string(p), "\n"), "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		q := strconv.Quote(line)
+		b.WriteString("pty: ")
+		b.WriteString(q[1 : len(q)-1])
+	}
+	return b.String()
+}
+
 // testLogWriter adapts testing.TB.Log to io.Writer. testing serializes Log per
 // test, so parallel tests do not interleave garbled mirror output.
 type testLogWriter struct{ tb testing.TB }
 
 func (w testLogWriter) Write(p []byte) (int, error) {
-	w.tb.Logf("pty: %s", strings.TrimRight(string(p), "\n"))
+	w.tb.Logf("%s", logLines(p))
 	return len(p), nil
 }
 
@@ -545,7 +568,10 @@ func (t *Terminal) snapshotLocked() *screenSnapshot {
 	if c := t.cache; c != nil && t.cacheGen == t.gen && c.exited == exited && c.exitCode == code {
 		return c
 	}
-	s := t.buildSnapshotLocked(code, exited)
+	var s *screenSnapshot
+	if !t.emuLocked("copying the screen", nil, func() { s = t.buildSnapshotLocked(code, exited) }) {
+		return t.panicViewLocked()
+	}
 	t.cache, t.cacheGen = s, t.gen
 	return s
 }
@@ -752,7 +778,15 @@ func (t *Terminal) Resize(cols, rows int) error {
 		t.mu.Unlock()
 		return err
 	}
-	t.emu.Resize(cols, rows)
+	var resp []byte
+	if !t.emuLocked(fmt.Sprintf("resizing to %dx%d", cols, rows), nil, func() {
+		t.emu.Resize(cols, rows)
+		resp = t.emu.TakeResponses()
+	}) {
+		err := t.panicErrorLocked("Resize")
+		t.mu.Unlock()
+		return err
+	}
 	t.gen++
 	if t.presented != nil {
 		// A frame held for an open synchronized update has the old size. It
@@ -761,7 +795,6 @@ func (t *Terminal) Resize(cols, rows int) error {
 		t.presented = t.presented.resized(cols, rows)
 	}
 	t.lastInput = time.Now()
-	resp := t.emu.TakeResponses()
 	t.mu.Unlock()
 	if err := t.proc.Resize(cols, rows); err != nil {
 		return t.inputErr("resize", err)

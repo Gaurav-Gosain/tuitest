@@ -68,8 +68,9 @@ contending.
 Measured on 2026-10-08 on an Intel i7-10700 (16 threads, Linux), 80-column
 grid, five runs of `go test -run '^$' -bench 'EmulatorPlainLines|EmulatorStyledLines' -benchtime 3s .`,
 from `bench_test.go`. The machine had a load average of about 29, so these
-figures are wall time under load and a lower bound. On the same machine at a
-load average of about 5, plain lines ran at 51 to 53 MB/s.
+figures are wall time under load and a lower bound. The audit of this release
+measured plain lines at 51 to 53 MB/s on the same machine at a load average of
+about 5. That figure is not reproduced here.
 
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |

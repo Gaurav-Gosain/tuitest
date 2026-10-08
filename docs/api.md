@@ -17,11 +17,12 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal
 
 `Start` is the plain constructor. `StartT` is the one to use under `go test`: it
 registers `Close` through `t.Cleanup`, and calls `t.Fatalf` if the spawn itself
-fails. It keeps the last 32KB (`TestLogTail`) of PTY I/O and writes it to
+fails. It keeps the last 32KB (`StartTLogTail`) of PTY I/O and writes it to
 `t.Log` only when the test fails. A passing test logs nothing.
 `WithFullTestLog` copies every chunk to `t.Log` instead, and `WithLog` sends the
 log to your own writer. The test also fails when the terminal emulator panicked
-during it, even if no call returned the error.
+during it, even if no call returned the error. A test that makes the emulator
+panic on purpose uses `Start`.
 
 | Option | Effect |
 | --- | --- |
@@ -36,7 +37,7 @@ during it, even if no call returned the error.
 | `WithSemanticMarkers()` | Enable the OSC 133 waits. |
 | `WithStabilizeInterval(d time.Duration)` | Quiet window for `WaitStable`. Default 150ms. |
 | `WithWriteTimeout(d time.Duration)` | How long input waits for the program to read it. Default 10s (`DefaultWriteTimeout`). Zero or less removes the limit. |
-| `WithKillGrace(d time.Duration)` | How long `Close` waits after SIGTERM before SIGKILL. Default 2s. Zero or less sends SIGKILL at once. |
+| `WithKillGrace(d time.Duration)` | How long `Close` waits after SIGTERM before SIGKILL. Default 2s. Zero or less sends SIGTERM and then SIGKILL with no wait. |
 | `WithFullTestLog()` | Make `StartT` copy all PTY I/O to `t.Log`, not only a tail on failure. |
 
 By default the child gets a minimal hermetic environment: `PATH` and `HOME` if
@@ -222,14 +223,19 @@ The sentinels are `ErrTimeout`, `ErrChildExited`, `ErrSemanticMarkers` and
 Input that the program does not read times out too. When the program's input
 buffer is full, a write blocks. After the write timeout (`WithWriteTimeout`),
 the call returns a `*TimeoutError` with the screen. Part of the input can
-already be in the buffer, so the terminal then refuses all further input.
+already be in the buffer, so the terminal then refuses all further input. The
+write that timed out stays blocked until the test binary exits. `Close` still
+returns.
 
-If the terminal emulator panics while it reads the program's output, the
-terminal recovers. It keeps reading the output, so the program does not block,
+If the terminal emulator panics, the terminal recovers. This covers a panic
+while it reads the program's output, while it resizes, and while it copies the
+screen. The terminal keeps reading the output, so the program does not block,
 but the screen stops changing. Every later wait, input and `Resize` returns an
 `*EmulatorPanicError`, which unwraps to `ErrEmulatorPanic`. It holds the panic
-value, the stack, the chunk of output, and the last screen. A panic is a bug in
-tuitest, so please report it with those.
+value, the stack, the chunk of output, and the last screen. `Screen`,
+`Snapshot`, `TermState` and `LastCommandExit` return no error. They return the
+state at the panic. A panic is a bug in tuitest, so please report it with
+those.
 
 ### Semantic (OSC 133) waits
 
@@ -363,10 +369,10 @@ func (t *Terminal) Close() error
 
 `Close` tears down the whole process group, any descendant that left it with
 `setsid`, and the PTY. It sends SIGTERM, then SIGKILL after two seconds
-(`WithKillGrace` changes this) to anything still running. It returns an error naming any process that survived
-both, which `StartT`'s cleanup reports as a test failure. It is idempotent and
-is registered automatically by `StartT`. See [limits.md](limits.md#teardown)
-for what it cannot reach.
+(`WithKillGrace` changes this) to anything still running. It returns an error
+naming any process that survived both, which `StartT`'s cleanup reports as a
+test failure. It is idempotent and is registered automatically by `StartT`. See
+[limits.md](limits.md#teardown) for what it cannot reach.
 
 ## A worked example
 

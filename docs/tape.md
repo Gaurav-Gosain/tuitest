@@ -242,8 +242,8 @@ changes the directory and `-update` rewrites the files.
 
 A name may contain `/` to group goldens into subdirectories, such as `Snapshot
 login/step-01`, and `-update` creates them. A name that would leave the golden
-directory, such as `../x` or an absolute path, is a parse error: with `-update` such a name could overwrite
-any file on disk.
+directory, such as `../x` or an absolute path, is a parse error: with `-update`
+such a name could overwrite any file on disk.
 
 `Hide` and `Show` bracket a region whose snapshots should not run, which is how
 you keep setup steps out of the golden set without deleting the commands that

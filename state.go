@@ -82,9 +82,21 @@ func (s TermState) Describe() string {
 
 // TermState returns the current mode state of the emulated terminal. Call it
 // after the child has exited to check that it restored the terminal.
+//
+// After an emulator panic it returns the state at the panic. See
+// EmulatorPanicError.
 func (t *Terminal) TermState() TermState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var st TermState
+	if !t.emuLocked("reading the terminal modes", nil, func() { st = t.termStateLocked() }) {
+		return t.panicked.termState
+	}
+	return st
+}
+
+// termStateLocked reads the mode state from the emulator. Caller holds t.mu.
+func (t *Terminal) termStateLocked() TermState {
 	modes := t.emu.Modes()
 	_, _, visible := t.emu.Cursor()
 	return TermState{

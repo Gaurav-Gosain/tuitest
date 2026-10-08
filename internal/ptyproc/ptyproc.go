@@ -24,7 +24,7 @@ type Config struct {
 	Rows int
 	// KillGrace is how long Close waits for the child to exit after SIGTERM
 	// before it sends SIGKILL. Zero means DefaultKillGrace, and less than
-	// zero sends SIGKILL at once.
+	// zero sends SIGTERM and then SIGKILL with no wait.
 	KillGrace time.Duration
 }
 

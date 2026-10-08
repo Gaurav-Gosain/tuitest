@@ -106,10 +106,10 @@ func TestGreeting(t *testing.T) {
 
 `StartT` registers `Close` through `t.Cleanup`, fails the test if the spawn
 itself fails, and writes the last 32KB of PTY traffic to `t.Log` if the test
-fails. Record the golden
-once with `UPDATE_GOLDEN=1 go test ./...`, then review it as part of the diff.
-It holds `name? hello, gopher`: the PTY does not echo input, so the screen shows
-only what the program drew (see [docs/limits.md](docs/limits.md#fidelity-gaps)).
+fails. Record the golden once with `UPDATE_GOLDEN=1 go test ./...`, then review
+it as part of the diff. It holds `name? hello, gopher`: the PTY does not echo
+input, so the screen shows only what the program drew (see
+[docs/limits.md](docs/limits.md#fidelity-gaps)).
 
 The full Go surface is in [docs/api.md](docs/api.md), and every example in
 [example_test.go](example_test.go) runs under `go test` and is shown on
@@ -480,7 +480,8 @@ Measured on 2026-10-08 on an Intel i7-10700 (16 threads, Linux), 80-column
 grid, five runs of `go test -run '^$' -bench 'EmulatorPlainLines|EmulatorStyledLines' -benchtime 3s .`,
 reproducible from `bench_test.go` in the root package. The machine had a load
 average of about 29, so these figures are wall time under load and a lower
-bound. At a load average of about 5, plain lines ran at 51 to 53 MB/s.
+bound. The audit of this release measured plain lines at 51 to 53 MB/s at a
+load average of about 5. That figure is not reproduced here.
 
 | Workload | Lines per second | Bytes per second |
 | --- | --- | --- |

@@ -12,24 +12,32 @@ import (
 // emulator panicked while it read the program's output.
 var ErrEmulatorPanic = errors.New("tuitest: the terminal emulator panicked")
 
-// EmulatorPanicError is returned by every wait and every input call once the
-// emulator has panicked. It unwraps to ErrEmulatorPanic.
+// EmulatorPanicError is returned by every wait, every input call and Resize
+// once the emulator has panicked. It unwraps to ErrEmulatorPanic.
 //
-// The panic happens on the goroutine that reads the program's output, where no
-// test can catch it. Left alone it ends the whole test binary: every other
-// result is lost and no cleanup runs, so the programs the tests started are
-// left running. The terminal recovers it instead, keeps reading the program's
-// output so the program does not block on a full PTY, and stops feeding that
-// output to the emulator, whose state can no longer be trusted. The screen is
-// the one the emulator showed when it panicked.
+// The panic usually happens on the goroutine that reads the program's output,
+// where no test can catch it. Left alone it ends the whole test binary: every
+// other result is lost and no cleanup runs, so the programs the tests started
+// are left running. The terminal recovers it instead, keeps reading the
+// program's output so the program does not block on a full PTY, and stops
+// feeding that output to the emulator, whose state can no longer be trusted.
+// A panic in a resize or in a read of the screen is recovered the same way.
+//
+// The calls that return no error (Screen, Snapshot, TermState and
+// LastCommandExit) return the state the emulator had when it panicked. They do
+// not read the emulator again.
 type EmulatorPanicError struct {
 	// Op is the call that failed, such as "WaitForText" or "Type".
 	Op string
+	// During says what the emulator was doing when it panicked, such as
+	// "reading the program's output" or "resizing to 80x24".
+	During string
 	// Value is what the emulator panicked with.
 	Value any
 	// Stack is the stack of the goroutine that panicked.
 	Stack string
-	// Chunk is the output the emulator was reading when it panicked.
+	// Chunk is the output the emulator was reading when it panicked. It is
+	// empty when the panic came from something other than the output.
 	Chunk []byte
 	// Screen is the plain-text screen when the emulator panicked.
 	Screen string
@@ -45,17 +53,21 @@ const maxChunkInError = 512
 
 func (e *EmulatorPanicError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "tuitest: %s failed: the terminal emulator panicked while it read the program's output: %v", e.Op, e.Value)
-	b.WriteString("\nThis is a bug in tuitest. Report it with the chunk and the stack below.")
+	fmt.Fprintf(&b, "tuitest: %s failed: the terminal emulator panicked while %s: %v", e.Op, e.During, e.Value)
+	if len(e.Chunk) > 0 {
+		b.WriteString("\nThis is a bug in tuitest. Report it with the chunk and the stack below.")
+	} else {
+		b.WriteString("\nThis is a bug in tuitest. Report it with the stack below.")
+	}
 	if e.Screen != "" {
 		b.WriteString("\n--- screen ---\n")
 		b.WriteString(e.Screen)
 	}
-	chunk := e.Chunk
-	if len(chunk) > maxChunkInError {
+	switch chunk := e.Chunk; {
+	case len(chunk) > maxChunkInError:
 		chunk = chunk[len(chunk)-maxChunkInError:]
 		fmt.Fprintf(&b, "\n--- chunk (last %d of %d bytes) ---\n%q", maxChunkInError, len(e.Chunk), chunk)
-	} else {
+	case len(chunk) > 0:
 		fmt.Fprintf(&b, "\n--- chunk ---\n%q", chunk)
 	}
 	if e.TailLog != "" {
@@ -73,34 +85,73 @@ func (e *EmulatorPanicError) Error() string {
 // set, to carry the current exit state. See panicViewLocked.
 type emuPanic struct {
 	value  any
+	during string
 	stack  string
 	chunk  []byte
 	screen *screenSnapshot // the grid when the emulator panicked
+	// The state the reads that return no error report from now on.
+	termState  TermState
+	lastExit   int
+	lastExitOK bool
 }
 
 // feedLocked hands a chunk of output to the emulator and recovers a panic in
 // it. Caller holds t.mu.
 func (t *Terminal) feedLocked(p []byte) {
-	defer func() {
-		if v := recover(); v != nil {
-			t.emulatorPanickedLocked(v, p)
-		}
-	}()
-	_, _ = t.emu.Write(p)
-	t.gen++
-	t.queueResponses(t.emu.TakeResponses())
+	t.emuLocked("reading the program's output", p, func() {
+		_, _ = t.emu.Write(p)
+		t.gen++
+		t.queueResponses(t.emu.TakeResponses())
+	})
 }
 
-// emulatorPanickedLocked marks the terminal broken. Caller holds t.mu.
-func (t *Terminal) emulatorPanickedLocked(v any, p []byte) {
+// emuLocked runs fn, a call into the emulator, and recovers a panic in it. It
+// reports false, and does not run fn, once the emulator has panicked. during
+// names what fn does, and chunk is the output fn hands to the emulator, if
+// any. Caller holds t.mu.
+//
+// Every call into the emulator goes through it, except the calls made while
+// one is already running (syncChangedLocked runs inside Write) and the reads
+// that salvage state after a panic, which recover on their own. A panic left
+// to reach a test goroutine would leave t.mu held where no deferred unlock
+// releases it, and a panic on the pump goroutine would end the test binary.
+func (t *Terminal) emuLocked(during string, chunk []byte, fn func()) (ok bool) {
+	if t.panicked != nil {
+		return false
+	}
+	defer func() {
+		if v := recover(); v != nil {
+			t.emulatorPanickedLocked(v, during, chunk)
+			ok = false
+		}
+	}()
+	fn()
+	return true
+}
+
+// emulatorPanickedLocked marks the terminal broken. It runs in the deferred
+// function that recovered the panic, so debug.Stack still holds the frames
+// that panicked. Caller holds t.mu.
+func (t *Terminal) emulatorPanickedLocked(v any, during string, p []byte) {
 	ep := &emuPanic{
-		value: v,
-		stack: string(debug.Stack()),
-		chunk: append([]byte(nil), p...),
+		value:  v,
+		during: during,
+		stack:  string(debug.Stack()),
+		chunk:  append([]byte(nil), p...),
 	}
 	ep.screen = t.salvageScreenLocked()
+	// A read that panics again leaves the zero value.
+	tryLocked(func() { ep.termState = t.termStateLocked() })
+	tryLocked(func() { ep.lastExit, ep.lastExitOK = t.emu.LastCommandExit() })
 	t.panicked = ep
 	t.presented = nil
+}
+
+// tryLocked runs fn and swallows a panic in it. It is for reads of an emulator
+// that has already panicked once.
+func tryLocked(fn func()) {
+	defer func() { _ = recover() }()
+	fn()
 }
 
 // salvageScreenLocked returns the best screen there is after a panic: the grid
@@ -156,6 +207,7 @@ func (t *Terminal) panicErrorLocked(op string) error {
 	}
 	return &EmulatorPanicError{
 		Op:      op,
+		During:  ep.during,
 		Value:   ep.value,
 		Stack:   ep.stack,
 		Chunk:   ep.chunk,
@@ -221,8 +273,13 @@ func (t *Terminal) sendInput(b []byte) error {
 // On timeout the write is left running: there is no way to take back the part
 // of it the kernel has already accepted. That part can end in the middle of an
 // escape sequence, so any later input would reach the program corrupted. The
-// terminal therefore refuses all later input. Close ends the write when it
-// releases the PTY.
+// terminal therefore refuses all later input.
+//
+// Close does not end the write. On Linux a write to a PTY master whose input
+// buffer is full stays blocked after the program is gone, and Go defers the
+// close of a descriptor that a blocked call still uses. So one goroutine, its
+// buffer and the PTY descriptor stay until the test binary exits. Close still
+// returns, and the test still fails with the screen.
 func (t *Terminal) sendInputBounded(op string, b []byte) error {
 	timeout := t.cfg.writeTimeout
 	if timeout <= 0 {

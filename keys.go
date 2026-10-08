@@ -172,8 +172,11 @@ func (t *Terminal) Paste(s string) error {
 // full-screen programs built on terminfo do at startup and then match against.
 // Every other key is sent as its constant says.
 func (t *Terminal) SendKeys(items ...any) error {
+	// After a panic appCursor stays false, and the write below returns the
+	// panic error.
+	var appCursor bool
 	t.mu.Lock()
-	appCursor := t.emu.ApplicationCursorKeys()
+	t.emuLocked("reading the cursor key mode", nil, func() { appCursor = t.emu.ApplicationCursorKeys() })
 	t.mu.Unlock()
 	var buf []byte
 	for _, item := range items {

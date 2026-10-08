@@ -123,11 +123,13 @@ itself, so the program still receives them in the order they were produced.
 goes to `t.Log` when the test fails, or at `t.Log` itself with
 `WithFullTestLog`.
 
-The pump recovers a panic in the emulator. After one, it keeps reading the
+Every call into the emulator recovers a panic: in the pump, in `Resize`, and in
+the reads of the screen and the modes. After one, the pump keeps reading the
 program's output so the program cannot block on a full PTY, but stops feeding
-the emulator, whose state is unknown. Every later call fails with
-`*EmulatorPanicError` and the last screen. Unrecovered, the panic ended the
-test binary: every other result was lost and no cleanup ran.
+the emulator, whose state is unknown. Every later wait, input and `Resize`
+fails with `*EmulatorPanicError` and the last screen. The reads that return no
+error return the state at the panic. Unrecovered, the panic ended the test
+binary: every other result was lost and no cleanup ran.
 `WithOutputMirror` carries only what the program wrote, which is how `record`
 and `replay` render the program onto a real terminal while the harness still
 drives it headlessly.
@@ -208,7 +210,7 @@ a sentinel so callers can branch without a type assertion.
 | --- | --- | --- |
 | `*tuitest.TimeoutError` | `ErrTimeout` | a wait ran out of time |
 | `*tuitest.ClosedError` | `ErrChildExited` | the child exited before the condition held |
-| `*tuitest.EmulatorPanicError` | `ErrEmulatorPanic` | the emulator panicked on the program's output |
+| `*tuitest.EmulatorPanicError` | `ErrEmulatorPanic` | the emulator panicked |
 | (wrapped) | `ErrSemanticMarkers` | an OSC 133 wait without `WithSemanticMarkers` |
 | `*tape.ParseError` | | a tape line would not parse |
 | `*tape.LineError` | | any command failed, carrying its line number |

@@ -132,7 +132,12 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 		if err := t.panicErrorLocked(op); err != nil {
 			return err
 		}
-		if ready() {
+		ok := ready()
+		// ready can be the call that makes the emulator panic.
+		if err := t.panicErrorLocked(op); err != nil {
+			return err
+		}
+		if ok {
 			return nil
 		}
 		if t.exited && !closedIsOK {
@@ -187,7 +192,7 @@ func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error 
 //		return strings.Contains(s.Line(23), "3 windows")
 //	}, time.Second)
 func (t *Terminal) WaitForDesc(desc string, cond func(Screen) bool, timeout time.Duration) error {
-	return t.waitLoop("WaitFor", desc, timeout, false, func() bool {
+	return t.waitLoop("WaitForDesc", desc, timeout, false, func() bool {
 		return cond(t.viewLocked())
 	})
 }
@@ -375,11 +380,15 @@ func (t *Terminal) WaitForPrompt(timeout time.Duration) error {
 	if !t.cfg.semantic {
 		return errSemanticDisabled("WaitForPrompt")
 	}
+	const during = "counting the shell prompts"
+	var base int
 	t.mu.Lock()
-	base := t.emu.PromptCount()
+	t.emuLocked(during, nil, func() { base = t.emu.PromptCount() })
 	t.mu.Unlock()
 	return t.waitLoop("WaitForPrompt", "a new shell prompt (OSC 133 A)", timeout, false, func() bool {
-		return t.emu.PromptCount() > base
+		n := base
+		t.emuLocked(during, nil, func() { n = t.emu.PromptCount() })
+		return n > base
 	})
 }
 
@@ -389,11 +398,15 @@ func (t *Terminal) WaitForCommand(timeout time.Duration) error {
 	if !t.cfg.semantic {
 		return errSemanticDisabled("WaitForCommand")
 	}
+	const during = "counting the finished commands"
+	var base int
 	t.mu.Lock()
-	base := t.emu.CommandFinishedCount()
+	t.emuLocked(during, nil, func() { base = t.emu.CommandFinishedCount() })
 	t.mu.Unlock()
 	return t.waitLoop("WaitForCommand", "the command to finish (OSC 133 D)", timeout, false, func() bool {
-		return t.emu.CommandFinishedCount() > base
+		n := base
+		t.emuLocked(during, nil, func() { n = t.emu.CommandFinishedCount() })
+		return n > base
 	})
 }
 
@@ -402,13 +415,21 @@ func (t *Terminal) WaitForCommand(timeout time.Duration) error {
 // finished and when the terminal was started without WithSemanticMarkers, so
 // enable that option before relying on it; the WaitForPrompt and WaitForCommand
 // waits return ErrSemanticMarkers in that case and are the better signal.
+//
+// After an emulator panic it returns the value at the panic. See
+// EmulatorPanicError.
 func (t *Terminal) LastCommandExit() (int, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.cfg.semantic {
 		return 0, false
 	}
-	return t.emu.LastCommandExit()
+	var code int
+	var ok bool
+	if !t.emuLocked("reading the last command's exit code", nil, func() { code, ok = t.emu.LastCommandExit() }) {
+		return t.panicked.lastExit, t.panicked.lastExitOK
+	}
+	return code, ok
 }
 
 func errSemanticDisabled(op string) error {
