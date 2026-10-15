@@ -7,6 +7,7 @@ package ptyproc
 
 import (
 	"errors"
+	"math"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -235,10 +236,16 @@ func (p *Process) Resize(cols, rows int) error {
 }
 
 // setSize sets the window size in cells and, when the cell size is known, in
-// pixels.
+// pixels. The kernel stores each pixel dimension in 16 bits, so a grid too
+// large for that gets no size in pixels at all: a truncated value would be a
+// wrong size, and zero is the size a program already treats as unknown.
 func setSize(pty xpty.Pty, cols, rows, cellW, cellH int) error {
 	if u, ok := pty.(*xpty.UnixPty); ok && cellW > 0 && cellH > 0 {
-		return u.SetWinsize(cols, rows, cols*cellW, rows*cellH)
+		x, y := cols*cellW, rows*cellH
+		if x > math.MaxUint16 || y > math.MaxUint16 {
+			x, y = 0, 0
+		}
+		return u.SetWinsize(cols, rows, x, y)
 	}
 	return pty.Resize(cols, rows)
 }
