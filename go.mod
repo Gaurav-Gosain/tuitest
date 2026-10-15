@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/xpty v0.1.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.47.0
-	tuios.dev/vt v0.1.1-0.20261015070117-6a4f7faecc41
+	tuios.dev/vt v0.2.0
 )
 
 require (
