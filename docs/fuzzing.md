@@ -345,7 +345,9 @@ them. tuitest uses it against its own emulator, which is worth doing because
 every assertion tuitest makes is read off that emulator, so a sequence it
 mishandles is a suite that goes green on a screen the program never drew. The
 package is public, so a terminal, a multiplexer, or anything else with a VT
-parser can point it at their own.
+parser can point it at their own. It forwards to `tuios.dev/vt/vtgen`, where the
+generator lives next to the emulator it was written for. New code can import
+either path.
 
 Random bytes are a poor fuzzer for a VT parser. Almost no byte string is a
 sequence, so a campaign spends its budget in the parser's ground state proving
@@ -400,10 +402,10 @@ something a person can read and retype:
   3  esc    \e8                      DECRC restore cursor
 ```
 
-Three bugs in tuitest's own emulator were found this way within the first five
+Three bugs in tuitest's emulator were found this way within the first five
 seeds, all the same shape: state a program set for the size it last saw, kept
-verbatim after that size changed. See `TestVTGen_Sweep` and the two fuzz targets
-in `internal/vt`.
+verbatim after that size changed. The sweep and the fuzz targets now run in the
+`tuios.dev/vt` module, next to the emulator.
 
 ## Testing the fuzzer
 

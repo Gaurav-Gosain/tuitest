@@ -1,7 +1,7 @@
 # Differential testing against a reference VT
 
 tuitest reports what a program rendered, so the honesty of every result it has
-ever produced rests on `internal/vt` being right. Our own unit tests cannot
+ever produced rests on the emulator, `tuios.dev/vt`, being right. Our own unit tests cannot
 establish that: they encode the same assumptions the emulator does. This
 directory holds the tooling that checks the emulator against somebody else's.
 
@@ -77,7 +77,7 @@ TUITEST_VT_REF=/path/to/ref go test -run TestVTDifferential .
 The test skips when the variable is unset or node is missing, so it never
 blocks a normal `go test ./...`. **It is a discovery tool, not the regression
 net**: every divergence it finds is copied down into an ordinary unit test in
-`internal/vt/tuitest_fidelity_test.go` with the reference's answer hard-coded, so the
+`internal/emu/vt_fidelity_test.go` with the reference's answer hard-coded, so the
 fix stays enforced on a machine that has neither node nor the wasm.
 
 ## The corpus

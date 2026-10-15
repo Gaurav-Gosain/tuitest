@@ -10,12 +10,11 @@ can be read, tested, or replaced without the others.
 | --- | --- |
 | [`.`](../terminal.go) (root) | `Terminal`: spawn options, input, waits, screen snapshots, goldens, terminal state |
 | [`internal/ptyproc`](../internal/ptyproc/ptyproc.go) | PTY allocation, `exec` lifetime, the output pump, resize, process-group teardown |
-| [`internal/emu`](../internal/emu/emu.go) | The `Emulator` interface and the adapter onto the vendored VT |
-| [`internal/vt`](../internal/vt) | The VT interpreter itself, copied from tuios (see [VENDOR.md](../internal/vt/VENDOR.md)) |
+| [`internal/emu`](../internal/emu/emu.go) | The `Emulator` interface and the adapter onto [`tuios.dev/vt`](https://tuios.dev/docs/libraries/vt), the VT interpreter tuios renders through |
 | [`tape`](../tape/parse.go) | The tape language: parser, player, recorder, printer, replay renderer |
 | [`internal/cli`](../internal/cli/cli.go) | The cobra command tree, flag parsing, exit codes, JSON output, diagnostics |
 | [`fuzz`](../fuzz/fuzz.go) | Input generation, failure detection, delta-debugging minimisation, corpus |
-| [`fuzz/vtgen`](../fuzz/vtgen/vtgen.go) | Generates the output side: terminal byte streams by grammar, for fuzzing a VT parser |
+| [`fuzz/vtgen`](../fuzz/vtgen/vtgen.go) | Generates the output side: terminal byte streams by grammar, for fuzzing a VT parser. It forwards to `tuios.dev/vt/vtgen` |
 | [`fixtures`](../fixtures/fakeshell.go) | In-process helpers for testing an output consumer: a fake shell and an escape-sequence builder |
 | [`tuiosx`](../tuiosx/tuiosx.go) | tuios-specific spawn and chord helpers; nothing in the core depends on it |
 
@@ -47,7 +46,7 @@ flowchart TB
   subgraph Low["internal"]
     PTY[ptyproc.Process<br/>pty + exec + pump]
     EMU[emu.Emulator]
-    VT[vt.Emulator<br/>vendored]
+    VT[vt.Emulator<br/>tuios.dev/vt]
   end
 
   SRC --> PARSE --> PLAY --> TERM

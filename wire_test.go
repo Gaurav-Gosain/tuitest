@@ -69,14 +69,17 @@ func TestResizeSendsTheInBandReport(t *testing.T) {
 	t.Parallel()
 	// Wide enough that the hex of both reports fits on one row.
 	term := startProbe(t, "\x1b[?2048h", tuitest.WithSize(200, 10))
-	// Enabling the mode sends the current size straight away.
-	if err := term.WaitForText(hexOf("\x1b[48;10;200;0;0t"), 5*time.Second); err != nil {
+	// Enabling the mode sends the current size straight away. The pixel
+	// size uses the emulator's fallback cell of 10 by 20 pixels, since no
+	// host measured one (tuios.dev/vt FallbackCellWidth and
+	// FallbackCellHeight). A program that divides by it does not see a zero.
+	if err := term.WaitForText(hexOf("\x1b[48;10;200;200;2000t"), 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Resize(210, 12); err != nil {
 		t.Fatal(err)
 	}
-	if err := term.WaitForText(hexOf("\x1b[48;12;210;0;0t"), 5*time.Second); err != nil {
+	if err := term.WaitForText(hexOf("\x1b[48;12;210;240;2100t"), 5*time.Second); err != nil {
 		t.Fatalf("the in-band resize report never reached the program: %v", err)
 	}
 }

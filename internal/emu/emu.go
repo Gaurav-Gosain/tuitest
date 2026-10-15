@@ -1,6 +1,7 @@
 // Package emu holds the VT emulator adapter used by tuitest. It defines a
-// narrow Emulator interface and a single implementation backed by the copied
-// vt package (which itself sits on top of charmbracelet/ultraviolet). Keeping
+// narrow Emulator interface and a single implementation backed by
+// tuios.dev/vt, the emulator tuios renders through (which itself sits on top
+// of charmbracelet/ultraviolet). Keeping
 // this internal means the emulator choice is not part of tuitest's public
 // contract and can be swapped without a breaking change.
 package emu
@@ -11,8 +12,7 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-
-	"github.com/Gaurav-Gosain/tuitest/internal/vt"
+	"tuios.dev/vt"
 )
 
 // Emulator is the minimal surface tuitest needs from a VT interpreter: feed it

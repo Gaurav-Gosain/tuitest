@@ -1,12 +1,14 @@
-package vt
+package emu_test
 
 import (
 	"strings"
 	"testing"
+
+	"tuios.dev/vt"
 )
 
 // ask writes a query and returns whatever the emulator wants to send back.
-func ask(t *testing.T, e *Emulator, query string) string {
+func ask(t *testing.T, e *vt.Emulator, query string) string {
 	t.Helper()
 	if _, err := e.WriteString(query); err != nil {
 		t.Fatalf("writing %q: %v", query, err)
@@ -24,7 +26,7 @@ func ask(t *testing.T, e *Emulator, query string) string {
 func TestCursorPositionReportIsLineThenColumn(t *testing.T) {
 	t.Parallel()
 
-	e := NewEmulator(80, 10)
+	e := vt.NewEmulator(80, 10)
 	// CUP is line then column too, so this puts the cursor on line 3, column 40.
 	if _, err := e.WriteString("\x1b[3;40H"); err != nil {
 		t.Fatalf("positioning the cursor: %v", err)
@@ -46,7 +48,7 @@ func TestCursorPositionReportIsLineThenColumn(t *testing.T) {
 func TestCursorPositionReportIsRelativeUnderOriginMode(t *testing.T) {
 	t.Parallel()
 
-	e := NewEmulator(80, 24)
+	e := vt.NewEmulator(80, 24)
 	// A region starting at line 5, origin mode on, then home.
 	if _, err := e.WriteString("\x1b[5;20r\x1b[?6h\x1b[1;1H"); err != nil {
 		t.Fatalf("setting up origin mode: %v", err)
@@ -79,7 +81,10 @@ func TestRequestedModesAreRecognized(t *testing.T) {
 		{"in-band resize", "\x1b[?2048$p", "\x1b[?2048;2$y"},
 		{"bracketed paste", "\x1b[?2004$p", "\x1b[?2004;2$y"},
 		{"focus events", "\x1b[?1004$p", "\x1b[?1004;2$y"},
-		{"unicode core", "\x1b[?2027$p", "\x1b[?2027;2$y"},
+		// 3, permanently set: the emulator always clusters graphemes and
+		// ignores a reset, so it answers with the method it uses (tuios
+		// 10cb11344).
+		{"unicode core", "\x1b[?2027$p", "\x1b[?2027;3$y"},
 		{"insert replace", "\x1b[4$p", "\x1b[4;2$y"},
 		{"sgr pixel mouse", "\x1b[?1016$p", "\x1b[?1016;2$y"},
 		{"original alternate screen", "\x1b[?47$p", "\x1b[?47;2$y"},
@@ -88,7 +93,7 @@ func TestRequestedModesAreRecognized(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := NewEmulator(80, 24)
+			e := vt.NewEmulator(80, 24)
 			if got := ask(t, e, tc.query); got != tc.want {
 				t.Errorf("%s: replied %q, want %q", tc.query, got, tc.want)
 			}
@@ -102,7 +107,7 @@ func TestRequestedModesAreRecognized(t *testing.T) {
 func TestUnknownModeIsStillAnswered(t *testing.T) {
 	t.Parallel()
 
-	e := NewEmulator(80, 24)
+	e := vt.NewEmulator(80, 24)
 	got := ask(t, e, "\x1b[?7777$p")
 	if !strings.HasPrefix(got, "\x1b[?7777;") {
 		t.Fatalf("a mode nobody defines went unanswered, got %q", got)

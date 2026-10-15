@@ -51,7 +51,7 @@ outlived the program that started it is neither killed nor reported.
 | I/O tail ring | 4KB | fixed, for error messages |
 | `StartT` log tail | 32KB | fixed, written to `t.Log` when the test fails |
 | Pump buffer | 32KB | fixed, reused |
-| Scrollback | as the vendored VT allocates | not exposed through `Screen` |
+| Scrollback | as `tuios.dev/vt` allocates | not exposed through `Screen` |
 
 The rule of thumb: memory is `cols * rows` per live terminal plus a snapshot for
 each wait currently evaluating a grid condition, and everything else is
@@ -148,7 +148,7 @@ de-wrapped, so text that wrapped across the right margin will not match as a
 single string. Match per row, use `Screen.Text` and account for the wrap, or
 widen the terminal with `WithSize` so the line fits.
 
-**Scrollback is not reachable through `Screen`.** The vendored VT maintains it
+**Scrollback is not reachable through `Screen`.** The emulator maintains it
 and `tuitest doctor` reports it as supported, but the public interface exposes
 only the visible grid. A test that needs to assert on scrolled-off content has
 to capture it as it passes.
@@ -169,23 +169,13 @@ for Enter and the recorder names that `Enter`. Some pipes deliver 0x0a instead,
 which is `Ctrl+j`; naming it `Enter` would replay different bytes than were
 recorded, so the literal name is kept.
 
-## The vendored emulator
+## The emulator version
 
-`internal/vt` is a copy of tuios's interpreter rather than an external
-dependency, so it does not pick up upstream fixes automatically. This is the
-gap most likely to produce a wrong answer without producing an error: tuios
-fixes a wide-rune or scroll-region bug, tuitest keeps the old behaviour, and a
-test that passes here fails against the real terminal, or worse, the other way
-round. Nothing in the compiler notices.
-
-The mitigations are provenance and a drift check, not automation. The exact
-upstream commit is recorded in [`internal/vt/UPSTREAM`](../internal/vt/UPSTREAM),
-the policy is [VENDOR.md](../internal/vt/VENDOR.md), `scripts/vendor-vt.sh -n
-/path/to/tuios` reports drift without changing anything, and
-`TUITEST_TUIOS_SRC=/path/to/tuios go test ./internal/vt/...` makes the suite
-check the copy against the recorded commit. Syncing is deliberate, on a schedule
-or when chasing a fidelity bug, because an emulator change can move goldens and
-that has to be reviewed rather than merged blind.
+The emulator is the module `tuios.dev/vt`, at the version `go.mod` pins. tuitest
+does not get a fix in tuios until that version moves. Until then a test can pass
+here and fail against a newer tuios, or the other way round. Move the version on
+purpose and review the goldens that move with it. See
+[extending.md](extending.md#update-the-vt).
 
 ## Fuzzing
 

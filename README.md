@@ -27,8 +27,9 @@ tape and a Go test fail for the same reasons and print the same screens.
 
 ## Quick start
 
-You need a Unix-like OS that can open PTYs (`/dev/ptmx`) and Go 1.25 or newer
-to install. Windows deliberately fails to build; see
+You need a Unix-like OS that can open PTYs (`/dev/ptmx`) and Go 1.26 or newer
+to install. The minimum moved from Go 1.25 to 1.26 because the emulator module,
+`tuios.dev/vt`, needs it. Windows deliberately fails to build; see
 [docs/limits.md](docs/limits.md).
 
 ### From the command line
@@ -193,8 +194,8 @@ The full Go surface is in [docs/api.md](docs/api.md), and every example in
   CLI are separate packages with narrow seams, and the emulator in particular is
   internal on purpose so swapping it is not a breaking change.
 - **Honest.** The docs state which waits are exact conditions and which are
-  heuristics, which platform is unsupported and why, and where the vendored
-  emulator can drift. Performance numbers carry the machine they were measured
+  heuristics, which platform is unsupported and why, and which emulator
+  version a run uses. Performance numbers carry the machine they were measured
   on. See [docs/limits.md](docs/limits.md).
 
 ## Architecture
@@ -223,7 +224,7 @@ flowchart TB
   subgraph Low["internal"]
     PTY[ptyproc<br/>spawn, pump, resize, group teardown]
     EMU[emu.Emulator<br/>twelve-method interface]
-    VT[vt<br/>vendored VT interpreter]
+    VT[tuios.dev/vt<br/>VT interpreter]
   end
 
   FUZZ[fuzz<br/>generator, detectors, shrinker]
@@ -238,15 +239,16 @@ flowchart TB
   VTGEN -.-> VT
 ```
 
-Only the root package is public API; `internal/emu`, `internal/vt` and
-`internal/ptyproc` are not importable, which is deliberate. The emulator choice
-is not part of the contract, so replacing it is not a breaking change, and the
-`vt` copy can be re-synced from upstream without any downstream ceremony.
+Only the root package is public API; `internal/emu` and `internal/ptyproc` are
+not importable, which is deliberate. The emulator is the module
+[`tuios.dev/vt`](https://tuios.dev/docs/libraries/vt), behind `internal/emu`.
+The emulator choice is not part of the contract, so replacing it is not a
+breaking change.
 
-The importable library has four direct dependencies (`charmbracelet/ultraviolet`
-for the cell model, `charmbracelet/x/ansi` for color parsing,
-`charmbracelet/x/xpty` for PTY allocation, `charmbracelet/x/term` for the
-recorder's raw mode). `spf13/cobra` and `charmbracelet/fang` are in `go.mod`
+The importable library has five direct dependencies (`tuios.dev/vt` for the
+emulator, `charmbracelet/ultraviolet` for the cell model, `charmbracelet/x/ansi`
+for color parsing, `charmbracelet/x/xpty` for PTY allocation,
+`charmbracelet/x/term` for the recorder's raw mode). `spf13/cobra` and `charmbracelet/fang` are in `go.mod`
 for the command line, but nothing outside `cmd/tuitest` and `internal/cli`
 imports them, so they never reach a consumer's binary.
 
@@ -512,13 +514,9 @@ ones most likely to matter:
 - **`WaitStable` is a heuristic** and always will be. A program slower than the
   stabilize interval to react to input is reported stable early. Wait on content
   when you know it.
-- **The VT emulator is a vendored copy** of tuios's interpreter, not a
-  dependency, so it does not pick up upstream fixes automatically. The exact
-  commit is in `internal/vt/UPSTREAM`, the policy in `internal/vt/VENDOR.md`,
-  and `scripts/vendor-vt.sh -n /path/to/tuios` reports drift without changing
-  anything. Fixes go to tuios first; a file the copy has to change anyway is
-  listed in `internal/vt/DIVERGENCE`, and the sync merges into it rather than
-  overwriting it.
+- **The VT emulator is the version of `tuios.dev/vt` in `go.mod`.** A fix in
+  tuios reaches tuitest only when that version moves. Move it on purpose and
+  review the goldens that move with it.
 - **`Screen.Line` returns one physical row** and does not de-wrap, so text that
   soft-wrapped at the right margin does not match as one string.
 - **The PTY does not echo input or turn `Ctrl+c` into SIGINT.** A TUI never
@@ -616,9 +614,7 @@ and the examples under `examples/tuios` skip themselves unless a tuios binary is
 found through `TUIOS_BIN` or `PATH`. They are worth reading as realistic usage
 even if you never run them: boot and window management, a control plane driven
 over a unix socket with a TUI later attached to the same session, and a
-flood-plus-resize stress test. Set `TUITEST_TUIOS_SRC` to a tuios checkout to
-have the suite also check the vendored emulator against the commit recorded in
-`internal/vt/UPSTREAM`.
+flood-plus-resize stress test.
 
 ## Project
 
@@ -634,5 +630,5 @@ have the suite also check the vendored emulator against the commit recorded in
 
 MIT. See [LICENSE](LICENSE).
 
-The vendored VT emulator under `internal/vt` is copied from tuios, which is also
-MIT licensed by the same author.
+The VT emulator, `tuios.dev/vt`, is part of tuios, which is also MIT licensed by
+the same author.

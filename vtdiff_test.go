@@ -12,12 +12,12 @@ import (
 	"github.com/Gaurav-Gosain/tuitest/internal/emu"
 )
 
-// Differential testing of the vendored emulator against ghostty-vt.
+// Differential testing of the emulator against ghostty-vt.
 //
 // The harness's whole value is that it reports what a program actually
 // rendered, so "is our emulator right?" cannot be answered by our own unit
 // tests alone: they encode the same assumptions the emulator does. This test
-// feeds identical bytes to internal/vt and to Ghostty's VT (compiled to wasm
+// feeds identical bytes to tuios.dev/vt and to Ghostty's VT (compiled to wasm
 // and driven by node) and compares the resulting screens cell by cell, plus the
 // cursor and the alternate-screen flag.
 //
@@ -51,7 +51,7 @@ type refDump struct {
 	Grid [][]refCell `json:"grid"`
 }
 
-// dumpOurs runs the vendored emulator over the input and returns the dump in
+// dumpOurs runs our emulator over the input and returns the dump in
 // the interchange format.
 func dumpOurs(input []byte, cols, rows int) refDump {
 	e := emu.New(cols, rows)

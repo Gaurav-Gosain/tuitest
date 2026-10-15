@@ -1,10 +1,10 @@
-package vt_test
+package emu_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/Gaurav-Gosain/tuitest/internal/vt"
+	"tuios.dev/vt"
 )
 
 // TestEmulator_WriteString verifies that WriteString writes through to the

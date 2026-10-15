@@ -1,9 +1,11 @@
-package vt
+package emu_test
 
 import (
 	"strings"
 	"testing"
 	"time"
+
+	"tuios.dev/vt"
 )
 
 // TestEraseCharacterIsBoundedByTheLine pins the cost of ECH to the screen
@@ -28,7 +30,7 @@ func TestEraseCharacterIsBoundedByTheLine(t *testing.T) {
 		t.Run(count, func(t *testing.T) {
 			t.Parallel()
 
-			e := NewEmulator(80, 24)
+			e := vt.NewEmulator(80, 24)
 			if _, err := e.WriteString("\x1b[1;1H" + strings.Repeat("x", 80) + "\x1b[1;11H"); err != nil {
 				t.Fatalf("setting up the line: %v", err)
 			}

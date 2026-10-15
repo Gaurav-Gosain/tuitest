@@ -60,30 +60,22 @@ func New(cols, rows int) Emulator {
 Because the package is internal, the emulator choice is not part of tuitest's
 public contract, so replacing it is not a breaking change for any user.
 
-## Re-sync or replace the vendored VT
+## Update the VT
 
-[`internal/vt`](../internal/vt) is a copy of tuios's interpreter, not a
-dependency, for the reasons set out in
-[VENDOR.md](../internal/vt/VENDOR.md): the upstream package is internal, and
-promoting it would make tuitest depend on the program it most often tests while
-freezing an API that is still moving.
+The emulator is the module [`tuios.dev/vt`](https://tuios.dev/docs/libraries/vt).
+tuios renders through the same module, so tuitest reads a screen the way tuios
+draws it. Fix an emulator bug in tuios, then move the version in `go.mod`:
 
 ```
-scripts/vendor-vt.sh /path/to/tuios          # sync to that checkout's HEAD
-scripts/vendor-vt.sh /path/to/tuios <commit> # sync to a specific commit
-scripts/vendor-vt.sh -n /path/to/tuios       # report drift, change nothing
+go get tuios.dev/vt@latest
+go mod tidy
+go test -race ./...
 ```
 
-The rule is that the copy is downstream. Fix emulator bugs in tuios first, then
-re-sync. A fix that has to land here first goes in a file listed in
-`internal/vt/DIVERGENCE`, which the sync merges upstream changes into instead of
-overwriting; an unlisted local change is overwritten and reported as drift.
-`TestVendoredCopyMatchesUpstream` checks the copy, tests included, against
-`internal/vt/UPSTREAM` when `TUITEST_TUIOS_SRC` points at a checkout. The
-tuios conformance corpus and fuzz targets come across with each sync. After a
-sync, run the suite and review any golden that moved as part of the sync
-commit: a golden that moves for a reason nobody can explain is the signal that
-the sync introduced a regression.
+Review each golden that moves in the same commit. A golden that moves for a
+reason nobody can explain is a regression in the new version. The tests in
+`internal/emu` named `vt_*_test.go` pin the emulator behaviour tuitest depends
+on, so a version that breaks one of them fails here first.
 
 ## Add a CLI subcommand
 

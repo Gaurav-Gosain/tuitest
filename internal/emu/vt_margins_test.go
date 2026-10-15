@@ -1,6 +1,12 @@
-package vt
+package emu_test
 
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+
+	"tuios.dev/vt"
+)
 
 // A program's idea of the terminal size lags the real one: after a resize it
 // keeps drawing at the old dimensions until it processes SIGWINCH. So a
@@ -35,7 +41,7 @@ func TestScrollRegionBeyondScreenDoesNotPanic(t *testing.T) {
 		t.Run(op.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := NewEmulator(80, 10)
+			e := vt.NewEmulator(80, 10)
 			// A margin bottom of 24 on a 10-row screen, exactly what a program
 			// that has not yet seen the resize sends.
 			if _, err := e.Write([]byte("\x1b[1;24r")); err != nil {
@@ -61,17 +67,24 @@ func TestScrollRegionBeyondScreenDoesNotPanic(t *testing.T) {
 }
 
 // The clamp must not break a legitimate scroll region: one that fits is stored
-// as given, so ordinary full-screen programs keep working.
+// as given, so ordinary full-screen programs keep working. A line feed at the
+// bottom margin scrolls rows 3 to 20 and leaves the rows outside alone.
 func TestScrollRegionWithinScreenIsUnchanged(t *testing.T) {
 	t.Parallel()
 
-	e := NewEmulator(80, 24)
-	if _, err := e.Write([]byte("\x1b[3;20r")); err != nil {
+	e := vt.NewEmulator(80, 24)
+	var fill strings.Builder
+	for row := 1; row <= 24; row++ {
+		fill.WriteString("\x1b[" + strconv.Itoa(row) + ";1H" + strconv.Itoa(row))
+	}
+	if _, err := e.WriteString(fill.String() + "\x1b[3;20r\x1b[20;1H\n"); err != nil {
 		t.Fatal(err)
 	}
 
-	got := e.scr.scroll
-	if got.Min.Y != 2 || got.Max.Y != 20 {
-		t.Fatalf("scroll region = [%d,%d), want [2,20)", got.Min.Y, got.Max.Y)
+	lines := strings.Split(e.String(), "\n")
+	for row, want := range map[int]string{1: "1", 2: "2", 3: "4", 19: "20", 20: "", 21: "21", 24: "24"} {
+		if got := strings.TrimRight(lines[row-1], " "); got != want {
+			t.Errorf("row %d = %q, want %q", row, got, want)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-package vt_test
+package emu_test
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/Gaurav-Gosain/tuitest/internal/vt"
+	"tuios.dev/vt"
 )
 
 // Regression tests for divergences found by differential testing against

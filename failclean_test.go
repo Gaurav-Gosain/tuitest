@@ -31,7 +31,7 @@ func binSh(t *testing.T) string {
 }
 
 // panickyEmu panics when a chunk of output holds trigger. It stands in for a
-// bug in the vendored emulator.
+// bug in the emulator.
 type panickyEmu struct {
 	emu.Emulator
 	trigger []byte
