@@ -14,7 +14,7 @@ can be read, tested, or replaced without the others.
 | [`tape`](../tape/parse.go) | The tape language: parser, player, recorder, printer, replay renderer |
 | [`internal/cli`](../internal/cli/cli.go) | The cobra command tree, flag parsing, exit codes, JSON output, diagnostics |
 | [`fuzz`](../fuzz/fuzz.go) | Input generation, failure detection, delta-debugging minimisation, corpus |
-| [`fuzz/vtgen`](../fuzz/vtgen/vtgen.go) | Generates the output side: terminal byte streams by grammar, for fuzzing a VT parser. It forwards to `tuios.dev/vt/vtgen` |
+| [`fuzz/vtgen`](../fuzz/vtgen/vtgen.go) | Generates the output side: terminal byte streams by grammar, for fuzzing a VT parser. Deprecated: it forwards to `tuios.dev/vt/vtgen` |
 | [`fixtures`](../fixtures/fakeshell.go) | In-process helpers for testing an output consumer: a fake shell and an escape-sequence builder |
 | [`tuiosx`](../tuiosx/tuiosx.go) | tuios-specific spawn and chord helpers; nothing in the core depends on it |
 

@@ -76,11 +76,19 @@ func TestResizeSendsTheInBandReport(t *testing.T) {
 	if err := term.WaitForText(hexOf("\x1b[48;10;200;200;2000t"), 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	// The kernel reports the same size in pixels, so a program that asks
+	// with TIOCGWINSZ and one that reads the report agree.
+	if err := term.WaitForText("size: 200x10 2000x200", 5*time.Second); err != nil {
+		t.Fatalf("the PTY size in pixels does not match the report: %v", err)
+	}
 	if err := term.Resize(210, 12); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.WaitForText(hexOf("\x1b[48;12;210;240;2100t"), 5*time.Second); err != nil {
 		t.Fatalf("the in-band resize report never reached the program: %v", err)
+	}
+	if err := term.WaitForText("size: 210x12 2100x240", 5*time.Second); err != nil {
+		t.Fatalf("after a resize the PTY size in pixels does not match the report: %v", err)
 	}
 }
 

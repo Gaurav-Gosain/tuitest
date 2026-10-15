@@ -228,7 +228,7 @@ flowchart TB
   end
 
   FUZZ[fuzz<br/>generator, detectors, shrinker]
-  VTGEN[fuzz/vtgen<br/>VT sequence generator, shrinker]
+  VTGEN[fuzz/vtgen<br/>deprecated, forwards to tuios.dev/vt/vtgen]
 
   TAPE --> PARSE --> PLAY --> TERM
   REG --> PLAY
@@ -263,9 +263,9 @@ reproduction trustworthy: it is not a description of what the fuzzer did, it is
 the same execution path.
 
 `fuzz/vtgen` points the other way. It generates the bytes a program writes,
-by grammar rather than by byte, for testing whatever parses them: tuitest aims
-it at its own emulator, and it is public so anything else with a VT parser can
-aim it at theirs. See [docs/fuzzing.md](docs/fuzzing.md).
+by grammar rather than by byte, for testing whatever parses them. It is
+deprecated and forwards to `tuios.dev/vt/vtgen`, which anything with a VT
+parser can import. See [docs/fuzzing.md](docs/fuzzing.md).
 
 ## How a tape becomes assertions
 

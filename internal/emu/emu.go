@@ -62,6 +62,11 @@ type Emulator interface {
 	// case a terminal sends the cursor keys as SS3 sequences (ESC O A) instead
 	// of CSI sequences (ESC [ A).
 	ApplicationCursorKeys() bool
+	// CellSize returns the size of one cell in pixels. It is never zero: an
+	// emulator that no host has measured uses a fallback cell. The PTY's
+	// window size in pixels is the grid size times this, so a program that
+	// asks the kernel and one that reads the mode 2048 report see one size.
+	CellSize() (width, height int)
 	// OnSync registers fn to be called, from inside Write, whenever a
 	// synchronized update (DEC mode 2026) opens or closes. It is called with
 	// true when the program begins a frame, before any of the frame's bytes
@@ -207,5 +212,7 @@ func (a *adapter) Modes() map[int]bool {
 }
 
 func (a *adapter) ApplicationCursorKeys() bool { return a.e.ApplicationCursorKeys() }
+
+func (a *adapter) CellSize() (int, int) { return a.e.CellSize() }
 
 func (a *adapter) OnSync(fn func(open bool)) { a.onSync = fn }

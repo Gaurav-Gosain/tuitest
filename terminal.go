@@ -234,13 +234,18 @@ func Start(argv []string, opts ...Option) (*Terminal, error) {
 	}
 
 	t := newTerminal(cfg)
+	t.mu.Lock()
+	cellW, cellH := t.emu.CellSize()
+	t.mu.Unlock()
 	proc, err := ptyproc.Start(ptyproc.Config{
-		Argv:      argv,
-		Env:       cfg.buildEnv(),
-		Dir:       cfg.dir,
-		Cols:      cfg.cols,
-		Rows:      cfg.rows,
-		KillGrace: cfg.killGrace,
+		Argv:       argv,
+		Env:        cfg.buildEnv(),
+		Dir:        cfg.dir,
+		Cols:       cfg.cols,
+		Rows:       cfg.rows,
+		CellWidth:  cellW,
+		CellHeight: cellH,
+		KillGrace:  cfg.killGrace,
 	}, ptyproc.Handler{
 		OnData:  t.onData,
 		OnClose: t.onClose,

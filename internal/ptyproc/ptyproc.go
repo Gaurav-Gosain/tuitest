@@ -22,6 +22,11 @@ type Config struct {
 	Dir  string   // working directory, empty for inherit
 	Cols int
 	Rows int
+	// CellWidth and CellHeight are the size of one cell in pixels. The PTY's
+	// window size in pixels is the grid size times these, on start and on
+	// every Resize. Zero leaves the size in pixels at zero.
+	CellWidth  int
+	CellHeight int
 	// KillGrace is how long Close waits for the child to exit after SIGTERM
 	// before it sends SIGKILL. Zero means DefaultKillGrace, and less than
 	// zero sends SIGTERM and then SIGKILL with no wait.
@@ -57,6 +62,8 @@ type Status struct {
 type Process struct {
 	pty   xpty.Pty
 	cmd   *exec.Cmd
+	cellW int           // see Config.CellWidth
+	cellH int           // see Config.CellHeight
 	grace time.Duration // see Config.KillGrace, already resolved
 
 	writeMu sync.Mutex // serializes writes to the PTY master
@@ -85,6 +92,12 @@ func Start(cfg Config, h Handler) (*Process, error) {
 
 	pty, err := openPty(cfg.Cols, cfg.Rows)
 	if err != nil {
+		return nil, err
+	}
+	// The child reads its size when it starts, so the size in pixels is set
+	// before it exists.
+	if err := setSize(pty, cfg.Cols, cfg.Rows, cfg.CellWidth, cfg.CellHeight); err != nil {
+		_ = pty.Close()
 		return nil, err
 	}
 
@@ -124,6 +137,8 @@ func Start(cfg Config, h Handler) (*Process, error) {
 	p := &Process{
 		pty:    pty,
 		cmd:    cmd,
+		cellW:  cfg.CellWidth,
+		cellH:  cfg.CellHeight,
 		grace:  grace,
 		status: Status{Code: -1},
 		done:   make(chan struct{}),
@@ -214,8 +229,18 @@ func (p *Process) Write(b []byte) error {
 }
 
 // Resize changes the PTY window size; the kernel delivers SIGWINCH to the child.
+// The size in pixels follows the cell size given to Start.
 func (p *Process) Resize(cols, rows int) error {
-	return p.pty.Resize(cols, rows)
+	return setSize(p.pty, cols, rows, p.cellW, p.cellH)
+}
+
+// setSize sets the window size in cells and, when the cell size is known, in
+// pixels.
+func setSize(pty xpty.Pty, cols, rows, cellW, cellH int) error {
+	if u, ok := pty.(*xpty.UnixPty); ok && cellW > 0 && cellH > 0 {
+		return u.SetWinsize(cols, rows, cols*cellW, rows*cellH)
+	}
+	return pty.Resize(cols, rows)
 }
 
 // ExitCode reports the child's exit code and whether it has exited.

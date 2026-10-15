@@ -346,8 +346,8 @@ every assertion tuitest makes is read off that emulator, so a sequence it
 mishandles is a suite that goes green on a screen the program never drew. The
 package is public, so a terminal, a multiplexer, or anything else with a VT
 parser can point it at their own. It forwards to `tuios.dev/vt/vtgen`, where the
-generator lives next to the emulator it was written for. New code can import
-either path.
+generator lives next to the emulator it was written for. `fuzz/vtgen` is
+deprecated. Import `tuios.dev/vt/vtgen` in new code.
 
 Random bytes are a poor fuzzer for a VT parser. Almost no byte string is a
 sequence, so a campaign spends its budget in the parser's ground state proving

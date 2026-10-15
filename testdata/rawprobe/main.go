@@ -6,6 +6,11 @@
 //
 //	in: 1b 4f 41
 //
+// The third line holds the window size the kernel reports, in cells and in
+// pixels, read again on each update:
+//
+//	size: 80x24 800x480
+//
 // Everything a test sends, and everything the terminal answers on the program's
 // behalf, ends up on that line, so an assertion on it is an assertion on the
 // wire.
@@ -17,7 +22,17 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/term"
+	"golang.org/x/sys/unix"
 )
+
+// size reports the window size as the kernel has it.
+func size() string {
+	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
+	if err != nil {
+		return "size: " + err.Error()
+	}
+	return fmt.Sprintf("size: %dx%d %dx%d", ws.Col, ws.Row, ws.Xpixel, ws.Ypixel)
+}
 
 func main() {
 	if st, err := term.MakeRaw(os.Stdin.Fd()); err == nil {
@@ -26,7 +41,7 @@ func main() {
 	if len(os.Args) > 1 {
 		fmt.Print(os.Args[1])
 	}
-	fmt.Print("\x1b[2J\x1b[HREADY\r\n")
+	fmt.Print("\x1b[2J\x1b[HREADY\r\n\r\n" + size())
 
 	var seen []string
 	buf := make([]byte, 256)
@@ -37,7 +52,7 @@ func main() {
 		}
 		// Row 2, cleared and rewritten, so the line always holds the whole
 		// history and the screen never scrolls it away.
-		fmt.Printf("\x1b[2;1H\x1b[Jin: %s", strings.Join(seen, " "))
+		fmt.Printf("\x1b[2;1H\x1b[Jin: %s\r\n%s", strings.Join(seen, " "), size())
 		if err != nil {
 			return
 		}
