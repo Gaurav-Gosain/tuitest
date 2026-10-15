@@ -382,10 +382,10 @@ func TestDoubleUnderline(t *testing.T) {
 // unconsumed, so "4:7" was read on as a bare SGR 7 and turned the cell reverse:
 // a stray byte in a program's output silently inverted its colours.
 //
-// What the unknown style itself draws is a judgement call. This copy used to
-// draw a single underline; tuios draws none and pins that in
-// TestThemedSGR_UnderlineSubparamNoLeak. The copy follows tuios, so only the
-// leak is asserted here.
+// What the unknown style itself draws is a judgement call. tuitest's old copy
+// of the emulator drew a single underline. tuios.dev/vt draws none and pins
+// that in TestThemedSGR_UnderlineSubparamNoLeak, so only the leak is asserted
+// here.
 func TestUnknownUnderlineSubparameterIsNotReverse(t *testing.T) {
 	t.Parallel()
 

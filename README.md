@@ -29,7 +29,8 @@ tape and a Go test fail for the same reasons and print the same screens.
 
 You need a Unix-like OS that can open PTYs (`/dev/ptmx`) and Go 1.26 or newer
 to install. The minimum moved from Go 1.25 to 1.26 because the emulator module,
-`tuios.dev/vt`, needs it. Windows deliberately fails to build; see
+`tuios.dev/vt`, needs it. `go get` raises the `go` line of your `go.mod` to
+1.26.0. Windows deliberately fails to build; see
 [docs/limits.md](docs/limits.md).
 
 ### From the command line

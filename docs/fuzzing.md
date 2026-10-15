@@ -347,7 +347,9 @@ mishandles is a suite that goes green on a screen the program never drew. The
 package is public, so a terminal, a multiplexer, or anything else with a VT
 parser can point it at their own. It forwards to `tuios.dev/vt/vtgen`, where the
 generator lives next to the emulator it was written for. `fuzz/vtgen` is
-deprecated. Import `tuios.dev/vt/vtgen` in new code.
+deprecated. Import `tuios.dev/vt/vtgen` in new code. A seed gives a different
+script than it did in tuitest v0.1.0, so rerun a seed from an older report
+with that version.
 
 Random bytes are a poor fuzzer for a VT parser. Almost no byte string is a
 sequence, so a campaign spends its budget in the parser's ground state proving

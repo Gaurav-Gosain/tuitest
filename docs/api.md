@@ -113,7 +113,10 @@ program that did not as plain text, which is what `Type` does.
 
 `Resize` changes the PTY window size, so the child receives a real `SIGWINCH`,
 and resizes the emulator grid in the same call. A program that enabled in-band
-resize reports (mode 2048) also gets its report straight away. A width or
+resize reports (mode 2048) also gets its report straight away. The PTY also
+carries a size in pixels, the grid size times a cell of 10 by 20 pixels, and
+the mode 2048 report gives the same size. A grid wider than 6553 columns or
+taller than 3276 rows has no size in pixels on the PTY. A width or
 height outside 1..65535 is refused with an error and changes nothing, since the
 kernel cannot store it; `WithSize` has the same range, and `Start` refuses
 anything outside it.
@@ -267,7 +270,9 @@ func (t *Terminal) Pid() int
 `TermState` reports the modes a program has left set: the alternate screen
 (47, 1047 or 1049), mouse tracking (9, 1000, 1001, 1002, 1003), bracketed paste
 (2004), focus reporting (1004), and cursor visibility. `Mode(n int)` answers for
-any DEC private mode number. Called after the child exits, `Dirty()` answers
+any DEC private mode that the emulator implements. A mode it does not
+implement, such as 12 (cursor blink) or 5 (reverse video), always reads false,
+even after the program sets it. Called after the child exits, `Dirty()` answers
 "did this program restore the terminal?", which is a common and user-visible
 bug: a TUI that exits without leaving the alternate screen, or with mouse
 reporting still on, leaves the user's shell unusable. `Describe()` names the

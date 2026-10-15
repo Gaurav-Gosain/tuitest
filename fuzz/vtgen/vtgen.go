@@ -5,7 +5,8 @@
 //
 // The generator lives in tuios.dev/vt/vtgen. This package forwards to it, so
 // code that imports github.com/Gaurav-Gosain/tuitest/fuzz/vtgen keeps
-// compiling.
+// compiling. A seed gives a different script than it did in tuitest v0.1.0,
+// because the generator changed when it moved.
 //
 // Deprecated: use tuios.dev/vt/vtgen.
 package vtgen

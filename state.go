@@ -110,6 +110,8 @@ func (t *Terminal) termStateLocked() TermState {
 }
 
 // Mode reports whether the given DEC private mode number is currently set.
+// A mode the emulator does not implement, such as 12 (cursor blink), is never
+// recorded and always reads false.
 func (s TermState) Mode(n int) bool { return s.rawModes[n] }
 
 // ExitStatus describes how the child finished.
