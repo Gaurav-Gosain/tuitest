@@ -74,11 +74,19 @@ Named keys are typed constants, so a misspelling is a compile error rather than
 a silent mismatch: `Enter`, `Tab`, `Esc`, `Space`, `Backspace`, `Delete`, `Up`,
 `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, and `F1`
 through `F12`. `Ctrl(r rune)` builds a control byte (`Ctrl('b')` is 0x02, and
-letters are case-insensitive) and `Alt(k any)` prefixes with ESC. `Ctrl` follows
+letters are case-insensitive) and `Alt(k any)` holds Alt. `Ctrl` follows
 the xterm table for the other keys too: `Ctrl(' ')` and `Ctrl('2')` are NUL,
 `Ctrl('[')` is ESC, `Ctrl('~')` is 0x1e, `Ctrl('/')` is 0x1f, `Ctrl('?')` is
 DEL, and a rune with no control encoding is
 sent as itself.
+
+`Mod(k, mods)` holds modifiers on a named key with a CSI or SS3 form: the
+cursor keys, `Home`, `End`, `Insert`, `Delete`, `PageUp`, `PageDown` and
+`F1` to `F12`. It uses the xterm modifier form: `Mod(Up, ModCtrl)` is
+`ESC [ 1 ; 5 A`, and `Mod(Delete, ModShift)` is `ESC [ 3 ; 2 ~`. `Alt` of
+one of these keys is the same as `Mod(k, ModAlt)`, so `Alt(Up)` is
+`ESC [ 1 ; 3 A`, as xterm sends it. `Alt` of any other key prefixes ESC:
+`Alt('x')` is `ESC x`.
 
 `SendKeys` sends the arrow keys, `Home` and `End` the way a terminal does in the
 program's current cursor key mode: `ESC [ A` normally, and `ESC O A` once the

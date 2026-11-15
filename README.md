@@ -138,7 +138,8 @@ The full Go surface is in [docs/api.md](docs/api.md), and every example in
   full screen and the last 4KB of PTY traffic, so a CI log shows what was on
   screen instead of a bare "timeout".
 - Sends named keys as typed `Key` constants, so a misspelled key is a compile
-  error; `Ctrl('b')` builds a control byte and `Alt(k)` prefixes with ESC. The
+  error; `Ctrl('b')` builds a control byte, `Alt(k)` holds Alt, and
+  `Mod(Up, ModCtrl)` holds modifiers on a named key in the xterm form. The
   arrow keys, Home and End follow the program's cursor key mode (DECCKM), as
   they do on a real terminal.
 - Sends mouse events as SGR (mode 1006) sequences, and pastes as bracketed

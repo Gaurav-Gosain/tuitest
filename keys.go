@@ -2,6 +2,7 @@ package tuitest
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -74,16 +75,107 @@ func Ctrl(r rune) Key {
 	}
 }
 
-// Alt prefixes a key or rune with ESC, the conventional meta encoding. It
-// accepts the same items as SendKeys; an item of an unsupported type yields a
-// bare Esc, since Alt has no way to report an error. Pass a string, rune, Key,
-// or slice of those and that cannot happen.
+// Alt returns k with Alt held. It accepts the same items as SendKeys.
+//
+// A named key with a CSI or SS3 form (the cursor keys, Home, End, Insert,
+// Delete, PageUp, PageDown and F1 to F12) gets the xterm modifier form, the
+// way xterm sends it: Alt(Up) is CSI 1;3 A, not ESC followed by CSI A. Any
+// other item is prefixed with ESC, the conventional meta encoding, so
+// Alt('x') is ESC x.
+//
+// An item of an unsupported type yields a bare Esc, since Alt has no way to
+// report an error. Pass a string, rune, Key, or slice of those and that cannot
+// happen.
 func Alt(k any) Key {
+	if key, ok := k.(Key); ok {
+		if m, ok := withMods(key, ModAlt); ok {
+			return m
+		}
+	}
 	s, err := keyString(k, false)
 	if err != nil {
 		return Esc
 	}
 	return Key("\x1b" + s)
+}
+
+// Mod returns a named key with modifiers held, in the xterm modifier form: the
+// key's CSI sequence with the parameter 1 plus the modifier bits. Mod(Up,
+// ModCtrl) is CSI 1;5 A, Mod(Delete, ModShift) is CSI 3;2 ~, and Mod(F1,
+// ModCtrl|ModShift) is CSI 1;6 P. Modifiers add up, so Mod(Mod(Up, ModCtrl),
+// ModShift) is Mod(Up, ModCtrl|ModShift). A modified key is sent in this form
+// whatever the cursor key mode, as xterm does.
+//
+// It applies to the named keys with a CSI or SS3 form: the cursor keys, Home,
+// End, Insert, Delete, PageUp, PageDown and F1 to F12. Any other key is
+// returned as it is, since it has no xterm modifier form. Use Ctrl for a
+// control character and Alt for the ESC prefix.
+func Mod(k Key, mods KeyMods) Key {
+	if m, ok := withMods(k, mods); ok {
+		return m
+	}
+	return k
+}
+
+// withMods adds modifier bits to a named key, and reports false for a key that
+// has no xterm modifier form. The bits of KeyMods are the xterm bits: Shift 1,
+// Alt 2, Ctrl 4. The wire parameter is the bits plus one.
+func withMods(k Key, mods KeyMods) (Key, bool) {
+	s := string(k)
+	var (
+		num   string // the number before the parameter: "1" for a letter key
+		final byte
+		have  int // the modifier bits k already carries
+	)
+	switch {
+	case len(s) == 3 && strings.HasPrefix(s, "\x1bO") && strings.IndexByte("ABCDHFPQRS", s[2]) >= 0:
+		// SS3: an application cursor key or F1 to F4. SS3 has no room for a
+		// parameter, so the modified key uses the CSI form.
+		num, final = "1", s[2]
+	case strings.HasPrefix(s, "\x1b[") && len(s) >= 3:
+		body, f := s[2:len(s)-1], s[len(s)-1]
+		params := strings.Split(body, ";")
+		switch {
+		case f == '~' && len(params) <= 2 && isDigits(params[0]):
+			num = params[0]
+		case strings.IndexByte("ABCDHFPQRS", f) >= 0 && (body == "" || params[0] == "1" && len(params) == 2):
+			// CSI P to CSI S name F1 to F4 only with a modifier; bare,
+			// they are other sequences.
+			if body == "" && strings.IndexByte("PQRS", f) >= 0 {
+				return "", false
+			}
+			num = "1"
+		default:
+			return "", false
+		}
+		if len(params) == 2 {
+			p, err := strconv.Atoi(params[1])
+			if err != nil || p < 1 {
+				return "", false
+			}
+			have = p - 1
+		}
+		final = f
+	default:
+		return "", false
+	}
+	bits := have | int(mods)
+	if bits == 0 {
+		return k, true
+	}
+	return Key("\x1b[" + num + ";" + strconv.Itoa(bits+1) + string(final)), true
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // applicationCursorKeys maps each cursor key to what a terminal sends for it
