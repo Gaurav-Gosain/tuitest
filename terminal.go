@@ -641,9 +641,11 @@ func (t *Terminal) Type(s string) error {
 	return t.write("Type", []byte(s))
 }
 
-// write mirrors input to the debug log, records that input was sent (which is
-// what keeps WaitStable from reporting the pre-input screen as stable), then
-// sends it to the child.
+// write checks that the terminal still takes input, then mirrors the input to
+// the debug log, records that input was sent (which is what keeps WaitStable
+// from reporting the pre-input screen as stable), and sends it to the child.
+// Refused input is neither logged nor recorded: the log shows only what was
+// sent, and a refusal does not restart WaitStable's quiet window.
 //
 // Input to a child that has gone is refused with an error wrapping
 // ErrChildExited. The terminal only records the exit once the PTY has reached
@@ -655,14 +657,14 @@ func (t *Terminal) Type(s string) error {
 // Input is refused too once the emulator has panicked, and once an earlier
 // write has timed out. See sendInputBounded.
 func (t *Terminal) write(op string, b []byte) error {
-	t.mirror(b)
-	t.markInput()
 	if err := t.unusableError(op); err != nil {
 		return err
 	}
 	if err := t.exitedError(); err != nil {
 		return err
 	}
+	t.mirror(b)
+	t.markInput()
 	err := t.sendInputBounded(op, b)
 	var te *TimeoutError
 	if errors.As(err, &te) {
