@@ -39,6 +39,9 @@ type config struct {
 	outMirror  io.Writer
 	semantic   bool
 	stabilize  time.Duration
+	// castDir turns on the recording and is where StartT writes the
+	// recording of a failed test. See WithCastDir.
+	castDir string
 
 	// writeTimeout bounds how long input waits for the program to read it.
 	// Zero or less means no bound.
@@ -214,6 +217,9 @@ type Terminal struct {
 	// failure.go.
 	panicked *emuPanic
 	stalled  *TimeoutError
+
+	// cast is the asciicast recording, or nil when recording is off.
+	cast *castRecorder
 }
 
 const tailCap = 4 * 1024
@@ -283,6 +289,9 @@ func newTerminal(cfg config) *Terminal {
 		respWake:  make(chan struct{}, 1),
 	}
 	t.cond = sync.NewCond(&t.mu)
+	if cfg.castDir != "" {
+		t.cast = newCastRecorder(cfg.cols, cfg.rows, cfg.term)
+	}
 	// Called from inside emu.Write, so t.mu is already held.
 	t.emu.OnSync(t.syncChangedLocked)
 	return t
@@ -303,7 +312,7 @@ const StartTLogTail = 32 * 1024
 // emulator panic on purpose uses Start.
 func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 	tb.Helper()
-	opts = append([]Option{func(c *config) { c.testLog = tb }}, opts...)
+	opts = append([]Option{testDefaults(tb)}, opts...)
 	term, err := Start(argv, opts...)
 	if err != nil {
 		tb.Fatalf("tuitest: spawn %v: %v", argv, err)
@@ -331,9 +340,23 @@ func (t *Terminal) cleanup(tb testing.TB) {
 			tb.Errorf("%v", err)
 		}
 	}
+	if tb.Failed() {
+		t.writeFailureCast(tb)
+	}
 	if tb.Failed() && t.logTail != nil {
 		if tail, total := t.logTail.contents(); total > 0 {
 			tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, logLines(tail))
+		}
+	}
+}
+
+// testDefaults is the option StartT and StartProgramT put before the caller's
+// own: the test log, and recording when TUITEST_CAST_DIR is set.
+func testDefaults(tb testing.TB) Option {
+	return func(c *config) {
+		c.testLog = tb
+		if dir := os.Getenv(CastDirEnv); dir != "" {
+			c.castDir = dir
 		}
 	}
 }
@@ -409,6 +432,9 @@ func (t *Terminal) onData(p []byte) {
 	t.appendTailLocked(p)
 	t.cond.Broadcast()
 	t.mu.Unlock()
+	if t.cast != nil {
+		t.cast.output(p)
+	}
 	t.mirror(p)
 	// The pump is a single goroutine, so mirroring outside the lock still
 	// delivers chunks to w in the order the child produced them.
@@ -490,6 +516,9 @@ func (t *Terminal) onClose(code int) {
 	t.exitCode = code
 	t.cond.Broadcast()
 	t.mu.Unlock()
+	if t.cast != nil {
+		t.cast.mark(fmt.Sprintf("the program exited with code %d", code))
+	}
 }
 
 func (t *Terminal) mirror(p []byte) {
@@ -670,6 +699,9 @@ func (t *Terminal) write(op string, b []byte) error {
 	}
 	t.mirror(b)
 	t.markInput()
+	if t.cast != nil {
+		t.cast.input(op, b)
+	}
 	err := t.sendInputBounded(op, b)
 	var te *TimeoutError
 	if errors.As(err, &te) {
@@ -817,6 +849,9 @@ func (t *Terminal) Resize(cols, rows int) error {
 	}
 	t.lastInput = time.Now()
 	t.mu.Unlock()
+	if t.cast != nil {
+		t.cast.resize(cols, rows)
+	}
 	if err := t.proc.Resize(cols, rows); err != nil {
 		return t.inputErr("resize", err)
 	}

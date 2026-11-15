@@ -417,6 +417,22 @@ degrades to exactly the plain snapshot.
     9-12 fg:2
 ```
 
+## Recording a failed test
+
+Set `TUITEST_CAST_DIR` to a directory, or pass `WithCastDir(dir)`, and each
+terminal records what it shows and what it is sent. When a test started with
+`StartT` or `StartProgramT` fails, the recording goes to a new
+`<TestName>-<n>.cast` file in that directory, and the test log names it. A
+test that passes writes nothing.
+
+The file is asciicast v2, so `asciinema play` and other players show it. Each
+wait and each input call adds a mark, such as `WaitForText: text "ready"`,
+then `WaitForText: timed out`, so a player can jump to each step of the test.
+Resizes and the exit are in it too.
+
+Recording keeps the output in memory, up to 16 MiB for each terminal, so it is
+off unless you ask for it. `WriteCast(w)` writes the recording at any time.
+
 ## Lifecycle
 
 ```go

@@ -121,12 +121,26 @@ func (e *ClosedError) Error() string {
 // as always returning zero. The hold of a synchronized update also expires by
 // time (see viewLocked), so while one is open the loop wakes when it runs out.
 // Apart from those moments and the deadline, a waiting Terminal costs nothing.
-func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK bool, ready func() bool, next func() time.Time) error {
+func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK bool, ready func() bool, next func() time.Time) (err error) {
 	if timeout <= 0 {
 		timeout = time.Second
 	}
 	start := time.Now()
 	deadline := start.Add(timeout)
+
+	if t.cast != nil {
+		t.cast.mark(op + ": " + want)
+		defer func() {
+			switch {
+			case err == nil:
+				t.cast.mark(op + ": done")
+			case errors.Is(err, ErrTimeout):
+				t.cast.mark(op + ": timed out")
+			default:
+				t.cast.mark(op + ": failed")
+			}
+		}()
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

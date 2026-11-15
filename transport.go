@@ -82,7 +82,7 @@ func StartProgram(prog Program, opts ...Option) (*Terminal, error) {
 // debug log as StartT.
 func StartProgramT(tb testing.TB, prog Program, opts ...Option) *Terminal {
 	tb.Helper()
-	opts = append([]Option{func(c *config) { c.testLog = tb }}, opts...)
+	opts = append([]Option{testDefaults(tb)}, opts...)
 	term, err := StartProgram(prog, opts...)
 	if err != nil {
 		tb.Fatalf("tuitest: start program: %v", err)
