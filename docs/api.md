@@ -88,12 +88,25 @@ one of these keys is the same as `Mod(k, ModAlt)`, so `Alt(Up)` is
 `ESC [ 1 ; 3 A`, as xterm sends it. `Alt` of any other key prefixes ESC:
 `Alt('x')` is `ESC x`.
 
-`SendKeys` sends the arrow keys, `Home` and `End` the way a terminal does in the
-program's current cursor key mode: `ESC [ A` normally, and `ESC O A` once the
-program has set DECCKM (mode 1). Full-screen programs built on terminfo set that
-mode at startup and match their input against the second form, so a harness
-that sent the first regardless would be pressing keys the program does not
-know.
+`SendKeys` sends each `Key` the way a terminal sends that key under the
+keyboard modes the program has set. A harness that ignored them would press keys
+the program does not know.
+
+- With no mode set, a `Key` is sent as its constant says.
+- Once the program has set DECCKM (mode 1), the unmodified arrow keys, `Home`
+  and `End` are sent as `ESC O A` and so on. Full-screen programs built on
+  terminfo set that mode at startup and match their input against that form.
+- Once the program has pushed kitty keyboard flags (`CSI > flags u` or
+  `CSI = flags ; mode u`), keys follow the kitty protocol for those flags.
+  `Ctrl('b')` is `CSI 98;5 u` and `Esc` is `CSI 27 u`. Enter, Tab, Backspace
+  and the named keys stay in their legacy form unless the program asked for
+  every key, as tuios does (`CSI = 29 ; 1 u`). Then `Enter` is `CSI 13 u`.
+- At modifyOtherKeys level 2 (`CSI > 4 ; 2 m`), a key with Ctrl or Alt is
+  `CSI 27 ; mod ; code ~`.
+
+Strings and runes are text, and `SendKeys` sends them as they are whatever the
+modes. `Type` and `Paste` do the same. Only key presses are sent, never key
+releases. The encoder is the one the tape recorder and player use.
 
 Sending input to a program that has exited returns an error wrapping
 `ErrChildExited`, the same sentinel a wait uses, with the exit code in its

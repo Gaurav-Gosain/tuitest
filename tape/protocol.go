@@ -279,12 +279,16 @@ func reencodes(p Protocol, cmds []Command, consumed []byte, m Modes) bool {
 	if p.Fidelity() == Exact {
 		return false
 	}
-	// Canonical: the re-encoded bytes must decode to the same commands.
-	rn, again, rr := p.Decode(enc, m)
-	if rr != Full || rn != len(enc) {
-		return false
+	// Canonical: the re-encoded bytes must decode to the same commands. Any
+	// protocol may read them back, since a protocol can re-encode in a form
+	// another one owns: kitty sends an unmodified Up as the legacy CSI A.
+	for _, q := range registry {
+		rn, again, rr := q.Decode(enc, m)
+		if rr == Full && rn == len(enc) && validDecode(q, again) && commandsEqual(cmds, again) {
+			return true
+		}
 	}
-	return commandsEqual(cmds, again)
+	return false
 }
 
 // encodeWith renders a whole command slice through one protocol.

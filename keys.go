@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/keyenc"
 )
 
 // Key is a named key or chord expressed as the escape sequence it sends. Using
@@ -92,7 +94,7 @@ func Alt(k any) Key {
 			return m
 		}
 	}
-	s, err := keyString(k, false)
+	s, err := keyString(k, keyenc.Modes{})
 	if err != nil {
 		return Esc
 	}
@@ -178,30 +180,14 @@ func isDigits(s string) bool {
 	return true
 }
 
-// applicationCursorKeys maps each cursor key to what a terminal sends for it
-// once the program has set DECCKM (mode 1): the same final byte, introduced by
-// SS3 instead of CSI.
-var applicationCursorKeys = map[Key]Key{
-	Up:    "\x1bOA",
-	Down:  "\x1bOB",
-	Right: "\x1bOC",
-	Left:  "\x1bOD",
-	Home:  "\x1bOH",
-	End:   "\x1bOF",
-}
-
-// keyString flattens one SendKeys item into the bytes to send. appCursor
-// reports whether the program has set DECCKM, in which case the named cursor
-// keys are sent in their SS3 form.
-func keyString(item any, appCursor bool) (string, error) {
+// keyString flattens one SendKeys item into the bytes to send. A Key is a
+// keystroke, written in the legacy encoding, and is sent the way a terminal
+// sends that key under the modes the program set (see keyenc.Reencode).
+// Strings and runes are text and are sent as they are.
+func keyString(item any, m keyenc.Modes) (string, error) {
 	switch v := item.(type) {
 	case Key:
-		if appCursor {
-			if k, ok := applicationCursorKeys[v]; ok {
-				return string(k), nil
-			}
-		}
-		return string(v), nil
+		return string(keyenc.Reencode([]byte(v), m)), nil
 	case string:
 		return v, nil
 	case rune:
@@ -209,7 +195,7 @@ func keyString(item any, appCursor bool) (string, error) {
 	case []Key:
 		var s strings.Builder
 		for _, k := range v {
-			ks, _ := keyString(k, appCursor)
+			ks, _ := keyString(k, m)
 			s.WriteString(ks)
 		}
 		return s.String(), nil
@@ -218,7 +204,7 @@ func keyString(item any, appCursor bool) (string, error) {
 	case []any:
 		var s strings.Builder
 		for _, k := range v {
-			ks, err := keyString(k, appCursor)
+			ks, err := keyString(k, m)
 			if err != nil {
 				return "", err
 			}
@@ -258,21 +244,35 @@ func (t *Terminal) Paste(s string) error {
 //	term.SendKeys("git status", tuitest.Enter)
 //	term.SendKeys(tuitest.Ctrl('b'), "%")
 //
-// The arrow keys, Home and End are sent the way a terminal sends them in the
-// program's current cursor key mode: as CSI sequences (ESC [ A) normally, and
-// as SS3 sequences (ESC O A) once the program has set DECCKM (mode 1), which
-// full-screen programs built on terminfo do at startup and then match against.
-// Every other key is sent as its constant says.
+// A Key is sent the way a terminal sends that key under the keyboard modes the
+// program has set, the way a user's terminal would:
+//
+//   - With no mode set, a Key is sent as its constant says.
+//   - Once the program has set DECCKM (mode 1), the unmodified arrow keys, Home
+//     and End are sent as SS3 sequences (ESC O A), which full-screen programs
+//     built on terminfo set at startup and then match against.
+//   - Once the program has pushed kitty keyboard flags (CSI > flags u), keys
+//     follow the kitty protocol for those flags: Ctrl('b') is CSI 98;5 u, Esc
+//     is CSI 27 u, and with the flag that reports every key Enter is CSI 13 u.
+//   - At modifyOtherKeys level 2 (CSI > 4;2 m), a key with Ctrl or Alt is sent
+//     as CSI 27;mod;code ~.
+//
+// Strings and runes are text and are sent as they are, whatever the modes: use
+// Key values for keystrokes. Only key presses are sent, never key releases.
 func (t *Terminal) SendKeys(items ...any) error {
-	// After a panic appCursor stays false, and the write below returns the
+	// After a panic the modes stay zero, and the write below returns the
 	// panic error.
-	var appCursor bool
+	var m keyenc.Modes
 	t.mu.Lock()
-	t.emuLocked("reading the cursor key mode", nil, func() { appCursor = t.emu.ApplicationCursorKeys() })
+	t.emuLocked("reading the keyboard modes", nil, func() {
+		m.AppCursor = t.emu.ApplicationCursorKeys()
+		m.KittyFlags = t.emu.KittyKeyboardFlags()
+		m.ModifyOtherKeys = t.emu.ModifyOtherKeys()
+	})
 	t.mu.Unlock()
 	var buf []byte
 	for _, item := range items {
-		s, err := keyString(item, appCursor)
+		s, err := keyString(item, m)
 		if err != nil {
 			return err
 		}

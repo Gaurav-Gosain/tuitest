@@ -58,17 +58,3 @@ func keyTokenError(token string) error {
 	}
 	return fmt.Errorf("key %q cannot carry those modifiers", token)
 }
-
-func singleRune(s string) (rune, bool) {
-	if utf8.RuneCountInString(s) != 1 {
-		return 0, false
-	}
-	r, size := utf8.DecodeRuneInString(s)
-	// A byte that is not valid UTF-8 decodes to RuneError with size 1 and
-	// would otherwise pass as a one-rune key name, producing a token that
-	// encodes to bytes nothing can decode back.
-	if r == utf8.RuneError && size == 1 {
-		return 0, false
-	}
-	return r, true
-}

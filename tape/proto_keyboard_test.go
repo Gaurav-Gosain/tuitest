@@ -96,8 +96,8 @@ func TestApplicationCursorMode(t *testing.T) {
 
 	for _, name := range []string{"Up", "Down", "Left", "Right", "Home", "End"} {
 		d := keyByName[name]
-		normal := "\x1b[" + string(d.final)
-		application := "\x1bO" + string(d.final)
+		normal := "\x1b[" + string(d.Final)
+		application := "\x1bO" + string(d.Final)
 
 		if got, _ := ResolveKeyModes(name, Modes{}); string(got) != normal {
 			t.Errorf("%s under normal cursor mode = %q, want %q", name, got, normal)
@@ -130,7 +130,7 @@ func TestModifierMatrixRoundTrips(t *testing.T) {
 					bits |= bit
 				}
 			}
-			token := modString(bits) + d.name
+			token := modString(bits) + d.Name
 
 			t.Run(token, func(t *testing.T) {
 				seq, err := ResolveKey(token)
@@ -160,20 +160,27 @@ func TestKittyKeyboard(t *testing.T) {
 		in    string
 		key   string
 		attrs KeyAttrs
+		// out is the re-encoded spelling when it differs from in.
+		out string
 	}{
-		{"plain letter", "\x1b[97u", "a", KeyAttrs{}},
-		{"ctrl letter", "\x1b[97;5u", "Ctrl+a", KeyAttrs{}},
-		{"release", "\x1b[97;1:3u", "a", KeyAttrs{Event: KeyRelease}},
-		{"repeat", "\x1b[97;1:2u", "a", KeyAttrs{Event: KeyRepeat}},
-		{"ctrl release", "\x1b[97;5:3u", "Ctrl+a", KeyAttrs{Event: KeyRelease}},
-		{"shifted layout", "\x1b[97:65;2u", "Shift+a", KeyAttrs{Shifted: "A"}},
-		{"base layout", "\x1b[97::98u", "a", KeyAttrs{Base: "b"}},
-		{"associated text", "\x1b[97;;97u", "a", KeyAttrs{Text: "a"}},
-		{"multi rune text", "\x1b[97;;104:105u", "a", KeyAttrs{Text: "hi"}},
-		{"escape key", "\x1b[27u", "Esc", KeyAttrs{}},
-		{"enter key", "\x1b[13u", "Enter", KeyAttrs{}},
-		{"functional up", "\x1b[57352u", "Up", KeyAttrs{}},
-		{"functional up release", "\x1b[57352;1:3u", "Up", KeyAttrs{Event: KeyRelease}},
+		{"plain letter", "\x1b[97u", "a", KeyAttrs{}, ""},
+		{"ctrl letter", "\x1b[97;5u", "Ctrl+a", KeyAttrs{}, ""},
+		{"release", "\x1b[97;1:3u", "a", KeyAttrs{Event: KeyRelease}, ""},
+		{"repeat", "\x1b[97;1:2u", "a", KeyAttrs{Event: KeyRepeat}, ""},
+		{"ctrl release", "\x1b[97;5:3u", "Ctrl+a", KeyAttrs{Event: KeyRelease}, ""},
+		{"shifted layout", "\x1b[97:65;2u", "Shift+a", KeyAttrs{Shifted: "A"}, ""},
+		{"base layout", "\x1b[97::98u", "a", KeyAttrs{Base: "b"}, ""},
+		{"associated text", "\x1b[97;;97u", "a", KeyAttrs{Text: "a"}, ""},
+		{"multi rune text", "\x1b[97;;104:105u", "a", KeyAttrs{Text: "hi"}, ""},
+		{"escape key", "\x1b[27u", "Esc", KeyAttrs{}, ""},
+		{"enter key", "\x1b[13u", "Enter", KeyAttrs{}, ""},
+		// Up arrives in kitty's own code and leaves in the form the protocol
+		// specifies, with the modifier as a parameter.
+		{"functional up", "\x1b[57352u", "Up", KeyAttrs{}, "\x1b[A"},
+		{"functional up release", "\x1b[57352;1:3u", "Up", KeyAttrs{Event: KeyRelease}, "\x1b[1;1:3A"},
+		{"legacy form up release", "\x1b[1;1:3A", "Up", KeyAttrs{Event: KeyRelease}, ""},
+		{"F1 repeat", "\x1b[1;1:2P", "F1", KeyAttrs{Event: KeyRepeat}, ""},
+		{"F3 with ctrl", "\x1b[13;5~", "Ctrl+F3", KeyAttrs{}, ""},
 	}
 
 	for _, tc := range tests {
@@ -193,8 +200,12 @@ func TestKittyKeyboard(t *testing.T) {
 			if err != nil {
 				t.Fatalf("encode: %v", err)
 			}
-			if string(out) != tc.in {
-				t.Fatalf("re-encoded as %q, want %q", out, tc.in)
+			want := tc.in
+			if tc.out != "" {
+				want = tc.out
+			}
+			if string(out) != want {
+				t.Fatalf("re-encoded as %q, want %q", out, want)
 			}
 		})
 	}
@@ -211,7 +222,7 @@ func TestKittyEventMatrixRoundTrips(t *testing.T) {
 	for _, d := range keyDefs {
 		for _, ev := range events {
 			for _, mask := range masks {
-				token := modString(mask) + d.name
+				token := modString(mask) + d.Name
 				attrs := KeyAttrs{Event: ev}
 				name := fmt.Sprintf("%s/%s", token, ev)
 

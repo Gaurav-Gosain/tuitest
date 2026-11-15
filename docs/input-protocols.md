@@ -77,7 +77,12 @@ records *the key*, not the spelling. The normalizations are:
   parameter, which is what real terminals do;
 - under kitty, a key may be re-encoded in the `CSI u` form even when the
   recording used the legacy spelling, because both are valid and mean the same
-  key to a program that negotiated kitty.
+  key to a program that negotiated kitty;
+- under kitty, a named key such as `Up`, `Delete` or `F5` is re-encoded in the
+  legacy form the kitty specification gives it, with the modifier as a
+  parameter (`CSI 1;5 A`), even when it arrived as a `CSI u` code
+  (`CSI 57352;5 u`). F3 is `CSI 13 ~`, since `CSI R` is the cursor position
+  report.
 
 "Equivalent" is defined precisely: two command sequences are equivalent when
 they send the same bytes in the same order. How consecutive keys are *grouped*
@@ -145,9 +150,10 @@ A tape stores *keys*, not bytes (except for `Raw`, which stores bytes).
 **What the file carries.** The mode context a key was decoded under lives in
 memory during recording but is **not** written to the tape. So a plain chord
 recorded under kitty comes back as `Key Ctrl+a` with no modes and replays in the
-legacy spelling `0x01` rather than `CSI 97;5u`. That is behaviourally
-equivalent, since a program that negotiated kitty still accepts the legacy
-encoding, and it keeps recordings readable and portable.
+legacy spelling `0x01` rather than `CSI 97;5u`. That keeps recordings readable
+and portable. On replay the player sends each key through `SendKeys`, which
+sends it the way a terminal does under the modes the program has set at that
+moment. So a program that has negotiated kitty again gets `CSI 97;5u`.
 
 What does survive is everything the legacy encoding *cannot* express, because
 that is information rather than spelling. Those keys carry attributes, and
@@ -155,7 +161,7 @@ attributes are written to the file and force the kitty encoding on replay:
 
 | Recorded | Tape line | Replays as |
 | --- | --- | --- |
-| `CSI 97;5u` | `Key Ctrl+a` | `0x01` (legacy spelling) |
+| `CSI 97;5u` | `Key Ctrl+a` | `CSI 97;5u` if the program set kitty flags, else `0x01` |
 | `CSI 97;1:3u` | `Key a +Release` | `CSI 97;1:3u` (exact) |
 | `CSI 97;;225u` | `Key a +Text "á"` | `CSI 97;;225u` (exact) |
 

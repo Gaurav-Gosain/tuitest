@@ -62,6 +62,12 @@ type Emulator interface {
 	// case a terminal sends the cursor keys as SS3 sequences (ESC O A) instead
 	// of CSI sequences (ESC [ A).
 	ApplicationCursorKeys() bool
+	// KittyKeyboardFlags reports the kitty keyboard flags the program set
+	// for the active screen, 0 when it set none.
+	KittyKeyboardFlags() int
+	// ModifyOtherKeys reports the xterm modifyOtherKeys level the program
+	// set, 0 when off.
+	ModifyOtherKeys() int
 	// CellSize returns the size of one cell in pixels. It is never zero: an
 	// emulator that no host has measured uses a fallback cell. The PTY's
 	// window size in pixels is the grid size times this, so a program that
@@ -212,6 +218,10 @@ func (a *adapter) Modes() map[int]bool {
 }
 
 func (a *adapter) ApplicationCursorKeys() bool { return a.e.ApplicationCursorKeys() }
+
+func (a *adapter) KittyKeyboardFlags() int { return a.e.KittyKeyboardFlags() }
+
+func (a *adapter) ModifyOtherKeys() int { return a.e.ModifyOtherKeys() }
 
 func (a *adapter) CellSize() (int, int) { return a.e.CellSize() }
 

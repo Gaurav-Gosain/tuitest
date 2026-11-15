@@ -1,9 +1,9 @@
 package tape
 
 import (
-	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/Gaurav-Gosain/tuitest/internal/keyenc"
 )
 
 func init() { Register(kittyKeys{}) }
@@ -25,7 +25,9 @@ func init() { Register(kittyKeys{}) }
 //
 // It is Canonical: default parameters that were omitted are not restored on
 // re-encode, and a key that carries no information beyond the chord is spelled
-// as the plain chord. Both re-encode to bytes that decode to the same command.
+// as the plain chord. A named key such as Up re-encodes in the legacy form the
+// protocol specifies, CSI 1 ; mods A, whatever code it arrived with. All of
+// these re-encode to bytes that decode to the same command.
 type kittyKeys struct{}
 
 func (kittyKeys) Name() string       { return "kitty-keys" }
@@ -46,6 +48,17 @@ func (p kittyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	body, final, n, r := csiFrame(buf)
 	if r != Full {
 		return 0, nil, r
+	}
+
+	// With every key reported, kitty sends an unmodified F1, F2 or F4 as CSI
+	// P, CSI Q or CSI S. Those bytes mean nothing else on the input side, but
+	// they are read as keys only when kitty is in force.
+	if len(body) == 0 && m.KittyFlags != 0 {
+		if d, known := keyBySS3[final]; known && d.Form == formSS3 && final != 'R' {
+			cmd := Command{Kind: KindKey, Keys: []string{d.Name}}
+			cmd.Modes.KittyFlags = m.KittyFlags | keyenc.KittyAllKeys
+			return n, []Command{cmd}, Full
+		}
 	}
 
 	params, ok := parseCSIParams(string(body))
@@ -82,14 +95,14 @@ func (p kittyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 
 	if params.has(0, 1) {
 		r := rune(params.at(0, 1, 0))
-		if !validRune(r) {
+		if !keyenc.ValidRune(r) {
 			return 0, nil, NoMatch
 		}
 		attrs.Shifted = string(r)
 	}
 	if params.has(0, 2) {
 		r := rune(params.at(0, 2, 0))
-		if !validRune(r) {
+		if !keyenc.ValidRune(r) {
 			return 0, nil, NoMatch
 		}
 		attrs.Base = string(r)
@@ -101,7 +114,7 @@ func (p kittyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 				return 0, nil, NoMatch
 			}
 			r := rune(cp)
-			if !validRune(r) {
+			if !keyenc.ValidRune(r) {
 				return 0, nil, NoMatch
 			}
 			b.WriteRune(r)
@@ -112,7 +125,7 @@ func (p kittyKeys) Decode(buf []byte, m Modes) (int, []Command, Result) {
 	// A key with no extra information is spelled as the plain chord, which
 	// keeps an ordinary recording readable even under kitty.
 	cmd := Command{Kind: KindKey, Keys: []string{modString(mask) + base}, KeyAttrs: attrs}
-	cmd.Modes.KittyFlags = max(m.KittyFlags, 1)
+	cmd.Modes.KittyFlags = max(m.KittyFlags, 1) | impliedKittyFlags(mask, base)
 	return n, []Command{cmd}, Full
 }
 
@@ -127,7 +140,7 @@ func (p kittyKeys) baseKey(params csiParams, final byte) (string, bool) {
 	switch final {
 	case 'u':
 		if d, known := keyByKitty[code]; known {
-			return d.name, true
+			return d.Name, true
 		}
 		switch code {
 		case 27:
@@ -145,11 +158,11 @@ func (p kittyKeys) baseKey(params csiParams, final byte) (string, bool) {
 		// key from a newer revision of the protocol. Spelling it as the
 		// Private Use Area character it happens to equal would be a lie, so
 		// decline and let it be captured verbatim as Raw.
-		if isKittyFunctionalCode(code) {
+		if keyenc.IsKittyFunctionalCode(code) {
 			return "", false
 		}
 		r := rune(code)
-		if !validRune(r) || r < 0x20 {
+		if !keyenc.ValidRune(r) || r < 0x20 {
 			return "", false
 		}
 		return string(r), true
@@ -159,25 +172,27 @@ func (p kittyKeys) baseKey(params csiParams, final byte) (string, bool) {
 		if !known {
 			return "", false
 		}
-		return d.name, true
+		return d.Name, true
 
 	default:
 		if code != 1 {
 			return "", false
 		}
 		if d, known := keyByLetter[final]; known {
-			return d.name, true
+			return d.Name, true
 		}
 		// As in the legacy protocol, a function key in the SS3 family
 		// reaches the CSI form only with a real modifier. Otherwise CSI R
 		// would be read as F3 when it is the cursor position report, and
-		// CSI 1;1R when it is a report for row 1. The leading parameter
+		// CSI 1;1R when it is a report for row 1. An event sub-parameter
+		// counts as well: no report carries one, so CSI 1;1:2 P is F1
+		// repeating. The leading parameter
 		// must also be a bare 1: a sub-parameter there describes an
 		// alternate key layout, which a key identified by its final byte
 		// does not have, so its presence means this is not a key report.
-		if d, known := keyBySS3[final]; known && d.form == formSS3 &&
-			params.at(1, 0, 1) >= 2 && len(params.group(0)) == 1 {
-			return d.name, true
+		if d, known := keyBySS3[final]; known && d.Form == formSS3 &&
+			(params.at(1, 0, 1) >= 2 || params.has(1, 1)) && len(params.group(0)) == 1 {
+			return d.Name, true
 		}
 		return "", false
 	}
@@ -190,7 +205,8 @@ func (p kittyKeys) Encode(c Command, m Modes) ([]byte, bool) {
 	// Claim a command only when kitty is in force, so a recording made
 	// without it keeps the legacy spelling. Attributes are proof on their
 	// own: no other protocol can express a release or associated text.
-	if m.KittyFlags == 0 && c.Modes.KittyFlags == 0 && !c.KeyAttrs.set() {
+	flags := max(m.KittyFlags, c.Modes.KittyFlags)
+	if flags == 0 && !c.KeyAttrs.set() {
 		return nil, false
 	}
 	// A Key line carrying attributes names exactly one key, so attributes
@@ -198,10 +214,24 @@ func (p kittyKeys) Encode(c Command, m Modes) ([]byte, bool) {
 	if c.KeyAttrs.set() && len(c.Keys) != 1 {
 		return nil, false
 	}
+	attrs := keyenc.Attrs{Shifted: c.KeyAttrs.Shifted, Base: c.KeyAttrs.Base, Text: c.KeyAttrs.Text}
+	switch c.KeyAttrs.Event {
+	case KeyRepeat:
+		attrs.Event = kittyRepeat
+	case KeyRelease:
+		attrs.Event = kittyRelease
+	}
 
 	var out []byte
 	for _, tok := range c.Keys {
-		b, ok := encodeKitty(tok, c.KeyAttrs)
+		// A tape Key line for Enter or a letter names a key event, which
+		// only the flag that reports every key sends as one. Without it the
+		// key would go out as text and read back as a Type line.
+		f := max(flags, keyenc.KittyDisambiguate)
+		if mask, base, ok := splitToken(tok); ok {
+			f |= impliedKittyFlags(mask, base)
+		}
+		b, ok := keyenc.EncodeKitty(tok, attrs, f, m.AppCursor)
 		if !ok {
 			return nil, false
 		}
@@ -210,131 +240,28 @@ func (p kittyKeys) Encode(c Command, m Modes) ([]byte, bool) {
 	return out, true
 }
 
-// encodeKitty renders one chord in the CSI u grammar.
-func encodeKitty(tok string, a KeyAttrs) ([]byte, bool) {
-	mask, base, ok := splitToken(tok)
-	if !ok {
-		return nil, false
-	}
-
-	code, final, ok := kittyCodeFor(base)
-	if !ok {
-		return nil, false
-	}
-
-	var b strings.Builder
-	b.WriteString("\x1b[")
-	b.WriteString(strconv.Itoa(code))
-
-	// Sub-parameters of the key code: the shifted and base layouts. Base
-	// requires a placeholder for shifted when only base is present, since
-	// position is what identifies them.
-	switch {
-	case a.Shifted != "" && a.Base != "":
-		b.WriteByte(':')
-		b.WriteString(runeParam(a.Shifted))
-		b.WriteByte(':')
-		b.WriteString(runeParam(a.Base))
-	case a.Shifted != "":
-		b.WriteByte(':')
-		b.WriteString(runeParam(a.Shifted))
-	case a.Base != "":
-		b.WriteString("::")
-		b.WriteString(runeParam(a.Base))
-	}
-
-	event := 0
-	switch a.Event {
-	case KeyRepeat:
-		event = kittyRepeat
-	case KeyRelease:
-		event = kittyRelease
-	}
-
-	needMods := mask != 0 || event != 0
-	if needMods || a.Text != "" {
-		b.WriteByte(';')
-		if needMods {
-			b.WriteString(strconv.Itoa(mask + 1))
-			if event != 0 {
-				b.WriteByte(':')
-				b.WriteString(strconv.Itoa(event))
-			}
-		}
-	}
-	if a.Text != "" {
-		b.WriteByte(';')
-		for i, r := range a.Text {
-			if i > 0 {
-				b.WriteByte(':')
-			}
-			b.WriteString(strconv.Itoa(int(r)))
-		}
-	}
-	b.WriteByte(final)
-	return []byte(b.String()), true
-}
-
-// kittyCodeFor maps a tape key name to its kitty key code and final byte.
-func kittyCodeFor(base string) (code int, final byte, ok bool) {
+// impliedKittyFlags is what a decoded key shows about the flags in force. A key
+// the protocol leaves in its legacy form unless every key is reported, such as
+// a plain Enter or a typed letter, arrived as CSI u only because the program
+// asked for every key. The encoder needs that flag to send it the same way.
+func impliedKittyFlags(mask int, base string) int {
 	switch base {
-	case "Esc", "Escape":
-		return 27, 'u', true
-	case "Enter", "Return":
-		return 13, 'u', true
-	case "Tab":
-		return 9, 'u', true
-	case "Backspace":
-		return 127, 'u', true
+	case "Enter", "Return", "Tab", "Backspace":
+		if mask == 0 {
+			return keyenc.KittyAllKeys
+		}
+		return 0
 	case "Space":
-		return 32, 'u', true
-	}
-	if d, known := keyByName[base]; known {
-		if d.kittyCode != 0 {
-			return d.kittyCode, 'u', true
+	default:
+		if _, named := keyByName[base]; named {
+			return 0
+		}
+		if _, ok := singleRune(base); !ok {
+			return 0
 		}
 	}
-	r, single := singleRune(base)
-	// A control character is not a legal key token, which is the same rule the
-	// legacy encoder states: it has a name, such as Tab or Backspace, and
-	// accepting the raw byte as well would give one key two spellings that
-	// encode to different bytes. DEL is the case that showed the two encoders
-	// disagreeing: legacy rejected "\x7f" and kitty accepted it, so the token
-	// resolved through the permissive fallback and a tape line "Key \x7f" sent
-	// "\x1b[127u" to a program that had never negotiated kitty.
-	if !single || r < 0x20 || r == 0x7f {
-		return 0, 0, false
+	if mask&^modShift == 0 {
+		return keyenc.KittyAllKeys
 	}
-	// Kitty numbers its functional keys inside the Unicode Private Use Area,
-	// so a literal character from that block cannot be spelled as itself: the
-	// reader would take it for a function key. Decline and let the legacy
-	// encoding carry it, which it does exactly.
-	if isKittyFunctionalCode(int(r)) {
-		return 0, 0, false
-	}
-	return int(r), 'u', true
-}
-
-// Kitty's functional keys occupy this Private Use Area block. The range is part
-// of the protocol rather than a guess, and it is the reason a PUA character is
-// not encodable as a kitty key code.
-const (
-	kittyFunctionalLo = 57344
-	kittyFunctionalHi = 57454
-)
-
-func isKittyFunctionalCode(code int) bool {
-	return code >= kittyFunctionalLo && code <= kittyFunctionalHi
-}
-
-// runeParam renders the first rune of s as a decimal codepoint parameter.
-func runeParam(s string) string {
-	r, _ := utf8.DecodeRuneInString(s)
-	return strconv.Itoa(int(r))
-}
-
-// validRune rejects surrogates and out-of-range codepoints, which cannot be
-// carried in a Go string and so could not survive the round trip.
-func validRune(r rune) bool {
-	return r > 0 && r <= 0x10ffff && !(r >= 0xd800 && r <= 0xdfff)
+	return 0
 }

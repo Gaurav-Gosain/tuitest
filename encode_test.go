@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Gaurav-Gosain/tuitest/internal/emu"
+	"github.com/Gaurav-Gosain/tuitest/internal/keyenc"
 )
 
 // TestCtrl pins Ctrl to the xterm table. Masking every rune to five bits, as
@@ -59,23 +60,23 @@ func TestCursorKeysFollowDECCKM(t *testing.T) {
 	normal := map[Key]string{Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D", Home: "\x1b[H", End: "\x1b[F"}
 	app := map[Key]string{Up: "\x1bOA", Down: "\x1bOB", Right: "\x1bOC", Left: "\x1bOD", Home: "\x1bOH", End: "\x1bOF"}
 	for k, want := range normal {
-		if got, _ := keyString(k, false); got != want {
-			t.Errorf("keyString(%q, false) = %q, want %q", k, got, want)
+		if got, _ := keyString(k, keyenc.Modes{}); got != want {
+			t.Errorf("keyString(%q, keyenc.Modes{}) = %q, want %q", k, got, want)
 		}
-		if got, _ := keyString(k, true); got != app[k] {
-			t.Errorf("keyString(%q, true) = %q, want %q", k, got, app[k])
+		if got, _ := keyString(k, keyenc.Modes{AppCursor: true}); got != app[k] {
+			t.Errorf("keyString(%q, keyenc.Modes{AppCursor: true}) = %q, want %q", k, got, app[k])
 		}
 	}
 	// Other keys and literal text are not affected by the mode.
 	for _, k := range []Key{PageUp, Delete, F1, Enter, Esc} {
-		if got, _ := keyString(k, true); got != string(k) {
-			t.Errorf("keyString(%q, true) = %q, want it unchanged", k, got)
+		if got, _ := keyString(k, keyenc.Modes{AppCursor: true}); got != string(k) {
+			t.Errorf("keyString(%q, keyenc.Modes{AppCursor: true}) = %q, want it unchanged", k, got)
 		}
 	}
-	if got, _ := keyString("\x1b[A", true); got != "\x1b[A" {
+	if got, _ := keyString("\x1b[A", keyenc.Modes{AppCursor: true}); got != "\x1b[A" {
 		t.Errorf("a plain string must be sent literally, got %q", got)
 	}
-	if got, _ := keyString([]any{Up, []Key{Down}}, true); got != "\x1bOA\x1bOB" {
+	if got, _ := keyString([]any{Up, []Key{Down}}, keyenc.Modes{AppCursor: true}); got != "\x1bOA\x1bOB" {
 		t.Errorf("keys inside slices must follow the mode too, got %q", got)
 	}
 }
@@ -90,14 +91,14 @@ func TestAlt(t *testing.T) {
 }
 
 func TestKeyString(t *testing.T) {
-	got, err := keyString([]any{"ab", 'c', Enter}, false)
+	got, err := keyString([]any{"ab", 'c', Enter}, keyenc.Modes{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "abc\r" {
 		t.Errorf("keyString = %q, want %q", got, "abc\r")
 	}
-	if _, err := keyString(42, false); err == nil {
+	if _, err := keyString(42, keyenc.Modes{}); err == nil {
 		t.Error("expected error for unsupported type int")
 	}
 }

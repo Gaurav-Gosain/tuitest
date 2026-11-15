@@ -139,9 +139,9 @@ The full Go surface is in [docs/api.md](docs/api.md), and every example in
   screen instead of a bare "timeout".
 - Sends named keys as typed `Key` constants, so a misspelled key is a compile
   error; `Ctrl('b')` builds a control byte, `Alt(k)` holds Alt, and
-  `Mod(Up, ModCtrl)` holds modifiers on a named key in the xterm form. The
-  arrow keys, Home and End follow the program's cursor key mode (DECCKM), as
-  they do on a real terminal.
+  `Mod(Up, ModCtrl)` holds modifiers on a named key in the xterm form. Keys
+  follow the keyboard modes the program set, as they do on a real terminal:
+  the cursor key mode (DECCKM), the kitty keyboard flags and modifyOtherKeys.
 - Sends mouse events as SGR (mode 1006) sequences, and pastes as bracketed
   paste (mode 2004), which is the code path a program handles differently from
   typed text and usually tests less.
