@@ -59,6 +59,19 @@ func Reencode(b []byte, m Modes) []byte {
 				n, tok, r = 1, "Esc", Full
 			}
 		case NoMatch:
+			if b[0] == 0x1b {
+				// An escape sequence that is no legacy key, such as a kitty
+				// key the caller spelled out or an OSC string, is sent
+				// whole. Sent a byte at a time, its text would be read as
+				// typed characters below.
+				n := len(b)
+				if _, _, cn, cr := FrameCSI(b); cr == Full {
+					n = cn
+				}
+				out = append(out, b[:n]...)
+				b = b[n:]
+				continue
+			}
 			if rn, size := utf8.DecodeRune(b); m.KittyFlags&KittyAllKeys != 0 && rn >= 0x20 && rn != utf8.RuneError {
 				n, tok, r = size, textToken(rn), Full
 			}

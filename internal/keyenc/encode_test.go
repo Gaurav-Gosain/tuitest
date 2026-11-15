@@ -51,6 +51,10 @@ func TestReencode(t *testing.T) {
 		{"all text", "a", Modes{KittyFlags: tuios}, "\x1b[97;;97u"},
 		{"all shifted text", "A", Modes{KittyFlags: tuios}, "\x1b[97:65;2;65u"},
 		{"all text without text flag", "a", Modes{KittyFlags: KittyDisambiguate | KittyAllKeys}, "\x1b[97u"},
+		{"all kitty key spelled out", "\x1b[112;5u", Modes{KittyFlags: tuios}, "\x1b[112;5u"},
+		{"all kitty key then Enter", "\x1b[112;5u\r", Modes{KittyFlags: tuios}, "\x1b[112;5u\x1b[13u"},
+		{"all OSC string", "\x1b]0;title\x07", Modes{KittyFlags: tuios}, "\x1b]0;title\x07"},
+		{"kitty key spelled out", "\x1b[112;5u", Modes{KittyFlags: disambiguate}, "\x1b[112;5u"},
 
 		// modifyOtherKeys.
 		{"mok2 Ctrl+b", "\x02", Modes{ModifyOtherKeys: 2}, "\x1b[27;5;98~"},
