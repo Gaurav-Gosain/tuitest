@@ -197,7 +197,20 @@ func (a *adapter) Resize(cols, rows int) { a.e.Resize(cols, rows) }
 
 func (a *adapter) Size() (int, int) { return a.e.Width(), a.e.Height() }
 
-func (a *adapter) CellAt(col, row int) *uv.Cell { return a.e.CellAt(col, row) }
+// CellAt returns the cell, except that a cell under a sixel image reads as a
+// blank with its background. tuios.dev/vt keeps such a cell as a private
+// marker codepoint that names the image, which is its own bookkeeping: a
+// terminal shows the picture there, not a character, and a test that reads
+// the screen must not see one.
+func (a *adapter) CellAt(col, row int) *uv.Cell {
+	c := a.e.CellAt(col, row)
+	if c == nil || !vt.IsSixelMarker(c.Content) {
+		return c
+	}
+	blank := uv.Cell{Content: " ", Width: 1}
+	blank.Style.Bg = c.Style.Bg
+	return &blank
+}
 
 func (a *adapter) Cursor() (int, int, bool) {
 	p := a.e.CursorPosition()
