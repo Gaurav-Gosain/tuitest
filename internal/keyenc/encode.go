@@ -84,6 +84,7 @@ func Reencode(b []byte, m Modes) []byte {
 		}
 		orig := b[:n]
 		b = b[n:]
+		tok = shiftedLetter(tok)
 		enc, ok := Encode(tok, m)
 		if !ok {
 			out = append(out, orig...)
@@ -97,6 +98,26 @@ func Reencode(b []byte, m Modes) []byte {
 		out = append(out, enc...)
 	}
 	return out
+}
+
+// shiftedLetter spells a chord on an uppercase letter, such as the "Alt+C"
+// that ESC C decodes to, as Shift held on the lowercase key: "Alt+Shift+c".
+// That is the key a person presses, and the kitty and modifyOtherKeys
+// protocols report it that way: Alt+Shift+c is CSI 99;4 u, not CSI 67;3 u.
+func shiftedLetter(tok string) string {
+	mask, base, ok := SplitToken(tok)
+	if !ok || mask == 0 {
+		return tok
+	}
+	r, single := SingleRune(base)
+	if !single {
+		return tok
+	}
+	lower := unicode.ToLower(r)
+	if lower == r || unicode.ToUpper(lower) != r {
+		return tok
+	}
+	return ModString(mask|ModShift) + string(lower)
 }
 
 // textToken spells a typed character as a key token: an uppercase letter is
