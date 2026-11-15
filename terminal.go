@@ -42,6 +42,10 @@ type config struct {
 	// castDir turns on the recording and is where StartT writes the
 	// recording of a failed test. See WithCastDir.
 	castDir string
+	// cellW and cellH are the cell size in pixels, zero for the
+	// emulator's own. sixel advertises sixel in the answer to DA1.
+	cellW, cellH int
+	sixel        bool
 
 	// writeTimeout bounds how long input waits for the program to read it.
 	// Zero or less means no bound.
@@ -77,6 +81,23 @@ type Option func(*config)
 // 65535, the range the kernel can store; Start refuses anything else.
 func WithSize(cols, rows int) Option {
 	return func(c *config) { c.cols, c.rows = cols, rows }
+}
+
+// WithCellSize sets the size of one cell in pixels. The terminal reports it
+// the way a real terminal does: in the PTY's window size, in the answers to
+// CSI 14 t and CSI 16 t, and in the mode 2048 report. Without it the cell is
+// the emulator's fallback, 10 by 20 pixels. Both must be positive; anything
+// else keeps the fallback.
+func WithCellSize(width, height int) Option {
+	return func(c *config) { c.cellW, c.cellH = width, height }
+}
+
+// WithSixel makes the terminal say it draws sixel images: its answer to the
+// primary device attributes query (DA1) carries attribute 4, as a sixel
+// terminal's does. The terminal does not draw the images; the program can
+// tell what it sent from the screen and the log.
+func WithSixel() Option {
+	return func(c *config) { c.sixel = true }
 }
 
 // WithEnv adds or overrides environment entries ("KEY=VALUE").
@@ -289,6 +310,12 @@ func newTerminal(cfg config) *Terminal {
 		respWake:  make(chan struct{}, 1),
 	}
 	t.cond = sync.NewCond(&t.mu)
+	if cfg.cellW > 0 && cfg.cellH > 0 {
+		t.emu.SetCellSize(cfg.cellW, cfg.cellH)
+	}
+	if cfg.sixel {
+		t.emu.SetSixel(true)
+	}
 	if cfg.castDir != "" {
 		t.cast = newCastRecorder(cfg.cols, cfg.rows, cfg.term)
 	}

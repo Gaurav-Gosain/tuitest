@@ -68,6 +68,12 @@ type Emulator interface {
 	// ModifyOtherKeys reports the xterm modifyOtherKeys level the program
 	// set, 0 when off.
 	ModifyOtherKeys() int
+	// SetCellSize sets the size of one cell in pixels, which the emulator
+	// reports to the program (CSI 14 t, CSI 16 t, the mode 2048 report).
+	SetCellSize(width, height int)
+	// SetSixel sets whether the emulator says it draws sixel images: the
+	// answer to DA1 then carries attribute 4.
+	SetSixel(on bool)
 	// CellSize returns the size of one cell in pixels. It is never zero: an
 	// emulator that no host has measured uses a fallback cell. The PTY's
 	// window size in pixels is the grid size times this, so a program that
@@ -224,5 +230,9 @@ func (a *adapter) KittyKeyboardFlags() int { return a.e.KittyKeyboardFlags() }
 func (a *adapter) ModifyOtherKeys() int { return a.e.ModifyOtherKeys() }
 
 func (a *adapter) CellSize() (int, int) { return a.e.CellSize() }
+
+func (a *adapter) SetCellSize(width, height int) { a.e.SetCellSize(width, height) }
+
+func (a *adapter) SetSixel(on bool) { a.e.SetSixelAdvertised(func() bool { return on }) }
 
 func (a *adapter) OnSync(fn func(open bool)) { a.onSync = fn }
