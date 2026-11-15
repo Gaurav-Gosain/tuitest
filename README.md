@@ -127,8 +127,8 @@ The full Go surface is in [docs/api.md](docs/api.md), and every example in
   scrollback, mouse mode state, OSC 133 semantic markers.
 - Blocks on conditions rather than sleeping. `WaitForText`, `WaitForMatch`,
   `WaitFor` and `WaitForOutput` are woken by the output pump the moment new
-  bytes are interpreted, with a 5ms poll as a backstop for wall-clock
-  conditions. `WaitForStable` also waits for the frame the condition matched to
+  bytes are interpreted. They do not poll. Only a quiet window, as in
+  `WaitStable`, sets a timer, for the moment it ends. `WaitForStable` also waits for the frame the condition matched to
   finish drawing.
 - Never shows a half-drawn frame from a program that uses synchronized output
   (mode 2026, which every Bubble Tea v2 program does): while an update is open,
@@ -288,9 +288,12 @@ flowchart LR
 ```
 
 Every wait shares one loop. It holds the terminal lock, evaluates its condition,
-and blocks on a `sync.Cond` that the output pump broadcasts after each chunk is
-interpreted; a 5ms timer re-broadcasts so wall-clock conditions such as
-`WaitStable` still make progress when the program is silent. Conditions build a
+and blocks on a `sync.Cond`. The output pump broadcasts after each chunk is
+interpreted, and so do a resize, input reaching the program, the exit and an
+emulator panic. A screen condition cannot change between those events, so
+there is no poll. A timer runs only for a moment the clock alone can bring: the
+end of a quiet window in `WaitStable` and `WaitForStable`, the expiry of a
+synchronized update's hold, and the deadline. Conditions build a
 screen snapshot only if they need one, so a cheap condition does not pay to
 rebuild the grid on every write during a heavy burst, and a snapshot is reused
 until the grid changes, so a wait on a quiet screen costs next to nothing.
@@ -499,8 +502,8 @@ than losing data, so heavy-output tests need timeouts sized for the volume, not
 for the harness.
 
 Waits themselves cost nothing while idle: they block on a condition variable and
-are woken by the pump, so a suite's wall-clock time is the program's own latency
-plus at most the 5ms poll interval per wall-clock condition.
+are woken by the pump, so a suite's wall-clock time is the program's own latency.
+A wait with no output to read makes no wakeups.
 
 ## Limitations
 

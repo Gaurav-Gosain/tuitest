@@ -83,11 +83,11 @@ before it, so the work cannot be split. A program that emits far more than this
 feels PTY backpressure rather than losing data, so a heavy-output test needs a
 timeout sized for the volume, not for the harness.
 
-Waits are close to free while idle. They block on a condition variable woken
-by the pump and re-check every 5ms, and a screen that has not changed since
-the last check is not copied again, so a suite's wall-clock time is the
-program's own latency plus at most the 5ms poll interval per wall-clock
-condition.
+Waits are free while idle. They block on a condition variable that the pump,
+a resize, input and the exit wake, and they do not poll. A timer runs only to
+end a quiet window, a synchronized update's hold, or the wait itself. A screen
+that has not changed since the last check is not copied again, so a suite's
+wall-clock time is the program's own latency.
 
 ## Approximate, not exact
 

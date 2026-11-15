@@ -105,11 +105,23 @@ func (e *ClosedError) Error() string {
 
 // waitLoop blocks until ready() is true, the child exits, or timeout elapses.
 // closedIsOK makes child exit a success rather than an error (used by
-// WaitStable). ready is evaluated under the lock on every output wakeup and on a
-// short poll fallback for wall-clock conditions. ready builds a screen snapshot
-// itself only if it needs one, so cheap conditions such as WaitStable do not pay
-// to rebuild the grid on every write during a heavy output burst.
-func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK bool, ready func() bool) error {
+// WaitStable). ready builds a screen snapshot itself only if it needs one, so
+// cheap conditions such as WaitStable do not pay to rebuild the grid on every
+// write during a heavy output burst.
+//
+// ready is evaluated under the lock once at the start and then only when
+// something it can depend on changes: the program wrote output, the screen was
+// resized, input reached the program, the child exited or the emulator
+// panicked. Each of those broadcasts t.cond. A condition on the screen cannot
+// change between those events, so it is not re-checked on a timer.
+//
+// The exceptions are conditions that turn true with the passage of time alone.
+// next reports, for such a condition, the earliest moment it can next become
+// true, or the zero time when only an event can change it; nil means the same
+// as always returning zero. The hold of a synchronized update also expires by
+// time (see viewLocked), so while one is open the loop wakes when it runs out.
+// Apart from those moments and the deadline, a waiting Terminal costs nothing.
+func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK bool, ready func() bool, next func() time.Time) error {
 	if timeout <= 0 {
 		timeout = time.Second
 	}
@@ -119,7 +131,7 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	timer := time.AfterFunc(pollInterval, func() {
+	timer := time.AfterFunc(timeout, func() {
 		t.mu.Lock()
 		t.cond.Broadcast()
 		t.mu.Unlock()
@@ -149,7 +161,8 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 				TailLog:  t.tailLogLocked(),
 			}
 		}
-		if !time.Now().Before(deadline) {
+		now := time.Now()
+		if !now.Before(deadline) {
 			return &TimeoutError{
 				Op:      op,
 				Want:    want,
@@ -158,7 +171,20 @@ func (t *Terminal) waitLoop(op, want string, timeout time.Duration, closedIsOK b
 				TailLog: t.tailLogLocked(),
 			}
 		}
-		timer.Reset(pollInterval)
+		wake := deadline
+		if next != nil {
+			if at := next(); !at.IsZero() && at.Before(wake) {
+				wake = at
+			}
+		}
+		if t.presented != nil {
+			if at := t.syncSince.Add(syncHoldLimit); at.Before(wake) {
+				wake = at
+			}
+		}
+		// A moment already past still needs a wakeup: the condition is
+		// re-checked straight away rather than on the next event.
+		timer.Reset(max(wake.Sub(now), 0))
 		t.cond.Wait()
 	}
 }
@@ -169,9 +195,12 @@ func (t *Terminal) tailLogLocked() string {
 
 // WaitFor blocks until cond returns true on the current screen, or timeout.
 //
-// cond is called with the terminal's lock held, each time the program writes
-// and every few milliseconds in between, so it must be quick and must not call
-// back into the Terminal. The Screen it receives is immutable and may be kept.
+// cond is called with the terminal's lock held, once at the start and then each
+// time the screen can have changed: the program wrote output, the terminal was
+// resized, input reached the program, or the program exited. It is not called
+// on a timer in between, so a condition that reads the clock instead of the
+// screen does not work. cond must be quick and must not call back into the
+// Terminal. The Screen it receives is immutable and may be kept.
 //
 // Like every wait, WaitFor treats a timeout of zero or less as one second, and
 // returns an error wrapping ErrChildExited if the program exits before the
@@ -194,21 +223,21 @@ func (t *Terminal) WaitFor(cond func(Screen) bool, timeout time.Duration) error 
 func (t *Terminal) WaitForDesc(desc string, cond func(Screen) bool, timeout time.Duration) error {
 	return t.waitLoop("WaitForDesc", desc, timeout, false, func() bool {
 		return cond(t.viewLocked())
-	})
+	}, nil)
 }
 
 // WaitForText blocks until the plain-text screen contains substr.
 func (t *Terminal) WaitForText(substr string, timeout time.Duration) error {
 	return t.waitLoop("WaitForText", fmt.Sprintf("text %q", substr), timeout, false, func() bool {
 		return strings.Contains(t.viewLocked().Text(), substr)
-	})
+	}, nil)
 }
 
 // WaitForMatch blocks until re matches within the given scope.
 func (t *Terminal) WaitForMatch(re *regexp.Regexp, scope Scope, timeout time.Duration) error {
 	return t.waitLoop("WaitForMatch", fmt.Sprintf("match %s", re.String()), timeout, false, func() bool {
 		return re.MatchString(scopeText(t.viewLocked(), scope))
-	})
+	}, nil)
 }
 
 // stabilizeInterval is the quiet window WaitStable and WaitForStable use.
@@ -251,12 +280,25 @@ func (t *Terminal) WaitStable(timeout time.Duration) error {
 		if t.outBytes == 0 {
 			return false
 		}
-		since := t.lastWrite
-		if t.lastInput.After(since) {
-			since = t.lastInput
+		return !time.Now().Before(t.quietSinceLocked().Add(quiet))
+	}, func() time.Time {
+		// Before the first byte and after an exit only an event can end the
+		// wait. Otherwise the window ends quiet after the last output or input,
+		// and any byte in between broadcasts and moves it.
+		if t.exited || t.outBytes == 0 {
+			return time.Time{}
 		}
-		return time.Since(since) >= quiet
+		return t.quietSinceLocked().Add(quiet)
 	})
+}
+
+// quietSinceLocked is when the quiet window of WaitStable starts: the later of
+// the last output byte and the last input tuitest sent. Caller holds t.mu.
+func (t *Terminal) quietSinceLocked() time.Time {
+	if t.lastInput.After(t.lastWrite) {
+		return t.lastInput
+	}
+	return t.lastWrite
 }
 
 // WaitForStable blocks until cond holds on a screen whose content has not
@@ -290,6 +332,10 @@ func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) 
 	var (
 		last  *screenSnapshot
 		since time.Time
+		// wakeAt is when the window ends, if cond holds now and the screen
+		// does not change before then. It is zero while cond does not hold,
+		// since then only output can make the wait succeed.
+		wakeAt time.Time
 	)
 	return t.waitLoop("WaitForStable", fmt.Sprintf("a condition to hold on a screen unchanged for %s", quiet), timeout, false, func() bool {
 		s := t.viewLocked()
@@ -302,6 +348,7 @@ func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) 
 			since = time.Now()
 		}
 		last = s
+		wakeAt = time.Time{}
 		if !cond(s) {
 			return false
 		}
@@ -312,8 +359,12 @@ func (t *Terminal) WaitForStable(cond func(Screen) bool, timeout time.Duration) 
 		if t.lastInput.After(from) {
 			from = t.lastInput
 		}
-		return time.Since(from) >= quiet
-	})
+		if time.Since(from) >= quiet {
+			return true
+		}
+		wakeAt = from.Add(quiet)
+		return false
+	}, func() time.Time { return wakeAt })
 }
 
 // sameContent reports whether two snapshots show the same cells.
@@ -351,7 +402,7 @@ func (t *Terminal) WaitForOutput(timeout time.Duration) error {
 	t.mu.Unlock()
 	return t.waitLoop("WaitForOutput", "the program to write something", timeout, true, func() bool {
 		return t.exited || t.outBytes > base
-	})
+	}, nil)
 }
 
 func scopeText(s *screenSnapshot, scope Scope) string {
@@ -389,7 +440,7 @@ func (t *Terminal) WaitForPrompt(timeout time.Duration) error {
 		n := base
 		t.emuLocked(during, nil, func() { n = t.emu.PromptCount() })
 		return n > base
-	})
+	}, nil)
 }
 
 // WaitForCommand blocks until the current command finishes (OSC 133 D).
@@ -407,7 +458,7 @@ func (t *Terminal) WaitForCommand(timeout time.Duration) error {
 		n := base
 		t.emuLocked(during, nil, func() { n = t.emu.CommandFinishedCount() })
 		return n > base
-	})
+	}, nil)
 }
 
 // LastCommandExit returns the exit code of the last finished command (OSC 133 D)

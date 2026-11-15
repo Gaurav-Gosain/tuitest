@@ -28,11 +28,6 @@ import (
 // DefaultStabilizeInterval is the quiet window WaitStable uses unless overridden.
 const DefaultStabilizeInterval = 150 * time.Millisecond
 
-// pollInterval bounds how long a wait blocks between re-checks when no output
-// arrives. Output-driven wakeups fire immediately; this only backstops
-// wall-clock conditions such as WaitStable.
-const pollInterval = 5 * time.Millisecond
-
 type config struct {
 	cols, rows int
 	env        []string
@@ -472,7 +467,7 @@ func (t *Terminal) respond(proc *ptyproc.Process) {
 		t.inputMu.Lock()
 		if q := t.takeResponsesLocked(); len(q) > 0 {
 			if proc.Write(q) == nil {
-				t.inBytes.Add(int64(len(q)))
+				t.inputSent(len(q))
 			}
 		}
 		t.inputMu.Unlock()
@@ -745,6 +740,18 @@ func (e *exitedInputError) Error() string {
 
 func (e *exitedInputError) Unwrap() []error { return []error{ErrChildExited, e.err} }
 
+// inputSent counts n bytes that reached the child's input and wakes the waits,
+// since a condition may compare InputBytes with what the program reports. The
+// broadcast is made under t.mu, after the count has moved, so a wait that has
+// just found its condition false is already blocked and sees the new count.
+// Caller holds t.inputMu and not t.mu.
+func (t *Terminal) inputSent(n int) {
+	t.inBytes.Add(int64(n))
+	t.mu.Lock()
+	t.cond.Broadcast()
+	t.mu.Unlock()
+}
+
 // markInput timestamps the moment input was handed to the child.
 func (t *Terminal) markInput() {
 	t.mu.Lock()
@@ -793,6 +800,8 @@ func (t *Terminal) Resize(cols, rows int) error {
 		return err
 	}
 	t.gen++
+	// A wait on the screen size, or on what the resize reflowed, sees it now.
+	t.cond.Broadcast()
 	if t.presented != nil {
 		// A frame held for an open synchronized update has the old size. It
 		// is cut or padded to the new one rather than replaced by the live
@@ -866,7 +875,7 @@ func (t *Terminal) WaitExit(timeout time.Duration) (int, error) {
 	// returns sees the program's final frame and not one chunk short of it.
 	err := t.waitLoop("WaitExit", "the child to exit", timeout, true, func() bool {
 		return t.exited
-	})
+	}, nil)
 	if err != nil {
 		return -1, err
 	}

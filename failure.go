@@ -145,6 +145,8 @@ func (t *Terminal) emulatorPanickedLocked(v any, during string, p []byte) {
 	tryLocked(func() { ep.lastExit, ep.lastExitOK = t.emu.LastCommandExit() })
 	t.panicked = ep
 	t.presented = nil
+	// Every wait fails from now on, and must hear of it.
+	t.cond.Broadcast()
 }
 
 // tryLocked runs fn and swallows a panic in it. It is for reads of an emulator
@@ -260,7 +262,7 @@ func (t *Terminal) sendInput(b []byte) error {
 	}
 	err := t.proc.Write(b)
 	if err == nil {
-		t.inBytes.Add(int64(len(b)))
+		t.inputSent(len(b))
 	}
 	return err
 }
