@@ -40,6 +40,10 @@ func Locate() (path string, ok bool) {
 // never collide with another test's, and the harness's process-group teardown
 // reaps it and any pane processes on Close.
 //
+// HOME is a temporary directory too. tuios reads files under HOME, such as
+// ~/.claude and ~/.codex, and without this a test would read the developer's
+// own files and could write to them.
+//
 // TUIOS_NO_DAEMON=1 is set because a bare "tuios" otherwise starts a daemon and
 // attaches to it, which boots into a session rather than the welcome screen.
 // Pass tuitest.WithEnv("TUIOS_NO_DAEMON=") to get the daemon client instead.
@@ -64,6 +68,11 @@ func StartTuios(tb testing.TB, opts ...tuitest.Option) *tuitest.Terminal {
 	// XDG_CONFIG_DIRS and XDG_DATA_DIRS are search lists that include ~/.config
 	// on macOS, so they are redirected too or the developer's config leaks in.
 	base := tb.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		tb.Fatalf("tuiosx: create HOME: %v", err)
+	}
+	isoEnv = append(isoEnv, "HOME="+home)
 	for _, name := range []string{
 		"XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
 		"XDG_DATA_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
