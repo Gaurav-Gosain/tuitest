@@ -10,6 +10,7 @@ can be read, tested, or replaced without the others.
 | --- | --- |
 | [`.`](../terminal.go) (root) | `Terminal`: spawn options, input, waits, screen snapshots, goldens, terminal state |
 | [`internal/ptyproc`](../internal/ptyproc/ptyproc.go) | PTY allocation, `exec` lifetime, the output pump, resize, process-group teardown |
+| [`transport.go`](../transport.go) | the `process` interface a `Terminal` drives, and `StartProgram`, which runs a `Program` in the test process behind it |
 | [`internal/emu`](../internal/emu/emu.go) | The `Emulator` interface and the adapter onto [`tuios.dev/vt`](https://tuios.dev/docs/libraries/vt), the VT interpreter tuios renders through |
 | [`tape`](../tape/parse.go) | The tape language: parser, player, recorder, printer, replay renderer |
 | [`internal/cli`](../internal/cli/cli.go) | The cobra command tree, flag parsing, exit codes, JSON output, diagnostics |

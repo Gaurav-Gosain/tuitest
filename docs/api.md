@@ -51,6 +51,36 @@ only the program's own bytes, so `w` can be a real terminal the program is
 rendered onto while the harness drives it headlessly. `tuitest record` and
 `tuitest replay` are built on the second.
 
+### A program in the test process
+
+`StartProgram` and `StartProgramT` run a Go program inside the test process
+instead of as a child on a PTY. The program implements `Program`:
+
+```go
+type Program interface {
+	Run(in io.Reader, out io.Writer, cols, rows int) int
+	Resize(cols, rows int)
+	Stop()
+}
+```
+
+The `*Terminal` you get back is the same type `StartT` returns. The same
+emulator reads the output, and the waits, screen reads, key encoding and log
+are the same, so one test body runs against either transport.
+
+- There is no line discipline. The program reads the bytes a terminal sends,
+  as a program in raw mode does. What it writes reaches the screen as it is, so
+  it writes `\r\n` to start a line.
+- Input goes through a pipe. A write blocks until the program reads, and the
+  write timeout applies, as with a full PTY.
+- The terminal's answers to the program's queries reach `in` too.
+- A panic in `Run` shows on the screen, and the program exits with code 2. The
+  test binary keeps running.
+- `Close` calls `Stop`, closes `in` and waits up to the kill grace for `Run`
+  to return. It returns an error when `Run` does not return.
+- `WithEnv`, `WithInheritEnv`, `WithDir`, `WithTerm` and `WithTrueColor` do
+  not apply. `Pid` is 0.
+
 ## Input
 
 ```go

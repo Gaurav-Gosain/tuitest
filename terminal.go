@@ -166,7 +166,7 @@ func WithOutputMirror(w io.Writer) Option {
 // Terminal is the harness handle for one spawned program.
 type Terminal struct {
 	cfg  config
-	proc *ptyproc.Process
+	proc process
 	emu  emu.Emulator
 
 	mu        sync.Mutex
@@ -308,29 +308,34 @@ func StartT(tb testing.TB, argv []string, opts ...Option) *Terminal {
 	if err != nil {
 		tb.Fatalf("tuitest: spawn %v: %v", argv, err)
 	}
-	tb.Cleanup(func() {
-		// A teardown that could not kill everything the program spawned fails
-		// the test. Swallowing it here is how a suite leaks processes quietly
-		// until the machine it runs on is full of them.
-		if err := term.Close(); err != nil {
-			tb.Errorf("tuitest: %v", err)
-		}
-		// A test that never waited after the panic has not seen the error.
-		if !tb.Failed() {
-			term.mu.Lock()
-			err := term.panicErrorLocked("the test")
-			term.mu.Unlock()
-			if err != nil {
-				tb.Errorf("%v", err)
-			}
-		}
-		if tb.Failed() && term.logTail != nil {
-			if tail, total := term.logTail.contents(); total > 0 {
-				tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, logLines(tail))
-			}
-		}
-	})
+	tb.Cleanup(func() { term.cleanup(tb) })
 	return term
+}
+
+// cleanup is the teardown StartT and StartProgramT register: it closes the
+// terminal, fails the test on a leak or an unseen emulator panic, and logs the
+// tail of the I/O when the test failed.
+func (t *Terminal) cleanup(tb testing.TB) {
+	// A teardown that could not kill everything the program spawned fails
+	// the test. Swallowing it here is how a suite leaks processes quietly
+	// until the machine it runs on is full of them.
+	if err := t.Close(); err != nil {
+		tb.Errorf("tuitest: %v", err)
+	}
+	// A test that never waited after the panic has not seen the error.
+	if !tb.Failed() {
+		t.mu.Lock()
+		err := t.panicErrorLocked("the test")
+		t.mu.Unlock()
+		if err != nil {
+			tb.Errorf("%v", err)
+		}
+	}
+	if tb.Failed() && t.logTail != nil {
+		if tail, total := t.logTail.contents(); total > 0 {
+			tb.Logf("tuitest: last %d of %d bytes of PTY I/O:\n%s", len(tail), total, logLines(tail))
+		}
+	}
 }
 
 // tailWriter keeps the last bytes written to it.
@@ -462,7 +467,7 @@ func (t *Terminal) takeResponsesLocked() []byte {
 }
 
 // respond writes queued answers to the child until it exits.
-func (t *Terminal) respond(proc *ptyproc.Process) {
+func (t *Terminal) respond(proc process) {
 	for {
 		t.inputMu.Lock()
 		if q := t.takeResponsesLocked(); len(q) > 0 {
