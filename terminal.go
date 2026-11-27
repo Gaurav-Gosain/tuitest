@@ -231,7 +231,7 @@ type Terminal struct {
 	logMu     sync.Mutex
 	logTail   *tailWriter // the log StartT keeps by default, or nil
 	outMirror io.Writer
-	tailBuf   []byte // ring of recent I/O for error dumps
+	tailBuf   []byte // the last tailCap bytes of I/O, for error dumps
 
 	// panicked is set once the emulator has panicked, and stalled once a
 	// write has timed out. Both are guarded by mu and never cleared. See
@@ -402,15 +402,21 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.total += int64(len(p))
-	if len(p) >= w.limit {
-		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
-		return len(p), nil
-	}
-	if over := len(w.buf) + len(p) - w.limit; over > 0 {
-		w.buf = append(w.buf[:0], w.buf[over:]...)
-	}
-	w.buf = append(w.buf, p...)
+	w.buf = keepTail(w.buf, p, w.limit)
 	return len(p), nil
+}
+
+// keepTail appends p to buf and keeps the last limit bytes. It moves the
+// bytes it keeps to the front of buf instead of copying them to a new slice,
+// so once buf has grown to limit it allocates nothing.
+func keepTail(buf, p []byte, limit int) []byte {
+	if len(p) >= limit {
+		return append(buf[:0], p[len(p)-limit:]...)
+	}
+	if over := len(buf) + len(p) - limit; over > 0 {
+		buf = append(buf[:0], buf[over:]...)
+	}
+	return append(buf, p...)
 }
 
 func (w *tailWriter) contents() ([]byte, int64) {
@@ -558,10 +564,7 @@ func (t *Terminal) mirror(p []byte) {
 }
 
 func (t *Terminal) appendTailLocked(p []byte) {
-	t.tailBuf = append(t.tailBuf, p...)
-	if len(t.tailBuf) > tailCap {
-		t.tailBuf = append([]byte(nil), t.tailBuf[len(t.tailBuf)-tailCap:]...)
-	}
+	t.tailBuf = keepTail(t.tailBuf, p, tailCap)
 }
 
 // syncHoldLimit bounds how long a synchronized update keeps the previous frame
