@@ -28,6 +28,10 @@
 //	x                       close the focused window
 //	q                       quit tuios
 //
+// A tuios with no config first asks how it is to be used: tmux keys, simple
+// controls or the keyboard. Esc keeps the keyboard, which is the window
+// management mode above. See passFirstRun.
+//
 // Two behaviors matter for writing reliable assertions:
 //
 //  1. After entering terminal mode tuios suppresses unmodified single-character
@@ -60,6 +64,9 @@ import (
 const (
 	welcomeText = "Terminal UI Operating System"
 	welcomeHint = "new window"
+	// firstRunQuestion is what tuios asks on its first start, before the
+	// welcome hint shows.
+	firstRunQuestion = "How do you want to use tuios?"
 
 	terminalModeToast = "Terminal mode"
 	windowModeToast   = "Window management mode"
@@ -146,6 +153,28 @@ func startTuios(t *testing.T, opts ...tuitest.Option) *tuitest.Terminal {
 	return tuitest.StartT(t, []string{bin, "--no-animations"}, append(baseOpts, opts...)...)
 }
 
+// passFirstRun waits for the welcome hint. A tuios that asks how it is to be
+// used first gets Esc, which keeps the keyboard controls the tests drive. An
+// older tuios does not ask and shows the hint at once.
+func passFirstRun(t *testing.T, term *tuitest.Terminal) {
+	t.Helper()
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		text := s.Text()
+		return strings.Contains(text, firstRunQuestion) || strings.Contains(text, welcomeHint)
+	}, 10*time.Second); err != nil {
+		t.Fatalf("neither the first run question nor the welcome hint rendered: %v", err)
+	}
+	if !strings.Contains(term.Screen().Text(), firstRunQuestion) {
+		return
+	}
+	if err := term.SendKeys(tuitest.Esc); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitForText(welcomeHint, 5*time.Second); err != nil {
+		t.Fatalf("the welcome hint did not render after Esc on the first run question: %v", err)
+	}
+}
+
 // enterTerminalMode presses 'i' until the terminal mode toast appears, then
 // waits out the insert guard so the next typed command is not dropped. It
 // retries because a keypress that lands while tuios is still settling can be
@@ -176,9 +205,7 @@ func TestBootRendersWelcome(t *testing.T) {
 	if err := term.WaitForText(welcomeText, 10*time.Second); err != nil {
 		t.Fatalf("welcome banner never rendered: %v", err)
 	}
-	if err := term.WaitForText(welcomeHint, 5*time.Second); err != nil {
-		t.Fatalf("welcome hint never rendered: %v", err)
-	}
+	passFirstRun(t, term)
 	if _, exited := term.ExitCode(); exited {
 		t.Fatal("tuios exited during boot")
 	}
@@ -195,6 +222,7 @@ func TestWindowLifecycle(t *testing.T) {
 	if err := term.WaitForText(welcomeText, 10*time.Second); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
+	passFirstRun(t, term)
 
 	// 2. Create a window; the welcome screen is replaced by a window frame.
 	if err := term.SendKeys("n"); err != nil {
