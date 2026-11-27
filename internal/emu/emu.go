@@ -90,6 +90,11 @@ type Emulator interface {
 // New builds the default ultraviolet/vt-backed emulator at the given size.
 func New(cols, rows int) Emulator {
 	a := &adapter{e: vt.NewEmulator(cols, rows), modes: map[int]bool{}, lastExit: -1}
+	// The grid never draws a kitty image, so the emulator reads the keys of
+	// a graphics command and skips its payload. Without this it copied and
+	// decoded every chunk: a program streaming a whole bitmap at 10 frames a
+	// second cost about 750 MB of allocations in a few seconds.
+	a.e.SetKittyHeaderOnly(true)
 	// The vt package ran its own mode reset before these callbacks existed,
 	// so the modes it set by default are copied in once here. From now on the
 	// callbacks see every change. GetModes also lists the modes it knows that
