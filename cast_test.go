@@ -116,29 +116,33 @@ func TestFailedTestWritesCast(t *testing.T) {
 	if header["version"] != float64(2) || header["width"] != float64(80) || header["height"] != float64(24) {
 		t.Fatalf("header = %v, want version 2 and 80x24", header)
 	}
-	want := []castEvent{
-		{kind: "m", data: `WaitForText: text "ready"`},
-		{kind: "o", data: "ready"},
-		{kind: "m", data: "WaitForText: done"},
-		{kind: "m", data: "SendKeys"},
-		{kind: "i", data: "hello\r"},
-		{kind: "m", data: `WaitForText: text "got hello"`},
-		{kind: "o", data: "got hello"},
-		{kind: "m", data: "WaitForText: done"},
-		{kind: "m", data: "Resize 100x30"},
-		{kind: "r", data: "100x30"},
-		{kind: "m", data: `WaitForText: text "never shown"`},
-		{kind: "m", data: "WaitForText: timed out"},
-	}
-	i := 0
-	for _, ev := range events {
-		if i < len(want) && ev.kind == want[i].kind && strings.Contains(ev.data, want[i].data) {
-			i++
+	// at is the index of the first event from index from on that is of kind
+	// and holds data. It fails the test when there is none.
+	at := func(from int, kind, data string) int {
+		for i := from; i < len(events); i++ {
+			if events[i].kind == kind && strings.Contains(events[i].data, data) {
+				return i
+			}
 		}
+		t.Fatalf("the recording lacks %q (%s) after event %d, or has it out of order; events:\n%v", data, kind, from, events)
+		return 0
 	}
-	if i < len(want) {
-		t.Fatalf("the recording lacks %q (%s), or has it out of order; events:\n%v", want[i].data, want[i].kind, events)
+	// A wait's mark is written when the wait starts, and the program may have
+	// printed what it waits for before that: the shell answers "hello" as soon
+	// as it reads it, often before WaitForText is called. So the mark and the
+	// output can come in either order, and both come before the wait's done.
+	waited := func(from int, text string) int {
+		mark := at(from, "m", "WaitForText: text \""+text+"\"")
+		out := at(from, "o", text)
+		return at(max(mark, out), "m", "WaitForText: done")
 	}
+	i := waited(0, "ready")
+	i = at(i, "m", "SendKeys")
+	i = waited(at(i, "i", "hello\r"), "got hello")
+	i = at(i, "m", "Resize 100x30")
+	i = at(i, "r", "100x30")
+	i = at(i, "m", `WaitForText: text "never shown"`)
+	at(i, "m", "WaitForText: timed out")
 }
 
 // Playing the output events back through an emulator gives the screen the

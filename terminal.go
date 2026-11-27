@@ -457,11 +457,14 @@ func (t *Terminal) onData(p []byte) {
 	t.lastWrite = time.Now()
 	t.outBytes += int64(len(p))
 	t.appendTailLocked(p)
-	t.cond.Broadcast()
-	t.mu.Unlock()
+	// The recording gets the output before a waiter is woken. A wait that
+	// sees this output writes its done mark after it, so a player never
+	// shows a wait ending before what it waited for.
 	if t.cast != nil {
 		t.cast.output(p)
 	}
+	t.cond.Broadcast()
+	t.mu.Unlock()
 	t.mirror(p)
 	// The pump is a single goroutine, so mirroring outside the lock still
 	// delivers chunks to w in the order the child produced them.
