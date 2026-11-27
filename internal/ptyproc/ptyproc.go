@@ -120,14 +120,6 @@ func Start(cfg Config, h Handler) (*Process, error) {
 		return nil, err
 	}
 
-	// The child now holds its own descriptors for the slave end. Close the
-	// parent's copy so that when the child exits, a read on the master returns
-	// EOF/EIO and the pump goroutine can reap it. Without this the parent keeps
-	// the slave open and the master read blocks forever.
-	if u, ok := pty.(*xpty.UnixPty); ok {
-		_ = u.Slave().Close()
-	}
-
 	grace := cfg.KillGrace
 	switch {
 	case grace == 0:
@@ -145,6 +137,20 @@ func Start(cfg Config, h Handler) (*Process, error) {
 		done:   make(chan struct{}),
 	}
 	go p.pump(h)
+	// The child now holds its own descriptors for the slave end. Close the
+	// parent's copy so that when the child exits, a read on the master returns
+	// EOF/EIO and the pump goroutine can reap it. Without this the parent keeps
+	// the slave open and the master read blocks forever.
+	//
+	// The pump starts first. A child that exits fast can be done before this
+	// close, which is then the last close of the slave. On macOS that close
+	// throws away the output the master has not read yet, so the pump has to
+	// be reading by then. With the close made first, a child that printed one
+	// line and exited before it lost the line every time: the pump saw EOF and
+	// no bytes, and a wait reported an exit with an empty screen.
+	if u, ok := pty.(*xpty.UnixPty); ok {
+		_ = u.Slave().Close()
+	}
 	return p, nil
 }
 

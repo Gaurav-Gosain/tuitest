@@ -308,5 +308,7 @@ func processLive(pid int) bool {
 	if zombie, known := processZombie(pid); known {
 		return !zombie
 	}
-	return true
+	// The zombie probe finds no such process when the parent reaped it after
+	// the signal probe. Ask again rather than count that as running.
+	return syscall.Kill(pid, 0) == nil
 }
