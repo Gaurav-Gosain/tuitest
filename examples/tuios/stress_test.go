@@ -1,6 +1,7 @@
 package tuios_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,11 +16,15 @@ import (
 // EOF) at any point during the storm, the assertions below fail with the last
 // rendered screen attached.
 //
-// This deliberately does NOT wait for the flood to drain. `seq 1 2000000`
-// emits ~2M lines and the VT emulator interprets only a few thousand lines a
-// second, so full drain would take minutes. The test only needs tuios to keep
-// running while output floods and SIGWINCH storms in; it stops the flood with
-// Ctrl+C and lets the harness tear the process group down.
+// This deliberately does NOT wait for the flood to drain. The flood is a
+// billion lines, far more than tuios draws in the storm's 5 seconds: a tuios
+// of late 2026 drew two million lines in under 5. The test only needs tuios to
+// keep running while output floods and SIGWINCH storms in; it stops the flood
+// with Ctrl+C and lets the harness tear the process group down.
+// floodLine matches a pane row that holds only a number past 99, which is a
+// line seq printed. The command line itself starts with the prompt.
+var floodLine = regexp.MustCompile(`│[0-9]{3,} *│`)
+
 func TestFloodWithResize(t *testing.T) {
 	t.Parallel()
 	term := startTuios(t, tuitest.WithSize(120, 40))
@@ -28,6 +33,7 @@ func TestFloodWithResize(t *testing.T) {
 	if err := term.WaitForText(welcomeText, 10*time.Second); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
+	passFirstRun(t, term)
 	if err := term.SendKeys("n"); err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +45,17 @@ func TestFloodWithResize(t *testing.T) {
 	enterTerminalMode(t, term)
 
 	// Kick off the flood inside the pane's shell.
-	if err := term.SendKeys("seq 1 2000000", tuitest.Enter); err != nil {
+	if err := term.SendKeys("seq 1 1000000000", tuitest.Enter); err != nil {
 		t.Fatalf("start flood: %v", err)
 	}
 
 	// Confirm the flood is actually running before we start resizing, so the
-	// storm overlaps real output rather than an idle prompt.
-	if err := term.WaitForText("100", 5*time.Second); err != nil {
+	// storm overlaps real output rather than an idle prompt. Any line of three
+	// or more digits will do: the screen scrolls past a given number, such as
+	// 100, faster than a wait can look at every frame.
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		return floodLine.MatchString(s.Text())
+	}, 5*time.Second); err != nil {
 		t.Fatalf("flood did not start producing output: %v", err)
 	}
 
